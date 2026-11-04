@@ -1,6 +1,7 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { PLAYER_HEIGHT, WORLD } from './constants';
 import { frameForUp, Rng } from './math';
+import type { BlockMaterial } from './blocks';
 import { TEAMS, TeamDef, teamByDown } from './teams';
 
 export type V3 = [number, number, number];
@@ -21,7 +22,12 @@ export interface PortalDef { id: number; partner: number; pos: V3; quat: Q4; wid
 /** Magic lift / geyser: ballistic launch onto `target` (until building exists). */
 export interface PadDef { pos: V3; up: V3; radius: number; target: V3; apex: number; kind: 'lift' | 'geyser' }
 export interface SpawnDef { pos: V3; quat: Q4; yaw: number }
-export interface StatueDef { team: string; pos: V3; up: V3; color: number }
+/** The team's "bed": a crystal on a pedestal. `bed` = crystal centre, `pos` = small floating marker above it. */
+export interface StatueDef { team: string; pos: V3; bed: V3; up: V3; color: number; fort: { pos: V3; material: BlockMaterial }[] }
+/** Base facilities on the skyscraper roof. */
+export interface BaseDef { team: string; up: V3; shop: V3; generator: V3 }
+/** Crystal generator on a core face. */
+export interface CrystalSpotDef { pos: V3; up: V3 }
 export interface FaceDef { normal: V3; quat: Q4; team: string }
 
 export interface MapData {
@@ -35,6 +41,8 @@ export interface MapData {
   pads: PadDef[];
   spawns: Record<string, SpawnDef>;
   statues: StatueDef[];
+  bases: BaseDef[];
+  crystalSpots: CrystalSpotDef[];
   faces: FaceDef[];
   coreHalf: number;
   killRadius: number;
@@ -73,7 +81,7 @@ class Builder {
   constructor(seed: number) {
     this.data = {
       seed, boxes: [], hulls: [], buildings: [], houses: [], trees: [], portals: [], pads: [], spawns: {},
-      statues: [], faces: [], coreHalf: WORLD.coreHalf, killRadius: WORLD.killRadius,
+      statues: [], bases: [], crystalSpots: [], faces: [], coreHalf: WORLD.coreHalf, killRadius: WORLD.killRadius,
     };
   }
   box(f: Frame, x: number, y: number, z: number, hx: number, hy: number, hz: number,
@@ -288,15 +296,22 @@ function genBase(b: Builder, f: Frame, team: TeamDef) {
   const sz = cz + 4;
   b.block(f, sx, R, sz, 1.5, 0.6, 1.5, 0xd8d2c4, 'stone');
   b.block(f, sx, R + 1.2, sz, 1.0, 0.4, 1.0, 0xe4dfd2, 'stone');
+  // the crystal itself is drawn by the client (it disappears when the bed is broken) and has no collider
   const cy = R + 4;
-  b.hull(f, [[sx, cy + 2.2, sz], [sx, cy - 2.2, sz], [sx + 0.9, cy, sz], [sx - 0.9, cy, sz], [sx, cy, sz + 0.9], [sx, cy, sz - 0.9]],
-    team.color, 'glow');
-  b.data.statues.push({ team: team.id, pos: f.p(sx, cy + 3.6, sz), up: f.up(), color: team.color });
+  // fortification: a 3 m high ring of blocks around the pedestal (cells that hit the map are skipped)
+  const fort: StatueDef['fort'] = [];
+  const layers: BlockMaterial[] = ['stone', 'stone', 'wood'];
+  layers.forEach((material, y) => {
+    for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++)
+      if (Math.abs(i) === 2 || Math.abs(j) === 2) fort.push({ pos: f.p(sx + i, R + 0.5 + y, sz + j), material });
+  });
+  b.data.statues.push({ team: team.id, pos: f.p(sx, cy + 3.6, sz), bed: f.p(sx, cy, sz), up: f.up(), color: team.color, fort });
   // shop kiosk
   b.block(f, cx - 4, R, cz + 4.5, 2.2, 1.4, 1.6, 0xf1ead8, 'plaster');
   b.box(f, cx - 4, R + 2.95, cz + 2.6, 2.5, 0.08, 0.7, team.color, 'paint', false);
   b.box(f, cx - 4, R + 3.2, cz + 4.5, 1.7, 0.3, 0.06, team.color, 'glow', false);
   // resource generator
+  b.data.bases.push({ team: team.id, up: f.up(), shop: f.p(cx - 4, R + 1.4, cz + 4.5), generator: f.p(cx + 4.5, R + 0.05, cz - 4.5) });
   b.block(f, cx + 4.5, R, cz - 4.5, 1.4, 0.05, 1.4, 0xffc94a, 'glow', false);
   for (const gx of [-1, 1]) for (const gz of [-1, 1])
     b.block(f, cx + 4.5 + gx * 1.5, R, cz - 4.5 + gz * 1.5, 0.12, 0.6, 0.12, 0x6a6d74, 'metal');
@@ -384,6 +399,7 @@ function genCore(b: Builder, rng: Rng) {
     }
     // upgrade-crystal spawn spot
     b.block(f, 0, 0, 2, 1.4, 0.08, 1.4, 0xa89676, 'stone');
+    b.data.crystalSpots.push({ pos: f.p(0, 0.16, 2), up: f.up() });
     b.hull(f, [[0, 2.6, 2], [0, 0.9, 2], [0.45, 1.6, 2], [-0.45, 1.6, 2], [0, 1.6, 2.45], [0, 1.6, 1.55]], 0x8af5ff, 'glow', false);
   }
 

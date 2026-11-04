@@ -21,13 +21,18 @@
       <div id="wind"><div class="label">Ветер</div><div id="wind-arrow"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 10h11V5l7 7-7 7v-5H3z" fill="currentColor"/></svg></div><div id="wind-val">0</div></div>
       <div id="feed"></div>
       <div id="build-hud" style="display:none"></div>
-      <div id="build-wheel"></div>
+      <div id="wallet"></div>
+      <div id="beds"></div>
+      <div id="prompt"></div>
+      <div id="bed-break"><i></i></div>
+      <div id="shop" hidden></div>
+      <div id="result"></div>
     </div>
     <div id="overlay">
       <div class="menu-shell">
         <div class="menu-kicker"><span></span> ЛОКАЛЬНЫЙ ПРОТОТИП · THREE.JS</div>
         <h1>GRAVITY<br><em>BEDWARS</em></h1>
-        <p class="menu-desc">Стройся между мирами. Меняй гравитацию. Защищай свою базу.</p>
+        <p class="menu-desc">Собирай медь, строй мосты из блоков, прорывайся к вражеским кристаллам. Разрушь все пять.</p>
         <div class="menu-actions">
           <button class="menu-primary" id="start-game">Играть <span>↗</span></button>
           <button class="menu-secondary" id="show-help">Управление</button>
@@ -36,9 +41,9 @@
         <div id="menu-help" class="menu-details" hidden>
           <div><b>WASD / мышь</b> — движение и обзор · <b>пробел / колесо</b> — прыжок</div>
           <div><b>ЛКМ</b> — огонь · <b>1 / 2</b> — винтовка / граната · <b>R</b> — перезарядка</div>
-          <div><b>B</b> — строительство · <b>3 / 4 / 5</b> — стена / пол / пандус</div>
-          <div><b>Q / Z</b> — деталь / материал (удерживать — меню) · <b>R</b> — поворот</div>
-          <div><b>ЛКМ</b> — строить · <b>ПКМ</b> — разобрать и вернуть часть материалов</div>
+          <div><b>B / 3</b> — блоки · <b>Q / Z / колесо</b> — материал</div>
+          <div><b>ЛКМ</b> — ставить блок (держать — мост) · <b>ПКМ</b> — забрать свой блок</div>
+          <div><b>E</b> — магазин на базе · <b>удерживать E</b> у вражеского кристалла — сломать его</div>
           <div><b>Shift+1–6</b> — гравитация · <b>N</b> — полёт · <b>K</b> — респавн · <b>T</b> — в центр</div>
           <div><b>G</b> — отладка · <b>P</b> — порталы · <b>Esc</b> — пауза</div>
         </div>

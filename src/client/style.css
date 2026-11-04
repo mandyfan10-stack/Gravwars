@@ -60,6 +60,26 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #07040f; fon
 
 #build-hud { position:absolute; left:50%; bottom:7%; transform:translateX(-50%); background:#1d150ce6; border:1px solid #bcebd188; border-radius:10px; padding:10px 16px; font-size:13px; font-weight:700; color:#d5ffe8; white-space:nowrap; box-shadow:0 4px 18px #0007; }
 
-#build-wheel {position:fixed;left:50%;top:50%;width:310px;height:310px;transform:translate(-50%,-50%);display:none;pointer-events:none;z-index:3;}
-#build-wheel.on{display:block}.wheel-ring{position:absolute;inset:25px;border-radius:50%;background:radial-gradient(circle,#172821bb 0 35%,#14251fea 36% 70%,#16241f66 71%);border:1px solid #c7efdb66;}
-.wheel-item{position:absolute;transform:translate(-50%,-50%);width:88px;height:70px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:1px solid #aec8b970;border-radius:8px;background:#203630ee;font-size:12px;font-weight:700;}.wheel-item span{font-size:27px;line-height:1;color:#bcf8d9}.wheel-item.current{border-color:#ffd59a}.wheel-item.selected{background:#b3f2d0;color:#183425;transform:translate(-50%,-50%) scale(1.09)}.wheel-item.selected span{color:#183425}.wheel-center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;font-size:12px;font-weight:800;letter-spacing:.08em}.wheel-center small{display:block;font-size:11px;letter-spacing:0;font-weight:400;margin-top:5px}.wheel-cursor{position:absolute;left:50%;top:50%;width:9px;height:9px;margin:-4px;border-radius:50%;background:#ffe1a6;box-shadow:0 0 8px #ffd18b;}
+
+#build-hud .dim { opacity: .55; font-weight: 600; }
+#build-hud span { font-weight: 500; opacity: .75; }
+#wallet { position: absolute; left: 20px; top: 62px; display: flex; gap: 14px; padding: 7px 14px; border-radius: 10px; background: #0008; backdrop-filter: blur(6px); font-weight: 800; font-size: 17px; font-variant-numeric: tabular-nums; }
+#wallet .copper { color: #ffb36b; } #wallet .crystal { color: #8af5ff; } #wallet .time { opacity: .6; font-weight: 600; }
+#beds { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 10px; background: #0008; backdrop-filter: blur(6px); }
+#beds .bed { font-size: 20px; text-shadow: 0 0 8px currentColor; }
+#beds .bed.dead { opacity: .35; text-shadow: none; }
+#beds .bed.mine { border-bottom: 2px solid #fff; }
+#beds .goal { margin-left: 8px; font-size: 12px; font-weight: 700; opacity: .8; }
+#prompt { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); padding: 6px 14px; border-radius: 8px; background: #000a; font-size: 15px; font-weight: 600; opacity: 0; transition: opacity .15s; white-space: nowrap; }
+#prompt b { color: #ffe08a; }
+#bed-break { position: absolute; left: 50%; top: 63%; width: 220px; height: 8px; margin-left: -110px; border-radius: 4px; background: #ffffff22; overflow: hidden; opacity: 0; }
+#bed-break i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ffd166, #ff6b6b); }
+#shop { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 340px; padding: 14px 16px; border-radius: 12px; background: #15110be8; border: 1px solid #ffe0a855; box-shadow: 0 8px 30px #000a; }
+#shop h3 { margin: 0 0 10px; font-size: 18px; } #shop h3 small { font-size: 11px; font-weight: 500; opacity: .6; margin-left: 8px; }
+#shop .item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; margin-top: 5px; border-radius: 7px; background: #ffffff10; border-left: 4px solid #7dffa0; font-weight: 700; }
+#shop .item.poor { opacity: .45; }
+#shop .item em { font-style: normal; font-size: 12px; opacity: .6; font-weight: 500; }
+#shop kbd { min-width: 20px; text-align: center; padding: 1px 6px; border-radius: 4px; background: #ffffff22; font: 700 12px ui-monospace, monospace; }
+#shop .price { margin-left: auto; } #shop .price.copper { color: #ffb36b; } #shop .price.crystal { color: #8af5ff; }
+#result { position: absolute; left: 50%; top: 34%; transform: translate(-50%, -50%); font-size: 64px; font-weight: 900; letter-spacing: 3px; text-align: center; text-shadow: 0 4px 24px #000; opacity: 0; transition: opacity .4s; }
+#result.show { opacity: 1; } #result small { display: block; font-size: 18px; letter-spacing: 0; font-weight: 600; color: #fff; }

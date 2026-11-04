@@ -1,8 +1,10 @@
 import './style.css';
 import { Quaternion, Vector3 } from 'three';
-import { BuildSystem } from '../shared/building';
+import { BlockSystem } from '../shared/blocks';
 import { Combat } from '../shared/combat';
+import { TICK_DT } from '../shared/constants';
 import { generateMap } from '../shared/map';
+import { KILL_REWARD, Match } from '../shared/match';
 import { upOf } from '../shared/math';
 import { moveBasis, viewQuat } from '../shared/movement';
 import { buildPhysicsWorld, initRapier } from '../shared/physics';
@@ -10,16 +12,18 @@ import { PlayerSim } from '../shared/sim';
 import { teamByDown } from '../shared/teams';
 import type { WeaponId } from '../shared/weapons';
 import { GameAudio } from './audio';
-import { BuildController } from './buildController';
+import { BlockController } from './blockController';
 import { createDebugGui, DebugToggles } from './debugGui';
 import { Dummies } from './dummies';
 import { Hud, teamHex } from './hud';
 import { Input } from './input';
 import { createKeyHandler } from './keybinds';
 import { LocalPlayer } from './localPlayer';
+import { MatchUi } from './matchUi';
 import { setupMenu } from './menu';
 import { PlayerCombat } from './playerCombat';
 import { Fx } from './render/fx';
+import { GeneratorView } from './render/generatorView';
 import { GravityGizmo } from './render/gizmo';
 import { Graphics } from './render/graphics';
 import { buildMapView } from './render/mapView';
@@ -36,9 +40,10 @@ async function main() {
   const world = buildPhysicsWorld(R, map);
   const sim = new PlayerSim(R, world, map, 'red');
   const combat = new Combat(R, world, map, sim.portals, [sim.mover.collider]);
-  const buildings = new BuildSystem(R, world, sim.mover.collider);
-  combat.onWorldDamage = (handle, damage) => { buildings.damageCollider(handle, damage); };
-  combat.onExplosion = (pos, radius, damage) => buildings.explosion(pos, radius, damage);
+  const blocks = new BlockSystem(R, world, sim.mover.collider);
+  combat.onWorldDamage = (handle, damage) => { blocks.damageCollider(handle, damage); };
+  combat.onExplosion = (pos, radius, damage) => blocks.explosion(pos, radius, damage);
+  const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
 
   // --- rendering
   const gfx = new Graphics(canvas);
@@ -57,7 +62,13 @@ async function main() {
   const hud = new Hud();
   const player = new PlayerCombat(sim, combat, hud, fx, audio, viewModel);
   const dummies = new Dummies(scene, combat, map);
-  const build = new BuildController(R, world, sim, input, buildings, audio, hud, scene);
+  const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
+  const ui = new MatchUi(match, hud, audio, () => player.heal());
+  const generators = new GeneratorView(scene, match);
+  player.canRespawn = () => match.onDeath();
+  player.onKill = () => {
+    match.wallet.copper += KILL_REWARD;
+  };
 
   const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: input.sensitivity, fov: 80 };
   const applyToggles = () => {
@@ -71,7 +82,10 @@ async function main() {
   const gui = createDebugGui(sim.cfg, sim.mover, toggles, applyToggles);
 
   const local = new LocalPlayer(sim, input);
-  local.onTick = () => player.tick(!build.active && input.locked && input.down('Mouse0'));
+  local.onTick = () => {
+    player.tick(!build.active && input.locked && input.down('Mouse0'));
+    match.tick(TICK_DT, sim.state.pos);
+  };
   local.onEvent = (e) => {
     if (e.type === 'gravity' || e.type === 'teleport') {
       const t = teamByDown(sim.gravityDown());
@@ -79,17 +93,20 @@ async function main() {
     } else if (e.type === 'respawn' && e.reason === 'manual') player.reset();
     else if (e.type === 'respawn' && e.reason === 'void') {
       hud.toast('Упал в пустоту', '#ff6b6b');
-      player.reset();
+      if (match.onDeath()) player.reset();
+      else player.me.alive = false;
     } else if (e.type === 'respawn' && e.reason === 'killed') hud.toast('Ты погиб', '#ff6b6b');
     else if (e.type === 'launch') hud.toast('Гейзер!', '#d7a8ff', 1);
   };
 
   window.addEventListener('resize', () => gfx.resize());
-  const handleKeys = createKeyHandler({ input, sim, local, build, player, hud, toggles, applyToggles, gui });
+  const handleKeys = createKeyHandler({
+    input, sim, local, build, player, ui, nearShop: () => match.nearShop(sim.state.pos), hud, toggles, applyToggles, gui,
+  });
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, buildings, ready: true,
+    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -116,6 +133,20 @@ async function main() {
     local.applyCamera(camera);
     build.update(dt, camera);
     gfx.updateLighting(local.renderFrame);
+
+    // bedwars: break enemy crystals (hold E), match events, UI
+    match.breakTick(dt, camera.position, input.locked && !ui.shopOpen && input.down('KeyE'));
+    const reachable = match.breaking ? null : match.reachableBed(camera.position);
+    for (const e of match.events.splice(0)) {
+      ui.onEvent(e);
+      if (e.type === 'bedBroken') {
+        mapView.setBedAlive(e.team, false);
+        fx.handle({ type: 'explode', pos: match.bed(e.team).pos.clone(), radius: 3 });
+        audio.explosion();
+      }
+    }
+    ui.update(match.nearShop(sim.state.pos), reachable);
+    generators.update(time);
 
     dummies.update(time, dt);
     fx.down.copy(gfx.upDir).negate();

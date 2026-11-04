@@ -29,6 +29,10 @@ export class PlayerCombat {
   forceFire = 0;
   private punch = 0;
   private shake = 0;
+  /** Asked when the local player dies: false = no respawn (bed lost). */
+  canRespawn: () => boolean = () => true;
+  /** The local player killed someone. */
+  onKill: (target: Target) => void = () => {};
 
   constructor(private sim: PlayerSim, private combat: Combat, private hud: Hud, private fx: Fx,
     private audio: GameAudio, private viewModel: ViewModel) {
@@ -45,6 +49,14 @@ export class PlayerCombat {
     this.me.alive = true;
     Object.assign(this.weapons, createWeaponState());
     this.hud.setHp(this.me.hp);
+  }
+
+  /** Medkit: back to full HP. False if already full. */
+  heal(): boolean {
+    if (!this.me.alive || this.me.hp >= MAX_HP) return false;
+    this.me.hp = MAX_HP;
+    this.hud.setHp(this.me.hp);
+    return true;
   }
 
   toggleWeapon() {
@@ -91,15 +103,20 @@ export class PlayerCombat {
       const tg = this.combat.target(e.target)!;
       if (e.owner === 0 && e.target !== 0) {
         hud.hitmarker(e.killed, e.head);
-        if (e.killed) hud.killfeed(`${teamSpan(me.team, 'Ты')} ⟶ ${teamSpan(tg.team)}${e.head ? ' (в голову)' : ''}`);
+        if (e.killed) {
+          hud.killfeed(`${teamSpan(me.team, 'Ты')} ⟶ ${teamSpan(tg.team)}${e.head ? ' (в голову)' : ''}`);
+          this.onKill(tg);
+        }
       }
       if (e.target === 0) {
         hud.hurt(e.damage);
         hud.setHp(me.hp);
         if (e.killed) {
           hud.killfeed(e.owner === 0 ? `${teamSpan(me.team, 'Ты')} подорвал себя` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')} ⟶ ${teamSpan(me.team, 'Ты')}`);
-          this.sim.respawn('killed');
-          this.reset();
+          if (this.canRespawn()) {
+            this.sim.respawn('killed');
+            this.reset();
+          }
         }
       }
     } else if (e.type === 'explode') {

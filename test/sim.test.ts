@@ -1,7 +1,7 @@
 /* Headless checks of the shared simulation: run with `npm test`. */
 import { Quaternion, Vector3 } from 'three';
-import { BUILD_MATERIALS, BuildSystem, planBuild } from '../src/shared/building';
-import { buildAim } from '../src/shared/buildAim';
+import { BLOCK_MATERIALS, BlockSystem, START_BLOCKS } from '../src/shared/blocks';
+import { GENERATORS, Match, SHOP } from '../src/shared/match';
 import { HU, TICK_DT } from '../src/shared/constants';
 import { generateMap } from '../src/shared/map';
 import { emptyInput, MoveInput } from '../src/shared/movement';
@@ -215,70 +215,131 @@ import { createWeaponState, weaponTick, WEAPONS } from '../src/shared/weapons';
 }
 
 
-// Construction: common world grid, gravity-relative orientation, validation, damage and colliders.
+// Blocks: flush on any surface, grid-aligned sideways, bridging assist, damage, inventory.
 {
-  const w = new R.World({x:0,y:0,z:0});
-  const bs = new BuildSystem(R, w);
-  const pos = new Vector3(0, 0, 0), frame = new Quaternion(), eye = new Vector3(0, 0, 0);
-  const plan = planBuild('floor', new Vector3(3.2, 0.1, -3.2), new Vector3(0,1,0), new Vector3(0,0,-1));
-  check('build snaps to world grid', plan.cell.equals(new Vector3(3,0,-3)));
-  check('build places and deducts materials', bs.place(plan,pos,frame,eye) === 'ok' && bs.resources.wood === 190 && bs.pieces.size === 1);
-  const rotated = planBuild('floor', new Vector3(3.2, 0.1, -3.2), new Vector3(0,1,0), new Vector3(0,0,-1), 1);
-  check('same floor rotated cannot be duplicated', bs.place(rotated,pos,frame,eye) === 'duplicate' && bs.resources.wood === 190);
-  const wall = planBuild('wall', new Vector3(0,0,0), new Vector3(0,1,0), new Vector3(0,0,-1));
-  check('building cannot intersect player', bs.validate(wall,wall.position,frame,eye) === 'player');
-  check('cannot place out of range', bs.validate(planBuild('wall',new Vector3(30,0,0),new Vector3(0,1,0),new Vector3(0,0,-1)),pos,frame,eye) === 'range');
-  const hit = w.castRay(new R.Ray(plan.position.clone().add(new Vector3(0,3,0)), {x:0,y:-1,z:0}), 6, true);
-  check('building collider blocks ray', !!hit);
-  const piece = [...bs.pieces.values()][0];
-  bs.damageCollider(piece.collider.handle, 40);
-  check('building receives damage', piece.hp === 60 && bs.pieces.size === 1);
-  bs.explosion(piece.plan.position, 5.5, 75);
-  check('explosion destroys building and collider', bs.pieces.size === 0 && !w.castRay(new R.Ray(plan.position.clone().add(new Vector3(0,3,0)), {x:0,y:-1,z:0}), 6, true));
-  bs.resources.wood = 0;
-  check('build requires materials', bs.validate(plan,pos,frame,eye) === 'resources');
-  for (const up of [new Vector3(0,1,0),new Vector3(0,-1,0),new Vector3(1,0,0),new Vector3(-1,0,0),new Vector3(0,0,1),new Vector3(0,0,-1)]) {
-    const f = Math.abs(up.z) > 0.9 ? new Vector3(1,0,0) : new Vector3(0,0,-1);
-    const p = planBuild('ramp',new Vector3(5,5,5),up,f);
-    const normal = new Vector3(0,1,0).applyQuaternion(p.rotation);
-    check(`ramp follows gravity ${up.toArray()}`, Math.abs(normal.dot(up)-Math.SQRT1_2)<0.0001);
+  const up = new Vector3(0, 1, 0), frame = new Quaternion(), fwd = new Vector3(0, 0, -1);
+  const w = new R.World({ x: 0, y: 0, z: 0 });
+  // ground whose top (y = 0.37) is NOT on the 1 m grid, ending at z = -4.2
+  w.createCollider(R.ColliderDesc.cuboid(10, 1, 5).setTranslation(0, -0.63, 0.8));
+  w.step();
+  const bs = new BlockSystem(R, w);
+  const far = new Vector3(0, 50, 50);
+  const eye = new Vector3(0.2, 2, 0.3);
+  const t = bs.target(eye, new Vector3(0, -1, 0), far, up, fwd)!;
+  check('block sits flush on off-grid ground', !!t && !t.assisted && Math.abs(t.center.y - 0.87) < 1e-6, `y=${t?.center.y.toFixed(3)}`);
+  check('block snaps to grid sideways', t.center.x === 0.5 && t.center.z === 0.5);
+  check('block placement spends inventory', bs.place(t.center, far, frame, eye, 'wood', 'red') === 'ok' && bs.inventory.wood === START_BLOCKS.wood - 1);
+  const block = [...bs.blocks.values()][0];
+  const side = bs.target(new Vector3(0.5, 0.87, 3), new Vector3(0, 0, -1), far, up, fwd)!;
+  check('aiming at a block face targets the neighbour cell', side.center.equals(block.center.clone().add(new Vector3(0, 0, 1))));
+  const onTop = bs.target(new Vector3(0.5, 3, 0.5), new Vector3(0, -1, 0), far, up, fwd)!;
+  check('stacking on top', onTop.center.equals(block.center.clone().add(up)));
+  check('cannot place into the player', bs.validate(onTop.center, onTop.center.clone().add(new Vector3(0, 0.5, 0)), frame, eye, 'wood') === 'player');
+  check('cannot place into the map', bs.validate(new Vector3(3.5, 0.2, 0.5), far, frame, new Vector3(3.5, 2, 0.5), 'wood') === 'occupied');
+  check('cannot place into another block', bs.validate(block.center, far, frame, eye, 'wood') === 'occupied');
+  check('cannot place out of range', bs.validate(new Vector3(0.5, 0.87, -20), far, frame, eye, 'wood') === 'range');
+  check('placement needs blocks of that material', bs.validate(onTop.center, far, frame, eye, 'stone') === 'resources');
+  // bridging: stand on the last ground cell at the edge, look into the void
+  const ps = new PlayerSim(R, w, map, 'red');
+  const bs2 = new BlockSystem(R, w, ps.mover.collider);
+  ps.state.pos.set(0.5, 0.37 + 0.915 + 0.05, -3.7); ps.state.vel.set(0, 0, 0); ps.state.frame.identity(); ps.mover.place(ps.state);
+  for (let k = 0; k < 30; k++) ps.tick(emptyInput(), TICK_DT);
+  const peye = ps.state.pos.clone().add(new Vector3(0, 0.71, 0));
+  const edge = bs2.target(peye, new Vector3(0, 0.2, -1).normalize(), ps.state.pos, up, fwd);
+  check('bridging assist continues the ground over the void', !!edge && edge.assisted && edge.center.z < -4.66 && edge.center.z > -4.8 && Math.abs(edge.center.y + 0.13) < 1e-3,
+    edge ? edge.center.toArray().map((v) => v.toFixed(2)).join(',') : 'none');
+  check('assisted block is placeable', bs2.place(edge!.center, ps.state.pos, ps.state.frame, peye, 'wood', 'red') === 'ok');
+  const bridge = [...bs2.blocks.values()][0];
+  ps.state.pos.set(0.5, bridge.center.y + 0.5 + 0.915 + 0.05, bridge.center.z); ps.state.vel.set(0, 0, 0); ps.mover.place(ps.state);
+  for (let k = 0; k < 30; k++) ps.tick(emptyInput(), TICK_DT);
+  check('player stands on a block', ps.state.onGround && Math.abs(ps.state.pos.y - (bridge.center.y + 0.5 + 0.915)) < 0.1, `y=${ps.state.pos.y.toFixed(2)}`);
+  const next = bs2.target(ps.state.pos.clone().add(new Vector3(0, 0.71, 0)), new Vector3(0, 0, -1), ps.state.pos, up, fwd)!;
+  check('bridging continues from the block under the feet', next.assisted && next.center.equals(bridge.center.clone().add(new Vector3(0, 0, -1))));
+  // jump up onto a block (one block = one jump)
+  bs2.add(bridge.center.clone().add(new Vector3(0, 1, -1)), 'wood', null);
+  let climbed = false;
+  for (let k = 0; k < 64; k++) {
+    ps.tick({ ...emptyInput(), forward: 1, jump: k > 2 && k < 20, yaw: 0 }, TICK_DT);
+    if (ps.state.onGround && ps.state.pos.y > bridge.center.y + 1.5 + 0.8) climbed = true;
   }
-  const w2 = new R.World({x:0,y:0,z:0});
-  w2.createCollider(R.ColliderDesc.cuboid(2,2,2).setTranslation(3,0,-3)); w2.step();
-  check('world geometry blocks placement', new BuildSystem(R,w2).validate(plan,pos,frame,eye) === 'occupied');
-  const w3 = new R.World({x:0,y:0,z:0});
-  const bs3 = new BuildSystem(R,w3);
-  const wall3 = planBuild('wall',new Vector3(0,0,-6),new Vector3(0,1,0),new Vector3(0,0,-1));
-  bs3.place(wall3,pos,frame,eye);
-  const c = new Combat(R,w3,map,[]); c.windMul=0;
-  c.onWorldDamage=(handle, damage) => { bs3.damageCollider(handle,damage); };
-  for (let n=0;n<5;n++) {
-    c.fire('rifle', 99, new Vector3(0,0,0), new Vector3(0,0,-1), new Vector3(), new Vector3(0,-1,0));
-    for(let k=0;k<6;k++) c.tick(TICK_DT);
+  check('can jump onto one block', climbed, `y=${ps.state.pos.y.toFixed(2)}`);
+  check('reclaim returns your own block', bs2.reclaim(bridge.collider.handle, 'red') === bridge && bs2.inventory.wood === START_BLOCKS.wood);
+  const mapBlock = [...bs2.blocks.values()][0];
+  check('cannot reclaim enemy / map blocks', bs2.reclaim(mapBlock.collider.handle, 'red') === null);
+  // damage
+  const stone = bs.add(new Vector3(-3.5, 0.87, 0.5), 'stone', 'blue');
+  bs.damageCollider(stone.collider.handle, 100);
+  check('material determines HP', stone.maxHp === BLOCK_MATERIALS.stone.hp && stone.hp === BLOCK_MATERIALS.stone.hp - 100);
+  bs.explosion(stone.center.clone().add(new Vector3(0, 1.5, 0)), 5.5, 75);
+  check('explosion destroys a damaged block and its collider', !bs.byCollider(stone.collider.handle)
+    && !w.castRay(new R.Ray(new Vector3(-3.5, 3, 0.5), { x: 0, y: -1, z: 0 }), 1.8, true));
+  const c = new Combat(R, w, map, []);
+  c.windMul = 0;
+  c.onWorldDamage = (handle, damage) => { bs.damageCollider(handle, damage); };
+  const wood = bs.add(new Vector3(-6.5, 1.37, -8), 'wood', 'blue');
+  for (let n = 0; n < 3; n++) {
+    c.fire('rifle', 99, new Vector3(-6.5, 1.37, -2), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
+    for (let k = 0; k < 6; k++) c.tick(TICK_DT);
   }
-  check('rifle projectiles destroy a build through combat', bs3.pieces.size===0);
-  const w4 = new R.World({x:0,y:0,z:0});
-  const ps = new PlayerSim(R,w4,map,'red');
-  const bs4 = new BuildSystem(R,w4,ps.mover.collider);
-  bs4.place(plan, new Vector3(0,0,0), frame, eye);
-  ps.state.pos.set(3,2,-3); ps.state.vel.set(0,0,0); ps.state.frame.identity(); ps.mover.place(ps.state);
-  for(let k=0;k<100;k++) ps.tick(emptyInput(),TICK_DT);
-  check('player can stand on a built floor', ps.state.onGround && Math.abs(ps.state.pos.y - (-1.32 + 1.83/2)) < 0.12, `y=${ps.state.pos.y.toFixed(2)}`);
-  const w5 = new R.World({x:0,y:0,z:0}); const bs5 = new BuildSystem(R,w5);
-  const stonePlan = planBuild('floor',new Vector3(0,0,-6),new Vector3(0,1,0),new Vector3(0,0,-1));
-  check('stone placement spends stone only', bs5.place(stonePlan,pos,frame,eye,'stone') === 'ok' && bs5.resources.stone===90 && bs5.resources.wood===200);
-  const stone = [...bs5.pieces.values()][0];
-  check('material determines HP',stone.hp===BUILD_MATERIALS.stone.hp);
-  const next = buildAim('floor',eye,pos,new Vector3(0,1,0),new Vector3(0,0,-1),new Vector3(0,0,-1),{pos:stone.plan.position,piece:stone});
-  check('aiming at floor extends to next grid cell', next.equals(stone.plan.cell.clone().add(new Vector3(0,0,-3))));
-  const edgeWall = planBuild('wall',stone.plan.cell,new Vector3(0,1,0),new Vector3(0,0,-1));
-  check('wall connects to floor on shared edge',bs5.place(edgeWall,pos,frame,eye,'metal')==='ok');
-  const wall5=[...bs5.pieces.values()].find(p=>p.material==='metal')!;
-  const top=buildAim('wall',eye,pos,new Vector3(0,1,0),new Vector3(0,0,-1),new Vector3(0,0,-1),{pos:wall5.plan.cell.clone().add(new Vector3(0,1,0)),piece:wall5});
-  check('aiming high on wall selects next level',top.equals(wall5.plan.cell.clone().add(new Vector3(0,3,0))));
-  bs5.damageCollider(stone.collider.handle,100); check('stone survives rifle damage',stone.hp===100);
-  check('reclaim returns half to matching material',bs5.reclaim(stone.collider.handle)===stone && bs5.resources.stone===95 && bs5.resources.wood===200);
-  check('reclaim rejects non-building',bs5.reclaim(999999)===null);
+  check('three rifle hits break a wood block', !bs.byCollider(wood.collider.handle), `hp=${wood.hp} ev=${c.events.map((e) => e.type).join(',')}`);
+}
+
+// Regression: building on the real map works where the old 3 m grid sank pieces into the street.
+{
+  const w = buildPhysicsWorld(R, map);
+  const ps = new PlayerSim(R, w, map, 'red');
+  const bs = new BlockSystem(R, w, ps.mover.collider);
+  const up = new Vector3(0, 1, 0);
+  for (const [x, z] of [[0, -8], [5, 10], [-12, 3]]) {
+    ps.state.pos.set(x, -85.5, z); ps.state.vel.set(0, 0, 0); ps.state.frame.identity(); ps.mover.place(ps.state);
+    for (let k = 0; k < 90; k++) ps.tick(emptyInput(), TICK_DT);
+    const eye = ps.state.pos.clone().add(new Vector3(0, 0.71, 0));
+    const dir = new Vector3(0, -0.7, -1).normalize();
+    const t = bs.target(eye, dir, ps.state.pos, up, new Vector3(0, 0, -1));
+    const feet = ps.state.pos.y - 0.915;
+    const res = t && bs.validate(t.center, ps.state.pos, ps.state.frame, eye, 'wood');
+    check(`street block at ${x},${z} is placeable and flush`, res === 'ok' && Math.abs(t!.center.y - 0.5 - feet) < 0.05,
+      `${res} bottom-feet=${t ? (t.center.y - 0.5 - feet).toFixed(2) : '-'}`);
+  }
+}
+
+// Match: generators, shop, fortified enemy beds, win / lose.
+{
+  const w = buildPhysicsWorld(R, map);
+  const ps = new PlayerSim(R, w, map, 'red');
+  const bs = new BlockSystem(R, w, ps.mover.collider);
+  const m = new Match(R, w, map, bs, 'red', ps.mover.collider);
+  const fortOf = (team: string) => [...bs.blocks.values()].filter((b) => b.team === team).length;
+  check('enemy beds are fortified, own bed is not', TEAMS.every((t) => t.id === 'red' ? fortOf(t.id) === 0 : fortOf(t.id) >= 30),
+    TEAMS.map((t) => `${t.id}=${fortOf(t.id)}`).join(' '));
+  const gen = m.generators.find((g) => g.currency === 'copper')!;
+  const away = new Vector3(0, 500, 0);
+  for (let k = 0; k < 64 * 5; k++) m.tick(TICK_DT, away);
+  check('copper generator accumulates', gen.stored === 5, `stored=${gen.stored}`);
+  for (let k = 0; k < 64 * 100; k++) m.tick(TICK_DT, away);
+  check('generator caps', gen.stored === GENERATORS.copper.cap);
+  m.tick(TICK_DT, gen.pos.clone().addScaledVector(gen.up, 0.95));
+  check('walking onto the generator collects', m.wallet.copper === GENERATORS.copper.cap && gen.stored === 0 && m.events.some((e) => e.type === 'pickup'));
+  const stoneItem = SHOP.find((i) => i.id === 'stone')!;
+  check('shop sells blocks', m.buy(stoneItem) === 'ok' && bs.inventory.stone === 12 && m.wallet.copper === GENERATORS.copper.cap - 24);
+  check('shop refuses without money', m.buy(SHOP.find((i) => i.id === 'metal')!) === 'money' && bs.inventory.metal === 0);
+  check('player can stand at the shop', m.nearShop(new Vector3(...map.spawns.red.pos)) === false && m.shop !== null);
+  // enemy bed: walled off from the roof, reachable after breaking the wall
+  const blue = m.bed('blue');
+  const st = map.statues.find((s) => s.team === 'blue')!;
+  const bup = new Vector3(...st.up);
+  const roofEye = blue.pos.clone().addScaledVector(bup, -4 + 1.625).add(new Vector3(3, 0, 0).applyQuaternion(new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), bup)));
+  check('fortification blocks the enemy bed', m.reachableBed(roofEye) === null);
+  for (const b of [...bs.blocks.values()]) if (b.team === 'blue') bs.damageCollider(b.collider.handle, 1000);
+  check('enemy bed reachable once the wall is gone', m.reachableBed(roofEye) === blue, `d=${roofEye.distanceTo(blue.pos).toFixed(2)}`);
+  for (let k = 0; k < 64 * 2; k++) m.breakTick(TICK_DT, roofEye, true);
+  check('holding E breaks the bed', !blue.alive && m.events.some((e) => e.type === 'bedBroken' && e.team === 'blue'));
+  check('death with own bed = respawn', m.onDeath() === true && m.result === null);
+  for (const t of TEAMS) if (t.id !== 'red') m.destroyBed(t.id);
+  check('all enemy beds broken = win', m.result === 'win' && m.events.some((e) => e.type === 'win'));
+  const m2 = new Match(R, w, map, new BlockSystem(R, w), 'red');
+  m2.destroyBed('red');
+  check('no bed = eliminated on death', m2.onDeath() === false && m2.result === 'lose');
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

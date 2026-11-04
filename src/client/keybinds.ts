@@ -1,30 +1,35 @@
 import { Vector3 } from 'three';
 import { PLAYER_HEIGHT, WORLD } from '../shared/constants';
+import { SHOP } from '../shared/match';
 import { upOf } from '../shared/math';
 import type { PlayerSim } from '../shared/sim';
 import { TEAMS } from '../shared/teams';
-import type { BuildController } from './buildController';
+import type { BlockController } from './blockController';
 import type { createDebugGui, DebugToggles } from './debugGui';
 import type { Hud } from './hud';
 import type { Input } from './input';
 import type { LocalPlayer } from './localPlayer';
+import type { MatchUi } from './matchUi';
 import type { PlayerCombat } from './playerCombat';
 
 export interface KeyContext {
   input: Input;
   sim: PlayerSim;
   local: LocalPlayer;
-  build: BuildController;
+  build: BlockController;
   player: PlayerCombat;
+  ui: MatchUi;
+  /** Is the player standing at their shop? */
+  nearShop: () => boolean;
   hud: Hud;
   toggles: DebugToggles;
   applyToggles: () => void;
   gui: ReturnType<typeof createDebugGui>;
 }
 
-/** Edge-triggered keyboard shortcuts (weapons, build mode, debug). Call once per frame. */
+/** Edge-triggered keyboard shortcuts (weapons, blocks, shop, debug). Call once per frame. */
 export function createKeyHandler(ctx: KeyContext): () => void {
-  const { input, sim, local, build, player, hud, toggles, gui } = ctx;
+  const { input, sim, local, build, player, ui, hud, toggles, gui } = ctx;
   let guiVisible = false;
 
   return () => {
@@ -33,14 +38,19 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     TEAMS.forEach((t, i) => {
       if (shift && input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...t.down));
     });
+    // E: shop when standing at it (holding E at an enemy crystal is handled every frame by the caller)
+    if (input.take('KeyE') && (ui.shopOpen || ctx.nearShop())) ui.toggleShop();
+    if (ui.shopOpen) {
+      SHOP.forEach((_, i) => { if (input.take(`Digit${i + 1}`)) ui.buy(i); });
+    } else {
+      if (input.take('Digit1')) { build.active = false; player.pendingSelect = 'rifle'; }
+      if (input.take('Digit2')) { build.active = false; player.pendingSelect = 'grenade'; }
+      if (input.take('Digit3')) build.active = true;
+    }
     if (input.take('KeyB')) build.active = !build.active;
-    if (input.take('Digit1')) { build.active = false; player.pendingSelect = 'rifle'; }
-    if (input.take('Digit2')) { build.active = false; player.pendingSelect = 'grenade'; }
-    if (input.take('Digit3')) build.select('wall');
-    if (input.take('Digit4')) build.select('floor');
-    if (input.take('Digit5')) build.select('ramp');
-    if (!build.active && input.take('KeyQ')) player.toggleWeapon();
-    if (input.take('KeyR')) { if (build.active) build.rotate(); else player.pendingReload = true; }
+    if (input.take('KeyQ')) { if (build.active) build.cycleMaterial(1); else player.toggleWeapon(); }
+    if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
+    if (input.take('KeyR')) player.pendingReload = true;
     if (input.take('KeyK')) sim.respawn('manual');
     if (input.take('KeyN')) {
       sim.state.noclip = !sim.state.noclip;

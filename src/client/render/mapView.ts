@@ -182,6 +182,8 @@ function buildHouses(houses: HouseDef[]): { walls: BufferGeometry; roofs: Buffer
 export interface MapView {
   group: Group;
   update(time: number, dt: number): void;
+  /** Show / hide a team's bed crystal. */
+  setBedAlive(team: string, alive: boolean): void;
 }
 
 export function buildMapView(map: MapData): MapView {
@@ -334,11 +336,19 @@ export function buildMapView(map: MapData): MapView {
     new LineBasicMaterial({ color: new Color(2.4, 1.7, 0.6) }));
   group.add(edges);
 
-  // --- floating statue crystals
+  // --- bed crystals (no collider; hidden when the bed is broken) + small floating markers above them
   const spinners: { mesh: Mesh; up: Vector3; base: Vector3; phase: number }[] = [];
+  const beds = new Map<string, Object3D[]>();
   const octa = new OctahedronGeometry(0.7);
+  const unitOcta = new OctahedronGeometry(1);
   for (const s of map.statues) {
+    const crystal = new Mesh(unitOcta, new MeshBasicMaterial({ color: new Color(s.color).multiplyScalar(1.6) }));
+    crystal.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(...s.up));
+    crystal.scale.set(0.9, 2.2, 0.9);
+    crystal.position.set(...s.bed);
+    group.add(crystal);
     const m = new Mesh(octa, new MeshBasicMaterial({ color: new Color(s.color).multiplyScalar(2.5) }));
+    beds.set(s.team, [crystal, m]);
     const up = new Vector3(...s.up);
     m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), up);
     const base = new Vector3(...s.pos);
@@ -369,6 +379,9 @@ export function buildMapView(map: MapData): MapView {
   const water = mats.water as MeshStandardMaterial;
   return {
     group,
+    setBedAlive(team, alive) {
+      for (const o of beds.get(team) ?? []) o.visible = alive;
+    },
     update(time, dt) {
       water.userData.tri.triTime.value = time * 0.03;
       for (const s of spinners) {

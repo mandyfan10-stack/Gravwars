@@ -1,0 +1,184 @@
+import { Vector3 } from 'three';
+import { BlockMaterial, BlockSystem } from './blocks';
+import type { MapData } from './map';
+import type { PhysicsWorld, Rapier } from './physics';
+import { TeamId } from './teams';
+
+export type Currency = 'copper' | 'crystal';
+export const CURRENCY_LABEL: Record<Currency, string> = { copper: 'медь', crystal: 'кристаллы' };
+
+/** Generator output: one unit every `interval` s, up to `cap` waiting to be picked up. */
+export const GENERATORS: Record<Currency, { interval: number; cap: number }> = {
+  copper: { interval: 1, cap: 48 },
+  crystal: { interval: 15, cap: 4 },
+};
+/** Walk this close (player centre → generator pad) to collect. */
+export const PICKUP_RADIUS = 2.4;
+/** Reach to the enemy crystal (eye → crystal centre) and hold time to break it. */
+export const BED_REACH = 4.5;
+export const BED_BREAK_TIME = 1.5;
+export const SHOP_RADIUS = 4.5;
+/** Copper for killing an enemy. */
+export const KILL_REWARD = 3;
+
+export type ShopItem =
+  | { id: string; label: string; price: number; currency: Currency; kind: 'blocks'; material: BlockMaterial; count: number }
+  | { id: string; label: string; price: number; currency: Currency; kind: 'heal' };
+
+export const SHOP: ShopItem[] = [
+  { id: 'wood', label: 'Дерево ×16', price: 8, currency: 'copper', kind: 'blocks', material: 'wood', count: 16 },
+  { id: 'stone', label: 'Камень ×12', price: 24, currency: 'copper', kind: 'blocks', material: 'stone', count: 12 },
+  { id: 'metal', label: 'Металл ×6', price: 3, currency: 'crystal', kind: 'blocks', material: 'metal', count: 6 },
+  { id: 'heal', label: 'Аптечка', price: 10, currency: 'copper', kind: 'heal' },
+];
+
+export interface Generator { currency: Currency; pos: Vector3; up: Vector3; stored: number; timer: number }
+export interface Bed { team: TeamId; pos: Vector3; up: Vector3; alive: boolean }
+
+export type MatchEvent =
+  | { type: 'pickup'; currency: Currency; amount: number }
+  | { type: 'bedBroken'; team: TeamId }
+  | { type: 'win'; time: number }
+  | { type: 'lose' };
+
+/**
+ * Bedwars rules for one player's team: generators, wallet, shop, beds, win / lose.
+ * Enemy beds start fortified with blocks.
+ */
+export class Match {
+  readonly beds: Bed[];
+  readonly generators: Generator[] = [];
+  readonly wallet: Record<Currency, number> = { copper: 0, crystal: 0 };
+  readonly events: MatchEvent[] = [];
+  time = 0;
+  result: 'win' | 'lose' | null = null;
+  /** Bed currently being broken and progress 0..1. */
+  breaking: { bed: Bed; progress: number } | null = null;
+
+  /** Own shop kiosk, if the team has a base. */
+  readonly shop: Vector3 | null;
+
+  constructor(private R: Rapier, private world: PhysicsWorld, map: MapData, readonly blocks: BlockSystem, readonly team: TeamId,
+    /** The local player's capsule: ignored by line-of-sight rays that start at the eye. */
+    private playerCollider?: ReturnType<PhysicsWorld['createCollider']>) {
+    const base = map.bases.find((b) => b.team === team);
+    this.shop = base ? new Vector3(...base.shop) : null;
+    this.beds = map.statues.map((s) => ({ team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up), alive: true }));
+    for (const b of map.bases) this.generators.push({ currency: 'copper', pos: new Vector3(...b.generator), up: new Vector3(...b.up), stored: 0, timer: 0 });
+    for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
+    // fortify enemy beds
+    for (const s of map.statues) {
+      if (s.team === team) continue;
+      for (const f of s.fort) {
+        const p = new Vector3(...f.pos);
+        if (blocks.isFree(p)) blocks.add(p, f.material, s.team as TeamId, false);
+      }
+    }
+    blocks.refresh();
+  }
+
+  bed(team: TeamId) {
+    return this.beds.find((b) => b.team === team)!;
+  }
+
+  get ownBedAlive() {
+    return this.bed(this.team).alive;
+  }
+
+  /** Enemy beds still standing. */
+  get enemiesLeft() {
+    return this.beds.filter((b) => b.team !== this.team && b.alive).length;
+  }
+
+  /** Generators + pickup. Runs at the simulation tick. */
+  tick(dt: number, playerPos: Vector3) {
+    if (!this.result) this.time += dt;
+    for (const g of this.generators) {
+      const def = GENERATORS[g.currency];
+      if (g.stored >= def.cap) g.timer = 0;
+      else {
+        g.timer += dt;
+        if (g.timer >= def.interval) {
+          g.timer -= def.interval;
+          g.stored++;
+        }
+      }
+      if (g.stored > 0 && playerPos.distanceTo(g.pos) < PICKUP_RADIUS) {
+        this.wallet[g.currency] += g.stored;
+        this.events.push({ type: 'pickup', currency: g.currency, amount: g.stored });
+        g.stored = 0;
+      }
+    }
+  }
+
+  /** Nearest enemy bed within reach and not walled off by blocks / map geometry. */
+  reachableBed(eye: Vector3): Bed | null {
+    let best: Bed | null = null;
+    let bestD = BED_REACH;
+    for (const b of this.beds) {
+      if (!b.alive || b.team === this.team) continue;
+      const d = eye.distanceTo(b.pos);
+      if (d > bestD || !this.lineOfSight(eye, b.pos)) continue;
+      best = b;
+      bestD = d;
+    }
+    return best;
+  }
+
+  lineOfSight(from: Vector3, to: Vector3) {
+    const d = to.clone().sub(from);
+    const len = d.length();
+    // the crystal has no collider; stop short of it so the pedestal top does not count
+    const hit = this.world.castRay(new this.R.Ray(from, d.divideScalar(len)), Math.max(0, len - 0.9), true, undefined, undefined, this.playerCollider);
+    return !hit;
+  }
+
+  /** Hold-to-break the enemy crystal. Returns the bed being broken (for the HUD), if any. */
+  breakTick(dt: number, eye: Vector3, holding: boolean): Bed | null {
+    const bed = holding && !this.result ? this.reachableBed(eye) : null;
+    if (!bed) {
+      this.breaking = null;
+      return null;
+    }
+    if (this.breaking?.bed !== bed) this.breaking = { bed, progress: 0 };
+    this.breaking.progress += dt / BED_BREAK_TIME;
+    if (this.breaking.progress >= 1) {
+      this.breaking = null;
+      this.destroyBed(bed.team);
+    }
+    return bed;
+  }
+
+  destroyBed(team: TeamId) {
+    const bed = this.bed(team);
+    if (!bed.alive) return;
+    bed.alive = false;
+    this.events.push({ type: 'bedBroken', team });
+    if (!this.result && this.enemiesLeft === 0) {
+      this.result = 'win';
+      this.events.push({ type: 'win', time: this.time });
+    }
+  }
+
+  /** Called when the local player dies. False = eliminated (no bed). */
+  onDeath(): boolean {
+    if (this.ownBedAlive) return true;
+    if (!this.result) {
+      this.result = 'lose';
+      this.events.push({ type: 'lose' });
+    }
+    return false;
+  }
+
+  /** Buy an item. `heal` is applied by the caller. */
+  buy(item: ShopItem): 'ok' | 'money' {
+    if (this.wallet[item.currency] < item.price) return 'money';
+    this.wallet[item.currency] -= item.price;
+    if (item.kind === 'blocks') this.blocks.inventory[item.material] += item.count;
+    return 'ok';
+  }
+
+  nearShop(pos: Vector3) {
+    return !!this.shop && pos.distanceTo(this.shop) < SHOP_RADIUS;
+  }
+}
