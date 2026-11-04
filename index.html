@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gravity Bedwars — прототип</title>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <div id="crosshair"></div>
+      <div id="speed"><span id="speed-val">0</span><small>u/s</small></div>
+      <div id="grav"><span id="grav-dot"></span><span id="grav-name"></span></div>
+      <div id="info"></div>
+      <div id="toast"></div>
+      <div id="compass-label">Гравитации</div>
+      <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+      <div id="hurt"></div>
+      <div id="hp"><span class="heart">✚</span><span id="hp-val">100</span><div class="bar"><div id="hp-bar"></div></div></div>
+      <div id="weapon"><div id="weapon-name">Винтовка</div><div id="ammo">30</div></div>
+      <div id="wind"><div class="label">Ветер</div><div id="wind-arrow"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 10h11V5l7 7-7 7v-5H3z" fill="currentColor"/></svg></div><div id="wind-val">0</div></div>
+      <div id="feed"></div>
+      <div id="build-hud" style="display:none"></div>
+      <div id="build-wheel"></div>
+    </div>
+    <div id="overlay">
+      <div class="menu-shell">
+        <div class="menu-kicker"><span></span> ЛОКАЛЬНЫЙ ПРОТОТИП · THREE.JS</div>
+        <h1>GRAVITY<br><em>BEDWARS</em></h1>
+        <p class="menu-desc">Стройся между мирами. Меняй гравитацию. Защищай свою базу.</p>
+        <div class="menu-actions">
+          <button class="menu-primary" id="start-game">Играть <span>↗</span></button>
+          <button class="menu-secondary" id="show-help">Управление</button>
+          <button class="menu-secondary" id="show-settings">Настройки</button>
+        </div>
+        <div id="menu-help" class="menu-details" hidden>
+          <div><b>WASD / мышь</b> — движение и обзор · <b>пробел / колесо</b> — прыжок</div>
+          <div><b>ЛКМ</b> — огонь · <b>1 / 2</b> — винтовка / граната · <b>R</b> — перезарядка</div>
+          <div><b>B</b> — строительство · <b>3 / 4 / 5</b> — стена / пол / пандус</div>
+          <div><b>Q / Z</b> — деталь / материал (удерживать — меню) · <b>R</b> — поворот</div>
+          <div><b>ЛКМ</b> — строить · <b>ПКМ</b> — разобрать и вернуть часть материалов</div>
+          <div><b>Shift+1–6</b> — гравитация · <b>N</b> — полёт · <b>K</b> — респавн · <b>T</b> — в центр</div>
+          <div><b>G</b> — отладка · <b>P</b> — порталы · <b>Esc</b> — пауза</div>
+        </div>
+        <div id="menu-settings" class="menu-details" hidden>
+          <label>Громкость <input id="volume" type="range" min="0" max="1" step="0.05" value="0.45"><output id="volume-value">45%</output></label>
+          <label>Чувствительность <input id="sensitivity" type="range" min="0.0008" max="0.005" step="0.0002" value="0.0022"><output id="sensitivity-value">100%</output></label>
+          <label>Поле зрения <input id="fov" type="range" min="60" max="110" step="1" value="80"><output id="fov-value">80°</output></label>
+        </div>
+        <div class="menu-footer">6 ГРАВИТАЦИЙ <span>·</span> ОДИН МИР <span>·</span> ВЕРСИЯ В РАЗРАБОТКЕ</div>
+      </div>
+      <div class="menu-side">СТРОЙ <span>/</span> СРАЖАЙСЯ <span>/</span> ВЫЖИВАЙ</div>
+    </div>
+    <script type="module" src="/src/client/main.ts"></script>
+  </body>
+</html>
