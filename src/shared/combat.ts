@@ -4,7 +4,7 @@ import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 import { crossesPortal, PortalRuntime } from './portals';
 import type { TeamId } from './teams';
-import { WeaponId, WEAPONS } from './weapons';
+import { damageFalloff, WeaponId, WEAPONS } from './weapons';
 import { Wind } from './wind';
 
 /** Anything that can be shot: a capsule standing along `up`. */
@@ -27,6 +27,8 @@ export interface Projectile {
   /** No friendly fire: projectiles ignore the shooter's teammates (but grenades still hurt the shooter). */
   team: TeamId | null;
   pos: Vector3;
+  /** Where it was fired from (damage falls off with the distance). */
+  origin: Vector3;
   vel: Vector3;
   /** Gravity direction of the shooter at fire time. */
   down: Vector3;
@@ -110,11 +112,30 @@ export class Combat {
   private nextId = 1;
   onWorldDamage: (handle: number, damage: number) => void = () => {};
   onExplosion: (pos: Vector3, radius: number, damage: number) => void = () => {};
+  /** Handles of character-controller colliders: rays pass through them (capsules are tested analytically). */
+  private readonly characters = new Set<number>();
+  /** Ray filter that skips every character capsule. */
+  readonly notCharacter = (c: { handle: number }) => !this.characters.has(c.handle);
 
   constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private portals: PortalRuntime[],
     /** Character-controller colliders to ignore (projectiles test player capsules analytically). */
-    private ignore: unknown[] = [], windSeed = 2024) {
+    characters: { handle: number }[] = [], windSeed = 2024) {
     this.wind = new Wind(windSeed);
+    for (const c of characters) this.addCharacter(c);
+  }
+
+  addCharacter(collider: { handle: number }) {
+    this.characters.add(collider.handle);
+  }
+
+  /** Clear line between two points (character capsules do not block). */
+  lineOfSight(from: Vector3, to: Vector3, margin = 0.3) {
+    const d = _seg.copy(to).sub(from);
+    const len = d.length();
+    if (len < 1e-6) return true;
+    const hit = this.world.castRay(new this.R.Ray(from, d.divideScalar(len)), Math.max(0, len - margin), true,
+      undefined, undefined, undefined, undefined, this.notCharacter);
+    return !hit;
   }
 
   target(id: number) {
@@ -124,7 +145,7 @@ export class Combat {
   fire(weapon: WeaponId, owner: number, origin: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3) {
     const def = WEAPONS[weapon];
     const p: Projectile = {
-      id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(),
+      id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(), origin: origin.clone(),
       vel: dir.clone().normalize().multiplyScalar(def.speed).addScaledVector(ownerVel, def.inherit),
       down: down.clone().normalize(), age: 0, resting: false, alive: true,
     };
@@ -139,8 +160,7 @@ export class Combat {
     if (len < 1e-6) return null;
     d.divideScalar(len);
     const ray = new this.R.Ray(from, d);
-    const ex = this.ignore[0] as Parameters<PhysicsWorld['castRayAndGetNormal']>[5];
-    const hit = this.world.castRayAndGetNormal(ray, len, true, undefined, undefined, ex);
+    const hit = this.world.castRayAndGetNormal(ray, len, true, undefined, undefined, undefined, undefined, this.notCharacter);
     if (!hit) return null;
     return { t: hit.timeOfImpact / len, normal: new Vector3(hit.normal.x, hit.normal.y, hit.normal.z), handle: hit.collider.handle };
   }
@@ -247,14 +267,15 @@ export class Combat {
       if (th && (!wh || th.t <= wh.t)) {
         p.alive = false;
         p.pos.copy(end);
-        this.damage(th.target, Math.round(def.damage * (th.head ? def.headMul : 1)), p.owner, th.head, end);
+        const fall = damageFalloff(def, p.origin.distanceTo(end));
+        this.damage(th.target, Math.max(1, Math.round(def.damage * fall * (th.head ? def.headMul : 1))), p.owner, th.head, end);
         continue;
       }
       if (wh) {
         if (p.weapon === 'rifle') {
           p.alive = false;
           p.pos.copy(end);
-          this.onWorldDamage(wh.handle, def.damage);
+          this.onWorldDamage(wh.handle, Math.max(1, Math.round(def.damage * damageFalloff(def, p.origin.distanceTo(end)))));
           this.events.push({ type: 'impact', pos: end, normal: wh.normal });
           continue;
         }

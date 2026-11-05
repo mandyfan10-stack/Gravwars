@@ -9,14 +9,10 @@ export class Input {
   onMouseMove: (dx: number, dy: number) => boolean = () => false;
   onWheel: (delta: number) => boolean = () => false;
 
-  constructor(private canvas: HTMLCanvasElement, overlay: HTMLElement) {
+  constructor(private canvas: HTMLCanvasElement, private overlay: HTMLElement) {
     document.getElementById('start-game')!.addEventListener('click', () => canvas.requestPointerLock());
     canvas.addEventListener('click', () => !this.locked && canvas.requestPointerLock());
-    document.addEventListener('pointerlockchange', () => {
-      this.locked = document.pointerLockElement === canvas;
-      overlay.classList.toggle('hidden', this.locked);
-      if (!this.locked) { this.keys.clear(); this.pressed.clear(); }
-    });
+    document.addEventListener('pointerlockchange', () => this.setLocked(document.pointerLockElement === canvas));
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Tab') e.preventDefault();
       if (e.code === 'Escape' && this.locked) { document.exitPointerLock(); return; }
@@ -46,6 +42,15 @@ export class Input {
       else this.wheelJump = 3;
     }, { passive: false });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
+  }
+
+  /** Pointer lock state (also used by the screenshot script, where headless Chrome has no pointer lock). */
+  setLocked(on: boolean) {
+    this.locked = on;
+    this.overlay.classList.toggle('hidden', on);
+    document.body.classList.toggle('playing', on);
+    if (!on) { this.keys.clear(); this.pressed.clear(); }
+    document.dispatchEvent(new Event('game-lock'));
   }
 
   down(code: string) {

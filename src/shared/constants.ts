@@ -51,10 +51,14 @@ export const DEFAULT_MOVEMENT: MovementConfig = {
 
 export const WORLD = {
   /** Half size of the central island cube. */
-  coreHalf: 20,
-  /** Distance from world center to the top surface of each team island. */
-  islandDistance: 87,
-  islandHalf: 30,
+  coreHalf: 60,
+  /** Distance from world center to the ground of each team base island. */
+  islandDistance: 215,
+  /** Half extent of a base island (5×5 city tiles of 28 m). */
+  islandHalf: 70,
+  /** Distance from world center to the ground of the middle islands (between base and core). */
+  midDistance: 115,
+  midHalf: 42,
   /** Leaving this sphere = falling into the void = death. */
-  killRadius: 170,
+  killRadius: 300,
 };

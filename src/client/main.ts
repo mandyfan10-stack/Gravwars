@@ -1,6 +1,12 @@
+import '@fontsource/inter/400.css';
+import '@fontsource/inter/500.css';
+import '@fontsource/inter/600.css';
+import '@fontsource/inter/700.css';
+import '@fontsource/inter/800.css';
 import './style.css';
 import { Quaternion, Vector3 } from 'three';
 import { BlockSystem } from '../shared/blocks';
+import { BotManager } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { generateMap } from '../shared/map';
@@ -14,11 +20,12 @@ import type { WeaponId } from '../shared/weapons';
 import { GameAudio } from './audio';
 import { BlockController } from './blockController';
 import { createDebugGui, DebugToggles } from './debugGui';
-import { Dummies } from './dummies';
 import { Hud, teamHex } from './hud';
 import { Input } from './input';
 import { createKeyHandler } from './keybinds';
 import { LocalPlayer } from './localPlayer';
+import { Guide } from './guide';
+import { icon } from './icons';
 import { MatchUi } from './matchUi';
 import { setupMenu } from './menu';
 import { PlayerCombat } from './playerCombat';
@@ -26,7 +33,10 @@ import { Fx } from './render/fx';
 import { GeneratorView } from './render/generatorView';
 import { GravityGizmo } from './render/gizmo';
 import { Graphics } from './render/graphics';
+import { loadAssets } from './render/assets';
+import { BotView } from './render/botView';
 import { buildMapView } from './render/mapView';
+import { buildPropView } from './render/propView';
 import { PortalView } from './render/portalView';
 import { ViewModel } from './render/viewmodel';
 
@@ -44,15 +54,20 @@ async function main() {
   combat.onWorldDamage = (handle, damage) => { blocks.damageCollider(handle, damage); };
   combat.onExplosion = (pos, radius, damage) => blocks.explosion(pos, radius, damage);
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
+  const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
+  blocks.characters.push(...bots.bots.map((b) => b.sim.mover.collider));
 
   // --- rendering
+  const assets = await loadAssets();
   const gfx = new Graphics(canvas);
   const { renderer, scene, camera } = gfx;
   const mapView = buildMapView(map);
   scene.add(mapView.group);
+  await document.fonts.load('800 64px Inter', 'МАГАЗИН КРАСНЫЕ'); // decals are drawn on canvases
+  scene.add(buildPropView(map, assets));
   const portalView = new PortalView(renderer, scene, sim.portals);
   const fx = new Fx(scene);
-  const viewModel = new ViewModel(sim.team.color);
+  const viewModel = new ViewModel(sim.team.color, assets);
   viewModel.environment = scene.environment;
   const gizmo = new GravityGizmo();
 
@@ -61,10 +76,12 @@ async function main() {
   const audio = new GameAudio();
   const hud = new Hud();
   const player = new PlayerCombat(sim, combat, hud, fx, audio, viewModel);
-  const dummies = new Dummies(scene, combat, map);
+  const botView = new BotView(scene, bots, assets);
   const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
+  build.onPlace = () => viewModel.dig();
   const ui = new MatchUi(match, hud, audio, () => player.heal());
   const generators = new GeneratorView(scene, match);
+  const guide = new Guide(match, bots, sim);
   player.canRespawn = () => match.onDeath();
   player.onKill = () => {
     match.wallet.copper += KILL_REWARD;
@@ -83,6 +100,7 @@ async function main() {
 
   const local = new LocalPlayer(sim, input);
   local.onTick = () => {
+    if (!match.result) bots.tick(TICK_DT);
     player.tick(!build.active && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
   };
@@ -106,10 +124,14 @@ async function main() {
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, ready: true,
+    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, bots, map, hud, icon, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
+    },
+    /** Start / resume without pointer lock (screenshots). */
+    play() {
+      input.setLocked(true);
     },
     look(yaw: number, pitch: number) {
       input.yaw = yaw;
@@ -147,8 +169,9 @@ async function main() {
     }
     ui.update(match.nearShop(sim.state.pos), reachable);
     generators.update(time);
+    guide.update(camera);
 
-    dummies.update(time, dt);
+    botView.update(dt, local.alpha);
     fx.down.copy(gfx.upDir).negate();
     fx.update(dt, combat, time);
     mapView.update(time, dt);
@@ -166,13 +189,14 @@ async function main() {
     });
     lastYaw = input.yaw;
     lastPitch = input.pitch;
-    if (!build.active) viewModel.render(renderer);
+    viewModel.setTool(build.active);
+    viewModel.render(renderer);
 
     // HUD wind: what the local player's projectiles feel
     const w = combat.wind.felt(combat.time, pUp.clone().negate());
     moveBasis(sim.state.frame, input.yaw, _wf, _wr);
     hud.setWind(Math.atan2(w.dot(_wr), w.dot(_wf)) - Math.PI / 2, w.length(), 0);
-    hud.setWeapon(player.weapons);
+    hud.setWeapon(player.weapons, build.active);
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
     gizmo.render(renderer, viewQ, teamByDown(sim.gravityDown()).id);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);

@@ -3,6 +3,7 @@ import { Bed, CURRENCY_LABEL, Match, MatchEvent, SHOP } from '../shared/match';
 import { getTeam, TEAMS } from '../shared/teams';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
+import { icon } from './icons';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -56,13 +57,14 @@ export class MatchUi {
       this.hud.killfeed(e.team === this.match.team ? 'Твой кристалл разрушен!' : `Кристалл: ${name(e.team)} — разрушен`);
       this.hud.toast(e.team === this.match.team ? 'Кристалл потерян — смерть станет последней' : `Кристалл разрушен · осталось ${this.match.enemiesLeft}`,
         e.team === this.match.team ? '#ff6b6b' : '#ffe08a', 2.2);
-    } else if (e.type === 'win') this.showResult(`ПОБЕДА<small>Все кристаллы разрушены за ${formatTime(e.time)}</small>`, '#ffe08a');
-    else if (e.type === 'lose') this.showResult('ВЫБЫЛ<small>Кристалла больше нет</small>', '#ff6b6b');
+    } else if (e.type === 'win') this.showResult(`${icon('trophy')}Победа<small>Все команды врагов уничтожены за ${formatTime(e.time)}</small>`, '#ffd23b');
+    else if (e.type === 'lose') this.showResult(`${icon('skull')}Выбыл<small>Кристалла больше нет — это была последняя жизнь</small>`, '#ff6b6b');
   }
 
   private showResult(html: string, color: string) {
     this.resultEl.innerHTML = html;
-    this.resultEl.style.color = color;
+    this.resultEl.style.color = '#fff';
+    (this.resultEl.firstElementChild as SVGElement | null)?.style.setProperty('color', color);
     this.resultEl.classList.add('show');
   }
 
@@ -70,22 +72,27 @@ export class MatchUi {
     const m = this.match;
     if (this.shopOpen && !nearShop) this.shopOpen = false;
 
-    this.wallet.innerHTML = `<span class="copper">● ${m.wallet.copper}</span><span class="crystal">◆ ${m.wallet.crystal}</span><span class="time">${formatTime(m.time)}</span>`;
+    this.wallet.innerHTML = `<span class="copper" title="Медь">${icon('coins')}${m.wallet.copper}</span>`
+      + `<span class="crystal" title="Кристаллы">${icon('crystal')}${m.wallet.crystal}</span><span class="time">${formatTime(m.time)}</span>`;
 
-    const key = m.beds.map((b) => +b.alive).join('');
+    const key = m.beds.map((b) => `${+b.alive}${m.membersAlive(b.team)}${+m.isOut(b.team)}`).join('');
     if (key !== this.bedsKey) {
       this.bedsKey = key;
       this.bedsEl.innerHTML = TEAMS.map((t) => {
         const bed = m.bed(t.id);
         const mine = t.id === m.team ? ' mine' : '';
-        return `<span class="bed${bed.alive ? '' : ' dead'}${mine}" style="color:${teamHex(t.color)}" title="${t.name}">${bed.alive ? '◆' : '✕'}</span>`;
-      }).join('') + `<span class="goal">Цель: кристаллы врагов · осталось ${m.enemiesLeft}</span>`;
+        const out = m.isOut(t.id);
+        // without a crystal the team lives as long as its members: show how many are left
+        const inner = out ? icon('skull') : bed.alive ? icon('crystal') : `${icon('crystal')}<b>${m.membersAlive(t.id)}</b>`;
+        const state = out ? 'выбыли' : bed.alive ? 'кристалл цел' : `кристалл сломан, бойцов: ${m.membersAlive(t.id)}`;
+        return `<span class="bed${bed.alive ? '' : ' dead'}${out ? ' out' : ''}${mine}" style="--c:${teamHex(t.color)}" title="${t.name}: ${state}">${inner}</span>`;
+      }).join('') + `<span class="goal">врагов<b>${m.enemiesLeft}</b></span>`;
     }
 
     let prompt = '';
     if (m.breaking) prompt = `Ломаешь кристалл: ${getTeam(m.breaking.bed.team).name}`;
-    else if (reachable) prompt = `Удерживай <b>E</b> — сломать кристалл (${getTeam(reachable.team).name})`;
-    else if (nearShop && !this.shopOpen) prompt = '<b>E</b> — магазин';
+    else if (reachable) prompt = `<b>E</b> держи — сломать кристалл (${getTeam(reachable.team).name})`;
+    else if (nearShop && !this.shopOpen) prompt = '<b>E</b> магазин';
     this.prompt.innerHTML = prompt;
     this.prompt.style.opacity = prompt ? '1' : '0';
     this.breakEl.style.opacity = m.breaking ? '1' : '0';
@@ -93,12 +100,14 @@ export class MatchUi {
 
     this.shopEl.hidden = !this.shopOpen;
     if (this.shopOpen) {
-      this.shopEl.innerHTML = '<h3>Магазин <small>цифры — купить · E — закрыть</small></h3>' + SHOP.map((item, i) => {
+      this.shopEl.innerHTML = `<h3>${icon('shop')}Магазин<small>цифра — купить · E — закрыть</small></h3>` + SHOP.map((item, i) => {
         const afford = m.wallet[item.currency] >= item.price;
-        const icon = item.currency === 'copper' ? '●' : '◆';
         const have = item.kind === 'blocks' ? `<em>есть ${m.blocks.inventory[item.material]}</em>` : '';
-        const color = item.kind === 'blocks' ? `style="border-left-color:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : '';
-        return `<div class="item${afford ? '' : ' poor'}" ${color}><kbd>${i + 1}</kbd>${item.label}${have}<span class="price ${item.currency}">${icon} ${item.price}</span></div>`;
+        const look = item.kind === 'blocks'
+          ? `style="--c:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : 'style="--c:#ff5a6a"';
+        const ic = icon(item.kind === 'blocks' ? item.material : 'heart');
+        const cur = icon(item.currency === 'copper' ? 'coins' : 'crystal');
+        return `<div class="item${afford ? '' : ' poor'}" ${look}><kbd>${i + 1}</kbd>${ic}${item.label}${have}<span class="price ${item.currency}">${cur}${item.price}</span></div>`;
       }).join('');
     }
   }

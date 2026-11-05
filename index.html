@@ -9,52 +9,56 @@
     <canvas id="game"></canvas>
     <div id="hud">
       <div id="crosshair"></div>
-      <div id="speed"><span id="speed-val">0</span><small>u/s</small></div>
-      <div id="grav"><span id="grav-dot"></span><span id="grav-name"></span></div>
-      <div id="info"></div>
-      <div id="toast"></div>
-      <div id="compass-label">Гравитации</div>
       <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
       <div id="hurt"></div>
-      <div id="hp"><span class="heart">✚</span><span id="hp-val">100</span><div class="bar"><div id="hp-bar"></div></div></div>
-      <div id="weapon"><div id="weapon-name">Винтовка</div><div id="ammo">30</div></div>
-      <div id="wind"><div class="label">Ветер</div><div id="wind-arrow"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 10h11V5l7 7-7 7v-5H3z" fill="currentColor"/></svg></div><div id="wind-val">0</div></div>
-      <div id="feed"></div>
-      <div id="build-hud" style="display:none"></div>
-      <div id="wallet"></div>
-      <div id="beds"></div>
+      <div id="speed"><span id="speed-val">0</span><small>u/s</small></div>
+      <div id="info"></div>
+      <div class="corner tl">
+        <div id="grav" class="panel"><span id="grav-dot"></span><span id="grav-name"></span></div>
+        <div id="wallet" class="panel"></div>
+      </div>
+      <div id="markers"></div>
+      <div id="beds" class="panel"></div>
+      <div id="objective" class="panel"></div>
+      <div class="corner tr">
+        <div id="wind" class="panel"><span class="wind-ic"></span><div id="wind-arrow"><svg viewBox="0 0 24 24"><path d="M3 10h11V5l7 7-7 7v-5H3z" fill="currentColor"/></svg></div><div id="wind-val">0</div></div>
+        <div id="feed"></div>
+      </div>
+      <div id="toast"></div>
       <div id="prompt"></div>
       <div id="bed-break"><i></i></div>
-      <div id="shop" hidden></div>
+      <div id="hp" class="panel"><span class="hp-ic"></span><span id="hp-val">100</span><div class="bar"><div id="hp-bar"></div></div></div>
+      <div id="build-hud" class="panel" style="display:none"></div>
+      <div id="hotbar"></div>
+      <div id="weapon" class="panel"><span id="weapon-ic"></span><div><div id="weapon-name">Винтовка</div><div id="ammo">30</div></div></div>
+      <div id="shop" class="panel" hidden></div>
       <div id="result"></div>
     </div>
     <div id="overlay">
       <div class="menu-shell">
-        <div class="menu-kicker"><span></span> ЛОКАЛЬНЫЙ ПРОТОТИП · THREE.JS</div>
-        <h1>GRAVITY<br><em>BEDWARS</em></h1>
-        <p class="menu-desc">Собирай медь, строй мосты из блоков, прорывайся к вражеским кристаллам. Разрушь все пять.</p>
-        <div class="menu-actions">
-          <button class="menu-primary" id="start-game">Играть <span>↗</span></button>
-          <button class="menu-secondary" id="show-help">Управление</button>
-          <button class="menu-secondary" id="show-settings">Настройки</button>
-        </div>
-        <div id="menu-help" class="menu-details" hidden>
-          <div><b>WASD / мышь</b> — движение и обзор · <b>пробел / колесо</b> — прыжок</div>
-          <div><b>ЛКМ</b> — огонь · <b>1 / 2</b> — винтовка / граната · <b>R</b> — перезарядка</div>
-          <div><b>B / 3</b> — блоки · <b>Q / Z / колесо</b> — материал</div>
-          <div><b>ЛКМ</b> — ставить блок (держать — мост) · <b>ПКМ</b> — забрать свой блок</div>
-          <div><b>E</b> — магазин на базе · <b>удерживать E</b> у вражеского кристалла — сломать его</div>
-          <div><b>Shift+1–6</b> — гравитация · <b>N</b> — полёт · <b>K</b> — респавн · <b>T</b> — в центр</div>
-          <div><b>G</b> — отладка · <b>P</b> — порталы · <b>Esc</b> — пауза</div>
-        </div>
+        <div id="menu-state" hidden>Пауза</div>
+        <h1 class="logo" aria-label="Gravity Bedwars"><span class="logo-top"><i class="g-down" style="--c:var(--red)">G</i><i class="g-up" style="--c:var(--blue)">R</i><i class="g-right" style="--c:var(--green)">A</i><i class="g-left" style="--c:var(--yellow)">V</i><i class="g-down" style="--c:var(--aqua)">I</i><i class="g-up" style="--c:var(--pink)">T</i><i class="g-right" style="--c:var(--red)">Y</i></span><span class="logo-bottom">Bedwars</span></h1>
+        <nav class="menu-list">
+          <button id="start-game" class="btn btn-play">Играть</button>
+          <button id="show-help" class="btn">Управление</button>
+          <button id="show-settings" class="btn">Настройки</button>
+        </nav>
+        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок, зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>огонь / постройка</span></div><div class="row"><span class="keys"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span><span>винтовка, граната, лопатка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Q</kbd><kbd>Z</kbd></span><span>материал постройки</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–6</kbd></span><span>сменить гравитацию</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>пауза</span></div></div>
         <div id="menu-settings" class="menu-details" hidden>
           <label>Громкость <input id="volume" type="range" min="0" max="1" step="0.05" value="0.45"><output id="volume-value">45%</output></label>
           <label>Чувствительность <input id="sensitivity" type="range" min="0.0008" max="0.005" step="0.0002" value="0.0022"><output id="sensitivity-value">100%</output></label>
           <label>Поле зрения <input id="fov" type="range" min="60" max="110" step="1" value="80"><output id="fov-value">80°</output></label>
         </div>
-        <div class="menu-footer">6 ГРАВИТАЦИЙ <span>·</span> ОДИН МИР <span>·</span> ВЕРСИЯ В РАЗРАБОТКЕ</div>
       </div>
-      <div class="menu-side">СТРОЙ <span>/</span> СРАЖАЙСЯ <span>/</span> ВЫЖИВАЙ</div>
+      <aside class="menu-roster panel">
+        <h2>Шесть островов — шесть гравитаций</h2>
+        <ul>
+          <li style="--c:var(--red)">Красные <small>ты</small></li><li style="--c:var(--blue)">Синие</li>
+          <li style="--c:var(--green)">Зелёные</li><li style="--c:var(--yellow)">Жёлтые</li>
+          <li style="--c:var(--aqua)">Бирюзовые</li><li style="--c:var(--pink)">Розовые</li>
+        </ul>
+        <p>Сломай чужие кристаллы и выбей всех, кто остался без них. Свой кристалл береги: без него смерть — навсегда.</p>
+      </aside>
     </div>
     <script type="module" src="/src/client/main.ts"></script>
   </body>

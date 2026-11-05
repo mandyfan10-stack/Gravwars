@@ -126,7 +126,8 @@ export class PlayerSim {
     const s = this.state;
     const delta = new Vector3(target[0] - s.pos.x, target[1] - s.pos.y, target[2] - s.pos.z);
     const dy = delta.dot(up);
-    const vUp = Math.sqrt(2 * g * (dy + apex));
+    // apex is counted from the higher end (a descent pad throws you up a little, then down)
+    const vUp = Math.sqrt(2 * g * (Math.max(dy, 0) + apex));
     const t = (vUp + Math.sqrt(Math.max(vUp * vUp - 2 * g * dy, 0))) / g;
     const horiz = delta.addScaledVector(up, -dy).divideScalar(t);
     s.vel.copy(horiz).addScaledVector(up, vUp);

@@ -204,6 +204,7 @@ export function buildMapView(map: MapData): MapView {
   // --- instanced boxes (one draw call per material)
   const byMat = new Map<MatKind, typeof map.boxes>();
   for (const b of map.boxes) {
+    if (b.hidden) continue;
     if (!byMat.has(b.mat)) byMat.set(b.mat, []);
     byMat.get(b.mat)!.push(b);
   }
@@ -340,9 +341,12 @@ export function buildMapView(map: MapData): MapView {
   const spinners: { mesh: Mesh; up: Vector3; base: Vector3; phase: number }[] = [];
   const beds = new Map<string, Object3D[]>();
   const octa = new OctahedronGeometry(0.7);
-  const unitOcta = new OctahedronGeometry(1);
+  const unitOcta = new OctahedronGeometry(1, 0);
   for (const s of map.statues) {
-    const crystal = new Mesh(unitOcta, new MeshBasicMaterial({ color: new Color(s.color).multiplyScalar(1.6) }));
+    // faceted gem: lit facets + a strong team-coloured glow so it reads from afar and still looks solid
+    const crystal = new Mesh(unitOcta, new MeshStandardMaterial({
+      color: s.color, emissive: new Color(s.color).multiplyScalar(0.55), roughness: 0.15, metalness: 0.1, flatShading: true,
+    }));
     crystal.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(...s.up));
     crystal.scale.set(0.9, 2.2, 0.9);
     crystal.position.set(...s.bed);

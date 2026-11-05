@@ -37,7 +37,7 @@ export class Graphics {
 
     const scene = this.scene;
     scene.background = new Color(HAZE);
-    scene.fog = new FogExp2(HAZE, 0.0042);
+    scene.fog = new FogExp2(HAZE, 0.0019);
 
     this.sky = createSky();
     // image-based lighting from the (sunless) haze dome: soft warm ambient + reflections for glass/water

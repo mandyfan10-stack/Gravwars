@@ -49,6 +49,11 @@ export class LocalPlayer {
     i.pitch = k.pitch;
   }
 
+  /** Fraction of the next simulation tick already accumulated (render interpolation). */
+  get alpha() {
+    return this.acc / TICK_DT;
+  }
+
   update(dt: number) {
     this.acc += Math.min(dt, 0.25);
     while (this.acc >= TICK_DT) {

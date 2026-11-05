@@ -52,6 +52,10 @@ export class Match {
   readonly events: MatchEvent[] = [];
   time = 0;
   result: 'win' | 'lose' | null = null;
+  /** Optional ray filter so that character capsules (bots) do not block crystals. */
+  characterFilter?: (collider: { handle: number }) => boolean;
+  /** Living members of a team other than the local player (bots). Set by the bot manager. */
+  membersAlive: (team: TeamId) => number = () => 0;
   /** Bed currently being broken and progress 0..1. */
   breaking: { bed: Bed; progress: number } | null = null;
 
@@ -85,14 +89,28 @@ export class Match {
     return this.bed(this.team).alive;
   }
 
-  /** Enemy beds still standing. */
+  /** A team is out when its bed is gone and nobody of it is alive. */
+  isOut(team: TeamId) {
+    if (team === this.team) return this.result === 'lose';
+    return !this.bed(team).alive && this.membersAlive(team) === 0;
+  }
+
+  /** Enemy teams still in the game. */
   get enemiesLeft() {
-    return this.beds.filter((b) => b.team !== this.team && b.alive).length;
+    return this.beds.filter((b) => b.team !== this.team && !this.isOut(b.team)).length;
+  }
+
+  private checkWin() {
+    if (!this.result && this.enemiesLeft === 0) {
+      this.result = 'win';
+      this.events.push({ type: 'win', time: this.time });
+    }
   }
 
   /** Generators + pickup. Runs at the simulation tick. */
   tick(dt: number, playerPos: Vector3) {
     if (!this.result) this.time += dt;
+    this.checkWin();
     for (const g of this.generators) {
       const def = GENERATORS[g.currency];
       if (g.stored >= def.cap) g.timer = 0;
@@ -112,25 +130,30 @@ export class Match {
   }
 
   /** Nearest enemy bed within reach and not walled off by blocks / map geometry. */
-  reachableBed(eye: Vector3): Bed | null {
+  reachableBed(eye: Vector3, team: TeamId = this.team, exclude = this.playerCollider): Bed | null {
     let best: Bed | null = null;
     let bestD = BED_REACH;
     for (const b of this.beds) {
-      if (!b.alive || b.team === this.team) continue;
+      if (!b.alive || b.team === team) continue;
       const d = eye.distanceTo(b.pos);
-      if (d > bestD || !this.lineOfSight(eye, b.pos)) continue;
+      if (d > bestD || !this.lineOfSight(eye, b.pos, exclude)) continue;
       best = b;
       bestD = d;
     }
     return best;
   }
 
-  lineOfSight(from: Vector3, to: Vector3) {
+  lineOfSight(from: Vector3, to: Vector3, exclude = this.playerCollider) {
+    return !this.firstHit(from, to, exclude);
+  }
+
+  /** What stands between the eye and a crystal (null = clear). The crystal itself has no collider. */
+  firstHit(from: Vector3, to: Vector3, exclude = this.playerCollider) {
     const d = to.clone().sub(from);
     const len = d.length();
-    // the crystal has no collider; stop short of it so the pedestal top does not count
-    const hit = this.world.castRay(new this.R.Ray(from, d.divideScalar(len)), Math.max(0, len - 0.9), true, undefined, undefined, this.playerCollider);
-    return !hit;
+    // stop short of the crystal centre so the pedestal top does not count
+    return this.world.castRay(new this.R.Ray(from, d.divideScalar(len)), Math.max(0, len - 0.9), true, undefined, undefined, exclude,
+      undefined, this.characterFilter);
   }
 
   /** Hold-to-break the enemy crystal. Returns the bed being broken (for the HUD), if any. */
@@ -154,10 +177,7 @@ export class Match {
     if (!bed.alive) return;
     bed.alive = false;
     this.events.push({ type: 'bedBroken', team });
-    if (!this.result && this.enemiesLeft === 0) {
-      this.result = 'win';
-      this.events.push({ type: 'win', time: this.time });
-    }
+    this.checkWin();
   }
 
   /** Called when the local player dies. False = eliminated (no bed). */

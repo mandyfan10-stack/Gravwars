@@ -8,16 +8,19 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/sim.test.ts"
+    "test": "tsx test/sim.test.ts",
+    "shots": "tsx scripts/shots.ts shots"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
+    "@fontsource/inter": "^5.3.0",
     "lil-gui": "^0.21.0",
     "three": "^0.187.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "@types/three": "^0.187.0",
+    "playwright": "^1.64.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"

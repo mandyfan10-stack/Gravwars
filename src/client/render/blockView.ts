@@ -1,8 +1,10 @@
 import {
   BoxGeometry, CanvasTexture, Color, EdgesGeometry, Group, InstancedMesh, LineBasicMaterial, LineSegments, Matrix4, Mesh,
-  MeshBasicMaterial, MeshStandardMaterial, Quaternion, Scene, SRGBColorSpace, Vector3,
+  MeshBasicMaterial, MeshStandardMaterial, RepeatWrapping, Scene, SRGBColorSpace, Vector3,
 } from 'three';
-import { BLOCK_ORDER, BLOCK_SIZE, BlockMaterial, BlockSystem } from '../../shared/blocks';
+import {
+  BLOCK_ORDER, BlockKind, BlockMaterial, BlockSystem, PIECE_CELL, PIECE_LEVEL, PIECE_THICK, PiecePlan,
+} from '../../shared/blocks';
 
 const MAX_PER_MATERIAL = 4096;
 
@@ -39,56 +41,82 @@ function texture(kind: BlockMaterial) {
 const _m = new Matrix4();
 const _c = new Color();
 const _s = new Vector3();
-const IDENTITY_Q = new Quaternion();
 
 /** All placed blocks as one instanced mesh per material + the placement preview. */
+/** Box with UVs in metres / TILE, so the texture repeats on big pieces instead of stretching. */
+const TILE = 1.5;
+function tiledBox(sx: number, sy: number, sz: number) {
+  const g = new BoxGeometry(sx, sy, sz);
+  if (sx === 1 && sy === 1 && sz === 1) return g;
+  const uv = g.getAttribute('uv');
+  // face order: ±x (z × y), ±y (x × z), ±z (x × y), 4 vertices each
+  const dims = [[sz, sy], [sz, sy], [sx, sz], [sx, sz], [sx, sy], [sx, sy]];
+  for (let f = 0; f < 6; f++) for (let v = 0; v < 4; v++) {
+    const i = f * 4 + v;
+    uv.setXY(i, uv.getX(i) * dims[f][0] / TILE, uv.getY(i) * dims[f][1] / TILE);
+  }
+  return g;
+}
+
+const PIECE_SIZE: Record<BlockKind, [number, number, number]> = {
+  block: [1, 1, 1],
+  wall: [PIECE_THICK, PIECE_LEVEL, PIECE_CELL],
+  floor: [PIECE_CELL, PIECE_THICK, PIECE_CELL],
+  ramp: [Math.hypot(PIECE_CELL, PIECE_LEVEL), PIECE_THICK, PIECE_CELL],
+};
+const KINDS = Object.keys(PIECE_SIZE) as BlockKind[];
+
+/** Placed blocks and pieces: one instanced mesh per material and shape, plus the placement preview. */
 export class BlockView {
-  private readonly meshes = {} as Record<BlockMaterial, InstancedMesh>;
+  private readonly meshes = new Map<string, InstancedMesh>();
   private version = -1;
   private readonly ghost = new Group();
   private readonly ghostMat = new MeshBasicMaterial({ color: 0x55eecb, transparent: true, opacity: 0.3, depthWrite: false });
   private readonly outlineMat = new LineBasicMaterial({ color: 0xbaffea });
 
   constructor(scene: Scene) {
-    const geo = new BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
     for (const m of BLOCK_ORDER) {
-      const mesh = new InstancedMesh(geo, new MeshStandardMaterial({
-        map: texture(m), roughness: 0.85, metalness: m === 'metal' ? 0.38 : 0.02,
-      }), MAX_PER_MATERIAL);
-      mesh.count = 0;
-      mesh.castShadow = mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
-      mesh.setColorAt(0, _c.set(0xffffff));
-      scene.add(mesh);
-      this.meshes[m] = mesh;
+      const map = texture(m);
+      map.wrapS = map.wrapT = RepeatWrapping;
+      const mat = new MeshStandardMaterial({ map, roughness: 0.85, metalness: m === 'metal' ? 0.38 : 0.02 });
+      for (const k of KINDS) {
+        const mesh = new InstancedMesh(tiledBox(...PIECE_SIZE[k]), mat, k === 'block' ? MAX_PER_MATERIAL : 512);
+        mesh.count = 0;
+        mesh.castShadow = mesh.receiveShadow = true;
+        mesh.frustumCulled = false;
+        mesh.setColorAt(0, _c.set(0xffffff));
+        scene.add(mesh);
+        this.meshes.set(`${m}:${k}`, mesh);
+      }
     }
-    const s = BLOCK_SIZE * 1.004;
-    this.ghost.add(new Mesh(new BoxGeometry(s, s, s), this.ghostMat), new LineSegments(new EdgesGeometry(new BoxGeometry(s, s, s)), this.outlineMat));
+    this.ghost.add(new Mesh(new BoxGeometry(1.004, 1.004, 1.004), this.ghostMat), new LineSegments(new EdgesGeometry(new BoxGeometry(1.004, 1.004, 1.004)), this.outlineMat));
     this.ghost.visible = false;
     scene.add(this.ghost);
   }
 
-  /** `preview` = centre of the block that would be placed; `ok` = it can be placed. */
-  update(system: BlockSystem, preview: Vector3 | null, ok: boolean) {
+  /** `preview` = the piece that would be placed; `ok` = it can be placed. */
+  update(system: BlockSystem, preview: PiecePlan | null, ok: boolean) {
     if (system.version !== this.version) {
       this.version = system.version;
-      for (const m of BLOCK_ORDER) this.meshes[m].count = 0;
+      for (const mesh of this.meshes.values()) mesh.count = 0;
       for (const b of system.blocks.values()) {
-        const mesh = this.meshes[b.material];
-        if (mesh.count >= MAX_PER_MATERIAL) continue;
+        const mesh = this.meshes.get(`${b.material}:${b.kind}`)!;
+        if (mesh.count >= mesh.instanceMatrix.count) continue;
         const i = mesh.count++;
-        mesh.setMatrixAt(i, _m.compose(b.center, IDENTITY_Q, _s.set(1, 1, 1)));
+        mesh.setMatrixAt(i, _m.compose(b.center, b.quat, _s.set(1, 1, 1)));
         // damaged blocks get darker
         mesh.setColorAt(i, _c.setScalar(0.45 + 0.55 * b.hp / b.maxHp));
       }
-      for (const m of BLOCK_ORDER) {
-        this.meshes[m].instanceMatrix.needsUpdate = true;
-        if (this.meshes[m].instanceColor) this.meshes[m].instanceColor!.needsUpdate = true;
+      for (const mesh of this.meshes.values()) {
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       }
     }
     this.ghost.visible = !!preview;
     if (!preview) return;
-    this.ghost.position.copy(preview);
+    this.ghost.position.copy(preview.center);
+    this.ghost.quaternion.copy(preview.quat);
+    this.ghost.scale.copy(preview.half).multiplyScalar(2);
     this.ghostMat.color.set(ok ? 0x55eecb : 0xff5360);
     this.outlineMat.color.set(ok ? 0xbaffea : 0xff9b9b);
   }

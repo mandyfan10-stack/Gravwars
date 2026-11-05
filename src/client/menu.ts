@@ -10,11 +10,11 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
   $('start-game').addEventListener('click', () => audio.unlock());
 
   let started = false;
-  document.addEventListener('pointerlockchange', () => {
+  document.addEventListener('game-lock', () => {
     if (input.locked) {
       started = true;
-      $('start-game').innerHTML = 'Продолжить <span>↗</span>';
-    } else if (started) document.querySelector('.menu-kicker')!.lastChild!.textContent = ' ПАУЗА · ЛОКАЛЬНЫЙ ПРОТОТИП';
+      $('start-game').textContent = 'Продолжить';
+    } else if (started) $('menu-state').hidden = false;
   });
 
   const sections = ['help', 'settings'];

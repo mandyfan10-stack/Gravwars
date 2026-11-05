@@ -1,5 +1,5 @@
 import {
-  AdditiveBlending, BoxGeometry, BufferAttribute, BufferGeometry, Color, Group, IcosahedronGeometry, InstancedMesh,
+  AdditiveBlending, BoxGeometry, CanvasTexture, BufferAttribute, BufferGeometry, Color, Group, IcosahedronGeometry, InstancedMesh,
   Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, PointLight, Points, PointsMaterial, Quaternion, Scene,
   SphereGeometry, Vector3,
 } from 'three';
@@ -17,6 +17,20 @@ const _d = new Vector3();
 interface Blast { mesh: Mesh; ring: Mesh; t: number; radius: number; alive: boolean }
 
 /** Tracers, grenades, explosions and sparks driven by combat events. */
+/** Soft round dot for spark particles (plain points are squares). */
+function dotTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, '#fff');
+  grad.addColorStop(0.4, '#ffffffaa');
+  grad.addColorStop(1, '#fff0');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 32, 32);
+  return new CanvasTexture(c);
+}
+
 export class Fx {
   readonly group = new Group();
   private tracers: InstancedMesh;
@@ -56,7 +70,7 @@ export class Fx {
     geo.setAttribute('position', new BufferAttribute(this.sPos, 3));
     geo.setAttribute('color', new BufferAttribute(this.sCol, 3));
     this.sparks = new Points(geo, new PointsMaterial({
-      size: 0.09, vertexColors: true, transparent: true, blending: AdditiveBlending, depthWrite: false,
+      size: 0.07, map: dotTexture(), alphaTest: 0.02, vertexColors: true, transparent: true, blending: AdditiveBlending, depthWrite: false,
     }));
     this.sparks.frustumCulled = false;
     this.group.add(this.sparks);
@@ -112,7 +126,7 @@ export class Fx {
       this.burst(e.pos, e.normal, 5, 1.5, new Color(0.5, 0.45, 0.4), 0.6);
     } else if (e.type === 'fizzle') {
       this.burst(e.pos, null, 14, 3, new Color(2, 0.8, 3.5), 0.5);
-    } else if (e.type === 'hit') {
+    } else if (e.type === 'hit' && e.target !== 0) { // no sparks in the local player's own face
       this.burst(e.pos, null, e.head ? 18 : 10, 4, e.head ? new Color(4, 1, 0.6) : new Color(3, 0.6, 0.5), 0.35);
     } else if (e.type === 'bounce') {
       this.burst(e.pos, null, 3, 1.5, new Color(1.5, 1.2, 0.8), 0.25);

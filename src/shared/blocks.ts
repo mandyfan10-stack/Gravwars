@@ -1,5 +1,6 @@
-import { Quaternion, Vector3 } from 'three';
+import { Matrix4, Quaternion, Vector3 } from 'three';
 import { PLAYER_HALF_SEGMENT, PLAYER_HEIGHT, PLAYER_RADIUS } from './constants';
+import { frameForUp } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
 import type { TeamId } from './teams';
 
@@ -10,35 +11,67 @@ export const BLOCK_MATERIALS: Record<BlockMaterial, { label: string; hp: number;
   metal: { label: 'Металл', hp: 300, color: 0x9eacb4 },
 };
 export const BLOCK_ORDER: BlockMaterial[] = ['wood', 'stone', 'metal'];
-/** Edge length of a block, m. A standing jump (~1.45 m) clears exactly one block. */
+/** Edge length of a fortification block, m. */
 export const BLOCK_SIZE = 1;
-/** How far from the eye a surface can be aimed at, m. */
-export const BLOCK_REACH = 5;
-export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 24, stone: 0, metal: 0 };
+/** How far from the eye a piece / block can be aimed at (pick-up with RMB), m. */
+export const BLOCK_REACH = 6;
+/** Material in the inventory at the start (one piece costs PIECE_COST). */
+export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 30, stone: 0, metal: 0 };
+
+/** Build pieces (the shovel places a random one): wall, floor, ramp. */
+export type PieceKind = 'wall' | 'floor' | 'ramp';
+export const PIECE_KINDS: PieceKind[] = ['wall', 'floor', 'ramp'];
+export const PIECE_LABEL: Record<PieceKind, string> = { wall: 'Стена', floor: 'Пол', ramp: 'Лестница' };
+/** Horizontal grid cell, m. */
+export const PIECE_CELL = 4;
+/** Height of one building level (wall height, ramp rise), m. */
+export const PIECE_LEVEL = 3;
+export const PIECE_THICK = 0.25;
+/** Material units one piece costs. */
+export const PIECE_COST = 3;
+/** Piece HP = material HP × this. */
+export const PIECE_HP_MUL = 2.5;
+
+export type BlockKind = 'block' | PieceKind;
 
 export interface Block {
   id: number;
+  kind: BlockKind;
   center: Vector3;
+  /** Half extents in the block's own (rotated) axes. */
+  half: Vector3;
+  quat: Quaternion;
   material: BlockMaterial;
   hp: number;
   maxHp: number;
-  /** Who placed it (null = map). Only your own blocks can be picked back up. */
+  /** Material returned on pick-up. */
+  cost: number;
+  /** Who placed it (null = map). Only your own pieces can be picked back up. */
   team: TeamId | null;
+  /** Pieces: grid key (no two pieces in the same slot) and base level along the grid's up axis. */
+  key: string | null;
+  level: number;
   collider: ReturnType<PhysicsWorld['createCollider']>;
 }
 
-export type PlaceResult = 'ok' | 'resources' | 'player' | 'occupied' | 'range';
-
-export interface BlockTarget {
+export interface PiecePlan {
+  kind: PieceKind;
   center: Vector3;
-  /** Nothing was aimed at: the block continues the block / ground under the feet (bridging). */
-  assisted: boolean;
+  half: Vector3;
+  quat: Quaternion;
+  key: string;
+  level: number;
 }
 
+export type PlaceResult = 'ok' | 'resources' | 'player' | 'occupied';
+
+type Collider = ReturnType<PhysicsWorld['createCollider']>;
 const HALF = BLOCK_SIZE / 2;
 const IDENTITY = new Quaternion();
+const _m = new Matrix4();
+const _l = new Vector3();
 
-/** Nearest world axis (all gravities are axis aligned, so blocks are too). */
+/** Nearest world axis (all gravities are axis aligned, so pieces are too). */
 export function axisOf(v: { x: number; y: number; z: number }, out = new Vector3()): Vector3 {
   const ax = Math.abs(v.x), ay = Math.abs(v.y), az = Math.abs(v.z);
   if (ax >= ay && ax >= az) return out.set(Math.sign(v.x) || 1, 0, 0);
@@ -46,16 +79,12 @@ export function axisOf(v: { x: number; y: number; z: number }, out = new Vector3
   return out.set(0, 0, Math.sign(v.z) || 1);
 }
 
-/**
- * Snap to the 1 m world grid across `axis`, keep the coordinate along it. Blocks sit flush on whatever they
- * are attached to (the map is not grid aligned), but rows of blocks still line up sideways.
- */
-export function snapAcross(p: Vector3, axis: Vector3): Vector3 {
-  if (Math.abs(axis.x) < 0.5) p.x = Math.floor(p.x) + HALF;
-  if (Math.abs(axis.y) < 0.5) p.y = Math.floor(p.y) + HALF;
-  if (Math.abs(axis.z) < 0.5) p.z = Math.floor(p.z) + HALF;
-  return p;
+/** Distance from a point to an oriented box surface (0 inside). */
+function boxDistance(p: Vector3, center: Vector3, half: Vector3, quat: Quaternion) {
+  _l.copy(p).sub(center).applyQuaternion(_q.copy(quat).invert());
+  return Math.hypot(Math.max(Math.abs(_l.x) - half.x, 0), Math.max(Math.abs(_l.y) - half.y, 0), Math.max(Math.abs(_l.z) - half.z, 0));
 }
+const _q = new Quaternion();
 
 /** Placed blocks: aiming, validation, inventory, damage. Shared by the client and the future server. */
 export class BlockSystem {
@@ -66,73 +95,128 @@ export class BlockSystem {
   version = 0;
   private nextId = 1;
 
-  constructor(private R: Rapier, private world: PhysicsWorld, private playerCollider?: ReturnType<PhysicsWorld['createCollider']>) {}
+  constructor(private R: Rapier, private world: PhysicsWorld, private playerCollider?: Collider) {
+    if (playerCollider) this.characters.push(playerCollider);
+  }
 
   byCollider(handle: number) {
     return this.blocks.get(handle);
   }
 
-  /** Where a block would go: on the aimed face, or (aiming at nothing) next to what is under the feet. */
-  target(eye: Vector3, dir: Vector3, playerPos: Vector3, up: Vector3, facing: Vector3): BlockTarget | null {
-    const R = this.R;
-    const hit = this.world.castRayAndGetNormal(new R.Ray(eye, dir), BLOCK_REACH, true, undefined, undefined, this.playerCollider);
-    if (hit) {
-      const n = axisOf(hit.normal);
-      const b = this.blocks.get(hit.collider.handle);
-      if (b) return { center: b.center.clone().addScaledVector(n, BLOCK_SIZE), assisted: false };
-      const p = eye.clone().addScaledVector(dir, hit.timeOfImpact).addScaledVector(n, HALF);
-      return { center: snapAcross(p, n), assisted: false };
-    }
-    // bridging: continue the column under the feet one block in the facing direction
-    const down = up.clone().negate();
-    const ground = this.world.castRay(new R.Ray(playerPos, down), PLAYER_HEIGHT / 2 + 0.6, true, undefined, undefined, this.playerCollider);
-    if (!ground) return null;
-    const flat = facing.clone().addScaledVector(up, -facing.dot(up));
-    if (flat.lengthSq() < 1e-6) return null;
-    const step = axisOf(flat);
-    const under = this.blocks.get(ground.collider.handle);
-    if (under) return { center: under.center.clone().addScaledVector(step, BLOCK_SIZE), assisted: true };
-    const center = snapAcross(playerPos.clone().addScaledVector(down, ground.timeOfImpact + HALF), axisOf(up)).addScaledVector(step, BLOCK_SIZE);
-    // map edges are not on the grid: slide the first bridge block outwards until it clears the edge
-    for (let k = 0; k < 10 && !this.isFree(center); k++) center.addScaledVector(step, 0.1);
-    return { center, assisted: true };
+  /** Player + bot capsules. They move without a physics step, so they are tested directly, not via the query tree. */
+  readonly characters: Collider[] = [];
+  private isCharacter(c: { handle: number }) {
+    return this.characters.some((ch) => ch.handle === c.handle);
   }
 
-  /** The block under the crosshair, if any. */
+  /**
+   * Where a piece of `kind` goes for a player at `pos` looking along `facing`: on a 4 m grid aligned with the gravity,
+   * the first cell boundary in front (wall) or the cell behind it (floor at feet level, ramp rising away).
+   * The level is the ground under the feet; standing on a piece it snaps to that piece's levels, so ramps chain.
+   */
+  plan(kind: PieceKind, pos: Vector3, up: Vector3, facing: Vector3): PiecePlan | null {
+    const upAxis = axisOf(up);
+    const q = frameForUp(upAxis);
+    const qi = q.clone().invert();
+    const lp = pos.clone().applyQuaternion(qi);
+    const lf = facing.clone().applyQuaternion(qi);
+    if (Math.hypot(lf.x, lf.z) < 1e-4) return null;
+    const along: 'x' | 'z' = Math.abs(lf.x) >= Math.abs(lf.z) ? 'x' : 'z';
+    const side: 'x' | 'z' = along === 'x' ? 'z' : 'x';
+    const sg = Math.sign(lf[along]) || 1;
+    // base level: what is under the feet
+    const feet = lp.y - PLAYER_HEIGHT / 2;
+    let level = feet;
+    const down = upAxis.clone().negate();
+    const ground = this.world.castRay(new this.R.Ray(pos, down), PLAYER_HEIGHT / 2 + 2.5, true, undefined, undefined, undefined, undefined,
+      (c) => !this.isCharacter(c));
+    if (ground) {
+      level = lp.y - ground.timeOfImpact;
+      const under = this.blocks.get(ground.collider.handle);
+      if (under?.key && under.key.startsWith(`${axisKey(upAxis)}|`))
+        level = under.level + Math.round((feet - under.level) / PIECE_LEVEL) * PIECE_LEVEL;
+    }
+    const a = lp[along] * sg;
+    const bnd = Math.ceil((a + PLAYER_RADIUS + 0.25) / PIECE_CELL) * PIECE_CELL;
+    const b = (Math.floor(lp[side] / PIECE_CELL) + 0.5) * PIECE_CELL;
+    // local basis: F forward, U up, S sideways (right handed)
+    const F = new Vector3();
+    F[along] = sg;
+    const U = new Vector3(0, 1, 0);
+    let fa = bnd + PIECE_CELL / 2;
+    let y = level;
+    const half = new Vector3();
+    let rot = 0;
+    if (kind === 'wall') {
+      fa = bnd;
+      y = level + PIECE_LEVEL / 2;
+      half.set(PIECE_THICK / 2, PIECE_LEVEL / 2, PIECE_CELL / 2);
+    } else if (kind === 'floor') {
+      y = level - PIECE_THICK / 2;
+      half.set(PIECE_CELL / 2, PIECE_THICK / 2, PIECE_CELL / 2);
+    } else {
+      rot = Math.atan2(PIECE_LEVEL, PIECE_CELL);
+      y = level + PIECE_LEVEL / 2 - Math.cos(rot) * PIECE_THICK / 2;
+      fa += Math.sin(rot) * PIECE_THICK / 2;
+      half.set(Math.hypot(PIECE_CELL, PIECE_LEVEL) / 2, PIECE_THICK / 2, PIECE_CELL / 2);
+    }
+    const Fx = F.clone().multiplyScalar(Math.cos(rot)).addScaledVector(U, Math.sin(rot));
+    const Uy = U.clone().multiplyScalar(Math.cos(rot)).addScaledVector(F, -Math.sin(rot));
+    const Sz = new Vector3().crossVectors(Fx, Uy);
+    const local = new Vector3();
+    local[along] = fa * sg;
+    local.y = y;
+    local[side] = b;
+    const center = local.applyQuaternion(q);
+    const quat = new Quaternion().setFromRotationMatrix(_m.makeBasis(Fx, Uy, Sz)).premultiply(q);
+    const r = (v: number) => Math.round(v * 10);
+    const key = `${axisKey(upAxis)}|${kind}|${r(center.x)},${r(center.y)},${r(center.z)}`;
+    return { kind, center, half, quat, key, level };
+  }
+
+  validate(plan: PiecePlan, material: BlockMaterial): PlaceResult {
+    if (this.inventory[material] < PIECE_COST) return 'resources';
+    for (const b of this.blocks.values()) if (b.key === plan.key) return 'occupied';
+    const shape = new this.R.Cuboid(plan.half.x, plan.half.y, plan.half.z);
+    const capsule = new this.R.Capsule(PLAYER_HALF_SEGMENT, PLAYER_RADIUS);
+    for (const ch of this.characters)
+      if (shape.intersectsShape(plan.center, plan.quat, capsule, ch.translation(), ch.rotation())) return 'player';
+    return 'ok';
+  }
+
+  place(plan: PiecePlan, material: BlockMaterial, team: TeamId | null): PlaceResult {
+    const result = this.validate(plan, material);
+    if (result !== 'ok') return result;
+    this.inventory[material] -= PIECE_COST;
+    this.insert(plan.kind, plan.center, plan.half, plan.quat, material, team, PIECE_COST, plan.key, plan.level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
+    return 'ok';
+  }
+
+  /** The piece / block under the crosshair, if any. */
   aimedBlock(eye: Vector3, dir: Vector3): Block | null {
-    const hit = this.world.castRay(new this.R.Ray(eye, dir), BLOCK_REACH, true, undefined, undefined, this.playerCollider);
+    const hit = this.world.castRay(new this.R.Ray(eye, dir), BLOCK_REACH, true, undefined, undefined, undefined, undefined,
+      (c) => !this.isCharacter(c));
     return (hit && this.blocks.get(hit.collider.handle)) || null;
   }
 
-  /** Is the cell free of map geometry and other blocks? */
+  /** Is the 1 m cell free of map geometry and other blocks? */
   isFree(center: Vector3) {
     const probe = new this.R.Cuboid(HALF - 0.03, HALF - 0.03, HALF - 0.03);
     return !this.world.intersectionWithShape(center, IDENTITY, probe, undefined, undefined, this.playerCollider);
   }
 
-  validate(center: Vector3, playerPos: Vector3, playerFrame: Quaternion, eye: Vector3, material: BlockMaterial): PlaceResult {
-    if (this.inventory[material] < 1) return 'resources';
-    if (eye.distanceTo(center) > BLOCK_REACH + 1) return 'range';
-    const cube = new this.R.Cuboid(HALF, HALF, HALF);
-    const player = new this.R.Capsule(PLAYER_HALF_SEGMENT, PLAYER_RADIUS + 0.02);
-    if (cube.intersectsShape(center, IDENTITY, player, playerPos, playerFrame)) return 'player';
-    if (!this.isFree(center)) return 'occupied';
-    return 'ok';
-  }
-
-  place(center: Vector3, playerPos: Vector3, playerFrame: Quaternion, eye: Vector3, material: BlockMaterial, team: TeamId | null): PlaceResult {
-    const result = this.validate(center, playerPos, playerFrame, eye, material);
-    if (result !== 'ok') return result;
-    this.inventory[material]--;
-    this.add(center, material, team);
-    return 'ok';
-  }
-
-  /** Unchecked insert (map fortifications). Pass refresh = false when adding many, then call `refresh()`. */
+  /** Unchecked 1 m block (map fortifications). Pass refresh = false when adding many, then call `refresh()`. */
   add(center: Vector3, material: BlockMaterial, team: TeamId | null, refresh = true): Block {
-    const collider = this.world.createCollider(this.R.ColliderDesc.cuboid(HALF, HALF, HALF).setTranslation(center.x, center.y, center.z));
-    const hp = BLOCK_MATERIALS[material].hp;
-    const block: Block = { id: this.nextId++, center: center.clone(), material, hp, maxHp: hp, team, collider };
+    return this.insert('block', center, new Vector3(HALF, HALF, HALF), IDENTITY, material, team, 1, null, 0, BLOCK_MATERIALS[material].hp, refresh);
+  }
+
+  private insert(kind: BlockKind, center: Vector3, half: Vector3, quat: Quaternion, material: BlockMaterial, team: TeamId | null,
+    cost: number, key: string | null, level: number, hp: number, refresh = true): Block {
+    const collider = this.world.createCollider(this.R.ColliderDesc.cuboid(half.x, half.y, half.z)
+      .setTranslation(center.x, center.y, center.z).setRotation(quat));
+    const block: Block = {
+      id: this.nextId++, kind, center: center.clone(), half: half.clone(), quat: quat.clone(), material, hp, maxHp: hp, cost, team, key, level, collider,
+    };
     this.blocks.set(collider.handle, block);
     this.version++;
     if (refresh) this.refresh();
@@ -151,11 +235,11 @@ export class BlockSystem {
     this.refresh();
   }
 
-  /** Pick up one of your own blocks: it goes back to the inventory. */
+  /** Pick up one of your own pieces: its material goes back to the inventory. */
   reclaim(handle: number, team: TeamId | null): Block | null {
     const block = this.blocks.get(handle);
     if (!block || block.team !== team) return null;
-    this.inventory[block.material]++;
+    this.inventory[block.material] += block.cost;
     this.remove(block);
     return block;
   }
@@ -169,15 +253,15 @@ export class BlockSystem {
     return true;
   }
 
-  /** Radial damage by distance to the cube surface, not its centre. */
+  /** Radial damage by distance to the block surface, not its centre. */
   explosion(pos: Vector3, radius: number, damage: number) {
     for (const b of [...this.blocks.values()]) {
-      const d = new Vector3(
-        Math.max(Math.abs(pos.x - b.center.x) - HALF, 0),
-        Math.max(Math.abs(pos.y - b.center.y) - HALF, 0),
-        Math.max(Math.abs(pos.z - b.center.z) - HALF, 0),
-      ).length();
+      const d = boxDistance(pos, b.center, b.half, b.quat);
       if (d <= radius) this.damageCollider(b.collider.handle, Math.max(1, Math.round(damage * (1 - 0.7 * d / radius))));
     }
   }
+}
+
+function axisKey(up: Vector3) {
+  return `${up.x}${up.y}${up.z}`;
 }

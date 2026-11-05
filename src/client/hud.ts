@@ -3,12 +3,18 @@ import { HU } from '../shared/constants';
 import type { PlayerSim } from '../shared/sim';
 import { WEAPONS, WeaponState } from '../shared/weapons';
 import { teamByDown } from '../shared/teams';
+import { icon } from './icons';
 
 const $ = (id: string) => document.getElementById(id)!;
 const _down = new Vector3();
 const _up = new Vector3();
 
 export class Hud {
+  constructor() {
+    document.querySelector('#hp .hp-ic')!.innerHTML = icon('heart');
+    document.querySelector('#wind .wind-ic')!.innerHTML = icon('wind');
+  }
+
   private speed = $('speed-val');
   private gravDot = $('grav-dot');
   private gravName = $('grav-name');
@@ -33,16 +39,33 @@ export class Hud {
   setHp(hp: number) {
     this.hpVal.textContent = String(Math.ceil(hp));
     this.hpBar.style.width = `${Math.max(0, hp)}%`;
-    this.hpBar.style.background = hp > 50 ? '#7dffa0' : hp > 25 ? '#ffd166' : '#ff5a5a';
+    this.hpBar.style.background = hp > 50 ? 'var(--hp)' : hp > 25 ? '#ffc94a' : '#ff5a5a';
   }
 
-  setWeapon(ws: WeaponState) {
+  private readonly hotbar = document.getElementById('hotbar')!;
+  private readonly weaponIc = document.getElementById('weapon-ic')!;
+  private hotbarKey = '';
+
+  /** Weapon / ammo panel and the 1-2-3 hotbar (rifle, grenade, shovel). */
+  setWeapon(ws: WeaponState, building = false) {
+    const active = building ? 'shovel' : ws.current;
+    if (active !== this.hotbarKey) {
+      this.hotbarKey = active;
+      this.hotbar.innerHTML = ([['rifle', 'Винтовка'], ['grenade', 'Граната'], ['shovel', 'Лопатка']] as const)
+        .map(([id, name], i) => `<div class="slot${id === active ? ' on' : ''}" title="${name}"><kbd>${i + 1}</kbd>${icon(id)}</div>`).join('');
+      this.weaponIc.innerHTML = icon(active);
+    }
+    if (building) {
+      this.wName.textContent = 'Лопатка';
+      this.ammo.innerHTML = '<small>ЛКМ — строить</small>';
+      return;
+    }
     const def = WEAPONS[ws.current];
     this.wName.textContent = def.name;
     if (ws.current === 'rifle') {
       this.ammo.innerHTML = ws.reloadT > 0 ? '<span class="reload">перезарядка…</span>' : `${ws.ammo.rifle}<small>/${def.mag}</small>`;
     } else {
-      this.ammo.innerHTML = `${'●'.repeat(ws.ammo.grenade)}<span class="empty">${'●'.repeat(def.mag - ws.ammo.grenade)}</span>`;
+      this.ammo.innerHTML = `<div class="pips">${'<i></i>'.repeat(ws.ammo.grenade)}${'<i class="empty"></i>'.repeat(def.mag - ws.ammo.grenade)}</div>`;
     }
   }
 
@@ -72,7 +95,7 @@ export class Hud {
 
   toast(text: string, color = '#fff', time = 1.6) {
     this.toastEl.textContent = text;
-    this.toastEl.style.color = color;
+    this.toastEl.style.setProperty('--c', color);
     this.toastEl.classList.add('show');
     this.toastTimer = time;
   }

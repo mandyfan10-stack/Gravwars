@@ -8,11 +8,14 @@ import { getTeam, TeamId } from '../shared/teams';
 import { createWeaponState, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
+import { icon } from './icons';
 import type { Fx } from './render/fx';
 import type { ViewModel } from './render/viewmodel';
 
 const _vq = new Quaternion();
 
+const KILL = icon('swords');
+const SELF = icon('skull');
 const teamSpan = (id: TeamId, label?: string) => {
   const t = getTeam(id);
   return `<span style="color:${teamHex(t.color)}">${label ?? t.name}</span>`;
@@ -104,15 +107,19 @@ export class PlayerCombat {
       if (e.owner === 0 && e.target !== 0) {
         hud.hitmarker(e.killed, e.head);
         if (e.killed) {
-          hud.killfeed(`${teamSpan(me.team, 'Ты')} ⟶ ${teamSpan(tg.team)}${e.head ? ' (в голову)' : ''}`);
+          hud.killfeed(`${teamSpan(me.team, 'Ты')}${KILL}${teamSpan(tg.team)}${e.head ? ' · в голову' : ''}`);
           this.onKill(tg);
         }
+      }
+      if (e.killed && e.owner !== 0 && e.target !== 0) {
+        const killer = this.combat.target(e.owner);
+        hud.killfeed(e.owner === e.target || !killer ? `${SELF}${teamSpan(tg.team)} подорвался` : `${teamSpan(killer.team)}${KILL}${teamSpan(tg.team)}`);
       }
       if (e.target === 0) {
         hud.hurt(e.damage);
         hud.setHp(me.hp);
         if (e.killed) {
-          hud.killfeed(e.owner === 0 ? `${teamSpan(me.team, 'Ты')} подорвал себя` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')} ⟶ ${teamSpan(me.team, 'Ты')}`);
+          hud.killfeed(e.owner === 0 ? `${SELF}${teamSpan(me.team, 'Ты')} подорвался` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')}${KILL}${teamSpan(me.team, 'Ты')}`);
           if (this.canRespawn()) {
             this.sim.respawn('killed');
             this.reset();

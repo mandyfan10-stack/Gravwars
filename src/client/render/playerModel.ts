@@ -1,109 +1,171 @@
 import {
-  AdditiveBlending, BackSide, BoxGeometry, BufferAttribute, BufferGeometry, CapsuleGeometry, Color, DoubleSide,
-  Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Points, PointsMaterial, Quaternion, RingGeometry,
-  TorusGeometry, Vector3,
+  AnimationAction, AnimationClip, AnimationMixer, Color, Group, LoopOnce, Mesh, MeshStandardMaterial, Object3D, Quaternion,
+  Vector3,
 } from 'three';
-import { PLAYER_HALF_SEGMENT, PLAYER_RADIUS } from '../../shared/constants';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+import type { GameAssets } from './assets';
 
-const capsule = new CapsuleGeometry(PLAYER_RADIUS, PLAYER_HALF_SEGMENT * 2, 6, 14);
-const visorGeo = new BoxGeometry(0.52, 0.16, 0.14);
-const packGeo = new BoxGeometry(0.46, 0.55, 0.22);
-const haloGeo = new TorusGeometry(0.26, 0.035, 8, 28);
-const ringGeo = new RingGeometry(0.5, 0.72, 36);
+/** Model units → metres: the Kenney character is 0.84 tall, the player capsule 1.83. */
+const SCALE = 2.05;
+const FEET = -1.83 / 2;
 const AY = new Vector3(0, 1, 0);
+/** Palette column (u range) of the uniform's red shades (helmet crest, skirt): they take the team colour. */
+const TEAM_U: [number, number] = [0.6875, 0.75];
+const ARM_TRACK = /^arm-(left|right)\./;
+
+/** Clip without the arm tracks (legs + body follow locomotion, arms hold the gun). */
+function withoutArms(c: AnimationClip) {
+  return new AnimationClip(`${c.name}:body`, c.duration, c.tracks.filter((t) => !ARM_TRACK.test(t.name)));
+}
+function armsOnly(c: AnimationClip) {
+  return new AnimationClip(`${c.name}:arms`, c.duration, c.tracks.filter((t) => ARM_TRACK.test(t.name)));
+}
+
+/** Team uniform: recolours the red palette column with the team colour (keeping its shading) and adds a hit flash. */
+export function teamMaterial(src: MeshStandardMaterial, team: number) {
+  const m = src.clone();
+  m.roughness = 0.75;
+  m.metalness = 0;
+  m.userData.flash = { value: 0 };
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uTeam = { value: new Color(team) };
+    sh.uniforms.uFlash = m.userData.flash;
+    sh.fragmentShader = sh.fragmentShader
+      .replace('void main() {', 'uniform vec3 uTeam; uniform float uFlash;\nvoid main() {')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        {
+          float inCol = step(${TEAM_U[0].toFixed(4)}, vMapUv.x) * step(vMapUv.x, ${TEAM_U[1].toFixed(4)});
+          float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          diffuseColor.rgb = mix(diffuseColor.rgb, uTeam * clamp(lum / 0.33, 0.45, 1.25), inCol);
+          // armour column: a light team tint, readable from afar
+          float armour = step(0.5625, vMapUv.x) * step(vMapUv.x, 0.625);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * mix(vec3(1.0), uTeam * 1.6, 0.45), armour);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), uFlash * 0.8);
+        }`);
+  };
+  m.customProgramCacheKey = () => 'team-uniform';
+  m.userData.team = team;
+  return m;
+}
+
+export interface ModelState {
+  /** Planar speed, m/s. */
+  speed: number;
+  grounded: boolean;
+  /** Velocity along the player's up, m/s. */
+  vUp: number;
+  /** A shot was fired this frame. */
+  fired: boolean;
+}
 
 /**
- * Team-colored player. Gravity is readable from:
- *  - the halo above the head (points "up" for that player),
- *  - the glowing ring under the feet (where they stand / will land),
- *  - particles that fall along their gravity,
- *  - a bright team-colored outline.
+ * Animated team character (Kenney "Mini Arena" soldier) holding a blaster. The group sits at the capsule centre
+ * and is oriented by the player's gravity frame; the body turns with yaw.
  */
 export class PlayerModel {
   readonly group = new Group();
-  private body = new Group();
-  private particles: Points;
-  private pVel: Float32Array;
-  private ring: Mesh;
-  private halo: Mesh;
-  private t = Math.random() * 10;
+  private readonly body: Object3D;
+  private readonly mixer: AnimationMixer;
+  private readonly clips = new Map<string, AnimationAction>();
+  private readonly materials: MeshStandardMaterial[] = [];
+  private current: AnimationAction | null = null;
+  private arms: AnimationAction;
+  private armsShoot: AnimationAction;
+  private shootT = 0;
+  private flash = 0;
+  private dying = false;
 
-  constructor(color: number) {
-    const c = new Color(color);
-    const bodyMat = new MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.1, emissive: c, emissiveIntensity: 0.25 });
-    this.body.add(new Mesh(capsule, bodyMat));
-    const outline = new Mesh(capsule, new MeshBasicMaterial({ color: c.clone().multiplyScalar(1.8), side: BackSide }));
-    outline.scale.setScalar(1.09);
-    this.body.add(outline);
-    const visor = new Mesh(visorGeo, new MeshBasicMaterial({ color: new Color(0.6, 2.4, 3) }));
-    visor.position.set(0, 0.6, -0.33);
-    this.body.add(visor);
-    const pack = new Mesh(packGeo, new MeshStandardMaterial({ color: 0x24262c, roughness: 0.6 }));
-    pack.position.set(0, 0.2, 0.38);
-    this.body.add(pack);
+  constructor(assets: GameAssets, teamColor: number) {
+    const src = assets.character;
+    this.body = SkeletonUtils.clone(src.scene);
+    this.body.scale.setScalar(SCALE);
+    this.body.position.y = FEET;
+    const mats = new Map<MeshStandardMaterial, MeshStandardMaterial>();
+    this.body.traverse((o) => {
+      const mesh = o as Mesh;
+      if (!mesh.isMesh) return;
+      const m = mesh.material as MeshStandardMaterial;
+      if (!mats.has(m)) mats.set(m, teamMaterial(m, teamColor));
+      mesh.material = mats.get(m)!;
+    });
+    this.materials.push(...mats.values());
     this.group.add(this.body);
 
-    const glow = (k: number) => new MeshBasicMaterial({
-      color: c.clone().multiplyScalar(k), transparent: true, blending: AdditiveBlending, depthWrite: false, side: DoubleSide,
-    });
-    this.halo = new Mesh(haloGeo, glow(2.6));
-    this.halo.rotation.x = Math.PI / 2;
-    this.halo.position.y = 1.18;
-    this.group.add(this.halo);
+    // the blaster sits in both hands, barrels forward (character and blaster both face +Z)
+    const torso = this.body.getObjectByName('torso')!;
+    const gun = assets.rifle.clone();
+    gun.scale.setScalar(0.22);
+    gun.position.set(-0.06, 0, 0.26);
+    torso.add(gun);
 
-    this.ring = new Mesh(ringGeo, glow(2));
-    this.ring.rotation.x = -Math.PI / 2;
-    this.ring.position.y = -0.9;
-    this.group.add(this.ring);
-
-    const N = 26;
-    const pos = new Float32Array(N * 3);
-    this.pVel = new Float32Array(N);
-    for (let i = 0; i < N; i++) this.resetParticle(pos, i, true);
-    const g = new BufferGeometry();
-    g.setAttribute('position', new BufferAttribute(pos, 3));
-    this.particles = new Points(g, new PointsMaterial({
-      color: c.clone().multiplyScalar(2.2), size: 0.09, transparent: true, opacity: 0.9,
-      blending: AdditiveBlending, depthWrite: false,
-    }));
-    this.particles.frustumCulled = false;
-    this.group.add(this.particles);
+    this.mixer = new AnimationMixer(this.body);
+    const find = (n: string) => AnimationClip.findByName(src.animations, n)!;
+    for (const n of ['idle', 'walk', 'sprint', 'jump', 'fall']) this.clips.set(n, this.mixer.clipAction(withoutArms(find(n))));
+    const die = this.mixer.clipAction(find('die'));
+    die.setLoop(LoopOnce, 1);
+    die.clampWhenFinished = true;
+    this.clips.set('die', die);
+    this.arms = this.mixer.clipAction(armsOnly(find('holding-both')));
+    this.armsShoot = this.mixer.clipAction(armsOnly(find('holding-both-shoot')));
+    this.armsShoot.setLoop(LoopOnce, 1);
+    this.arms.play();
+    this.play('idle', 0);
   }
 
-  private resetParticle(pos: Float32Array, i: number, anyHeight = false) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 0.25 + Math.random() * 0.35;
-    pos[i * 3] = Math.cos(a) * r;
-    pos[i * 3 + 1] = anyHeight ? -2.5 + Math.random() * 3.5 : 0.9;
-    pos[i * 3 + 2] = Math.sin(a) * r;
-    this.pVel[i] = 1.5 + Math.random() * 2.5;
+  private play(name: string, fade = 0.15) {
+    const next = this.clips.get(name)!;
+    if (next === this.current) return;
+    next.reset().play();
+    if (this.current) next.crossFadeFrom(this.current, fade, false);
+    this.current = next;
   }
 
-  /** pos = capsule center, frame = body frame (local Y = up), yaw = facing inside the frame. */
   setPose(pos: Vector3, frame: Quaternion, yaw: number) {
     this.group.position.copy(pos);
     this.group.quaternion.copy(frame);
-    this.body.quaternion.setFromAxisAngle(AY, yaw);
+    this.body.quaternion.setFromAxisAngle(AY, yaw + Math.PI);
   }
 
-  /** groundDist: distance from capsule center to the surface below along gravity (or Infinity). */
-  update(dt: number, groundDist = 0.915) {
-    this.t += dt;
-    this.halo.position.y = 1.18 + Math.sin(this.t * 2.2) * 0.04;
-    const show = Number.isFinite(groundDist) && groundDist < 40;
-    this.ring.visible = show;
-    if (show) {
-      this.ring.position.y = -groundDist + 0.03;
-      const s = 1 + Math.min(groundDist - 0.915, 10) * 0.08;
-      this.ring.scale.setScalar(s);
+  /** Brief white flash (took damage). */
+  hit() {
+    this.flash = 1;
+  }
+
+  /** Death animation; `revive()` puts the model back to normal. */
+  die() {
+    if (this.dying) return;
+    this.dying = true;
+    this.arms.stop();
+    this.armsShoot.stop();
+    this.play('die', 0.08);
+  }
+
+  revive() {
+    if (!this.dying) return;
+    this.dying = false;
+    this.arms.reset().play();
+    this.current?.stop();
+    this.current = null;
+    this.play('idle', 0);
+  }
+
+  update(dt: number, s: ModelState | null) {
+    if (s && !this.dying) {
+      if (!s.grounded) this.play(s.vUp > 1 ? 'jump' : 'fall');
+      else if (s.speed > 5.5) this.play('sprint');
+      else if (s.speed > 0.6) this.play('walk');
+      else this.play('idle');
+      const loco = this.clips.get('walk')!;
+      loco.timeScale = Math.max(0.6, s.speed / 3.2);
+      if (s.fired) {
+        this.armsShoot.reset().play();
+        this.shootT = 0.2;
+      }
     }
-    const attr = this.particles.geometry.getAttribute('position') as BufferAttribute;
-    const arr = attr.array as Float32Array;
-    for (let i = 0; i < this.pVel.length; i++) {
-      this.pVel[i] += dt * 6;
-      arr[i * 3 + 1] -= this.pVel[i] * dt;
-      if (arr[i * 3 + 1] < -Math.min(groundDist, 3)) this.resetParticle(arr, i);
-    }
-    attr.needsUpdate = true;
+    this.shootT = Math.max(0, this.shootT - dt);
+    this.arms.weight = this.shootT > 0 ? 0 : 1;
+    this.flash = Math.max(0, this.flash - dt * 6);
+    for (const m of this.materials) (m.userData.flash as { value: number }).value = this.flash;
+    this.mixer.update(dt);
   }
 }

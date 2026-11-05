@@ -70,6 +70,7 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     }
     if (input.take('KeyG')) {
       guiVisible = !guiVisible;
+      document.body.classList.toggle('debug', guiVisible);
       if (guiVisible) {
         gui.show();
         document.exitPointerLock();

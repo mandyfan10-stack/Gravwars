@@ -171,6 +171,12 @@ export class Mover {
     if (onGround) this.kcc.enableSnapToGround(0.3);
     else this.kcc.disableSnapToGround();
     _delta.copy(s.vel).multiplyScalar(dt);
+    if (onGround) {
+      // walk along the ground plane: lift / lower the planar step so it lies on the slope, keeping planar speed
+      // (otherwise every tick the move bumps into the ramp and the clip below eats the speed)
+      const nUp = s.groundNormal.dot(up);
+      if (nUp > 0.05 && nUp < 0.9999) _delta.addScaledVector(up, -_delta.dot(s.groundNormal) / nUp);
+    }
     this.kcc.computeColliderMovement(this.collider, _delta);
     const mv = this.kcc.computedMovement();
     _moved.set(mv.x, mv.y, mv.z);
@@ -186,6 +192,7 @@ export class Mover {
       if (!c) continue;
       _n.set(c.normal1.x, c.normal1.y, c.normal1.z);
       if (stepped && Math.abs(_n.dot(up)) < 0.3) continue; // went up a stair, keep speed
+      if (onGround && _n.dot(up) >= this.cfg.groundCos) continue; // walkable ground is not a wall
       const d = s.vel.dot(_n);
       if (d < 0) s.vel.addScaledVector(_n, -d);
     }
@@ -213,9 +220,16 @@ export class Mover {
       }
     }
     if (s.onGround) {
-      const d = s.vel.dot(s.groundNormal);
-      if (d < 0) s.vel.addScaledVector(s.groundNormal, -d);
+      // landed: drop the falling part only (clipping against a slope would also cut the planar speed)
+      const d = s.vel.dot(up);
+      if (d < 0) s.vel.addScaledVector(up, -d);
     }
+  }
+
+  /** Remove the capsule and controller from the world. */
+  dispose() {
+    this.world.removeCharacterController(this.kcc);
+    this.world.removeCollider(this.collider, false);
   }
 
   /** Re-sync the collider after an external teleport / rotation. */
