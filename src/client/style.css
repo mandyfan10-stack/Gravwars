@@ -22,7 +22,16 @@ kbd, #prompt b { display: inline-grid; place-items: center; min-width: 20px; hei
 #hud { position: fixed; inset: 0; pointer-events: none; font-variant-numeric: tabular-nums; text-shadow: var(--shadow); }
 #hud .ic { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .7)); }
 body:not(.playing) #hud { visibility: hidden; }
-#crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); }
+#crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); --gap: 6px; }
+/* guns: four ticks at the current spread (they open up in a burst, on the run, in the air) */
+#crosshair i { position: absolute; left: 50%; top: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); opacity: 0; transition: opacity .15s; }
+#crosshair.gun i { opacity: .9; }
+#crosshair i:nth-child(1), #crosshair i:nth-child(2) { width: 2px; height: 6px; margin-left: -1px; }
+#crosshair i:nth-child(3), #crosshair i:nth-child(4) { width: 6px; height: 2px; margin-top: -1px; }
+#crosshair i:nth-child(1) { transform: translateY(calc(-1 * var(--gap) - 6px)); }
+#crosshair i:nth-child(2) { transform: translateY(var(--gap)); }
+#crosshair i:nth-child(3) { transform: translateX(calc(-1 * var(--gap) - 6px)); }
+#crosshair i:nth-child(4) { transform: translateX(var(--gap)); }
 #speed { display: none; position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); font: 600 13px var(--display); }
 #speed small { margin-left: 4px; font-size: 10px; color: var(--muted); }
 #info { display: none; position: absolute; right: 16px; bottom: 110px; padding: 8px 10px; border-radius: 4px; background: var(--ink); font: 11px/1.5 ui-monospace, monospace; text-align: right; white-space: pre; color: var(--muted); }
@@ -207,6 +216,7 @@ body.debug #info, body.debug #speed { display: block; }
 .menu-details[hidden] { display: none; }
 .menu-details label { display: grid; grid-template-columns: 130px 1fr 44px; align-items: center; gap: 12px; min-height: 34px; font-weight: 500; }
 .menu-details input { width: 100%; accent-color: #fff; }
+.menu-details select { width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: rgba(0, 0, 0, .35); color: #fff; font: inherit; }
 .menu-details output { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
 .keymap .row { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 10px; min-height: 30px; }
 .keymap .keys { display: flex; gap: 4px; flex-wrap: wrap; }

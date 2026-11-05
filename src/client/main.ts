@@ -45,6 +45,7 @@ import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
 import { PortalView } from './render/portalView';
 import { ViewModel } from './render/viewmodel';
+import { setPixelTextures } from './render/texFilter';
 
 async function main() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -110,22 +111,25 @@ async function main() {
     match.wallet.cash += KILL_REWARD;
   };
 
-  const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: input.sensitivity, fov: 80 };
+  const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: input.sensitivity, fov: 80, pixel: true };
   const applyToggles = () => {
     portalView.enabled = toggles.portals;
     gfx.bloom.enabled = toggles.bloom;
     input.sensitivity = toggles.sensitivity;
     camera.fov = toggles.fov;
     camera.updateProjectionMatrix();
+    setPixelTextures(toggles.pixel, [scene, viewModel.scene]);
   };
-  setupMenu(input, audio, camera, toggles);
+  setupMenu(input, audio, camera, toggles, applyToggles);
   const gui = createDebugGui(sim.cfg, sim.mover, toggles, applyToggles);
+  applyToggles();
 
   const local = new LocalPlayer(sim, input);
   local.onTick = () => {
     // NPCs judge the player by how they move: speed, and whether they sneak (Shift)
     player.me.vel = sim.state.vel;
-    player.me.quiet = local.input.walk;
+    player.me.quiet = local.input.walk || local.input.crouch;
+    player.me.crouched = local.input.crouch;
     if (!match.result) { bots.tick(TICK_DT); npcs.tick(TICK_DT); }
     player.tick(!build.active && !pockets.rod && !ui.shopOpen && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
@@ -165,6 +169,20 @@ async function main() {
     },
   };
 
+  // ambience: where the player is, sampled twice a second
+  const ambient = { wind: 0.3, city: 0, water: 0, birds: 0 };
+  let ambientT = 0;
+  const nearest = (pts: ArrayLike<number>[] | { pos: ArrayLike<number> }[], p: Vector3) => {
+    let best = Infinity;
+    for (const it of pts) {
+      const a = 'pos' in it ? it.pos : it;
+      const d = (a[0] - p.x) ** 2 + (a[1] - p.y) ** 2 + (a[2] - p.z) ** 2;
+      if (d < best) best = d;
+    }
+    return Math.sqrt(best);
+  };
+  const STEP_LEN = 2.3;
+
   let last = performance.now();
   let time = 0;
   const viewQ = new Quaternion();
@@ -178,6 +196,23 @@ async function main() {
     time += dt;
     handleKeys();
     local.update(input.locked ? dt : 0);
+    // footsteps and landings
+    if (local.landed) { audio.land(local.landed); local.landed = 0; local.stride = 0; }
+    if (local.stride > STEP_LEN) {
+      local.stride = 0;
+      if (!local.input.crouch) audio.step(local.input.walk);
+    }
+    ambientT -= dt;
+    if (ambientT <= 0) {
+      ambientT = 0.5;
+      const pos = sim.state.pos;
+      const city = Math.max(0, Math.min(1, 1 - (nearest(map.houses, pos) - 15) / 60));
+      ambient.city = city;
+      ambient.birds = Math.max(0, Math.min(1, 1 - nearest(map.trees, pos) / 22));
+      ambient.water = Math.max(0, Math.min(1, 1 - nearest(map.ponds, pos) / 16));
+      ambient.wind = Math.min(1, 0.3 + (1 - city) * 0.35 + sim.state.vel.length() / 40);
+    }
+    audio.ambience(ambient, dt);
     local.applyCamera(camera);
     build.update(dt, camera);
     gfx.updateLighting(local.renderFrame);
@@ -234,6 +269,7 @@ async function main() {
     hud.setWeapon(player.weapons, build.active ? 'build' : pockets.rod ? 'rod' : null, { build: eco.has('builder'), rod: eco.has('rod') });
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
     gizmo.render(renderer, viewQ, teamByDown(sim.gravityDown()).id);
+    hud.setSpread(build.active || pockets.rod ? null : player.nextSpread, camera.fov);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
     input.endFrame();
     requestAnimationFrame(frame);

@@ -107,6 +107,18 @@ export class Hud {
     this.hurtT = Math.min(1, this.hurtT + amount / 40);
   }
 
+  private readonly cross = document.getElementById('crosshair')!;
+  private crossGap = 6;
+  /** Spread ticks around the crosshair: `cone` rad at this vertical FOV (deg); null hides them. */
+  setSpread(cone: number | null, fovDeg: number) {
+    this.cross.classList.toggle('gun', cone !== null);
+    if (cone === null) return;
+    const px = Math.tan(cone) / Math.tan((fovDeg * Math.PI) / 360) * (window.innerHeight / 2);
+    // ease, so the ticks breathe instead of jumping
+    this.crossGap += (Math.max(3, px) - this.crossGap) * 0.35;
+    this.cross.style.setProperty('--gap', `${this.crossGap.toFixed(1)}px`);
+  }
+
   killfeed(html: string) {
     const el = document.createElement('div');
     el.innerHTML = html;

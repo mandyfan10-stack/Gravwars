@@ -187,6 +187,7 @@ function crackTexture() {
   t.magFilter = NearestFilter;
   t.minFilter = NearestFilter;
   t.generateMipmaps = false;
+  t.userData.keepFilter = true;
   return t;
 }
 

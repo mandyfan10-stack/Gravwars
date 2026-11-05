@@ -136,13 +136,19 @@ export function groundTextures() {
 
 /**
  * Old-town facade atlas: 4×4 cells, one cell = one window bay of 3×3 m, texture = 12×12 m.
- * Bottom row = ground floor (doors, shop windows). Returns [albedo, tintMask] (white = tinted by wall color).
+ * Bottom row = ground floor (doors, shop windows). Returns [albedo, tintMask (white = tinted by wall color),
+ * glass mask (white = window glass: the room behind it is drawn by the interior shader)].
  */
-export function houseFacadeTextures(): [Texture, Texture] {
+export function houseFacadeTextures(): [Texture, Texture, Texture] {
   const S = 512;
   const C = S / 4;
   const [ca, a] = canvas(S);
   const [cm, m] = canvas(S);
+  const [cw, w] = canvas(S);
+  w.fillStyle = '#000';
+  w.fillRect(0, 0, S, S);
+  const glass = (x: number, y: number, ww: number, hh: number) => { w.fillStyle = '#fff'; w.fillRect(x, y, ww, hh); };
+  const frame = (x: number, y: number, ww: number, hh: number) => { w.fillStyle = '#000'; w.fillRect(x, y, ww, hh); };
   const rng = new Rng(21);
   a.fillStyle = grey(244);
   a.fillRect(0, 0, S, S);
@@ -191,6 +197,8 @@ export function houseFacadeTextures(): [Texture, Texture] {
           a.fillRect(wx, wy, ww, wh);
           a.fillStyle = '#e9e4d8';
           a.fillRect(wx + ww / 2 - 1.5, wy, 3, wh);
+          glass(wx, wy, ww, wh);
+          frame(wx + ww / 2 - 1.5, wy, 3, wh);
           // awning
           const aw = rng.pick(['#b8322a', '#2f6e4a', '#c9a23a', '#3b5c8c', '#8c3b5c']);
           both((g, mk) => {
@@ -221,6 +229,9 @@ export function houseFacadeTextures(): [Texture, Texture] {
       a.fillStyle = '#f3f0e8';
       a.fillRect(wx + ww / 2 - 1.5, wy, 3, wh);
       a.fillRect(wx, wy + wh * 0.38, ww, 3);
+      glass(wx, wy, ww, wh);
+      frame(wx + ww / 2 - 1.5, wy, 3, wh);
+      frame(wx, wy + wh * 0.38, ww, 3);
       if (rng.chance(0.45)) {
         const sc = rng.pick(shutterCols);
         both((g, mk) => {
@@ -236,6 +247,8 @@ export function houseFacadeTextures(): [Texture, Texture] {
         // little balcony
         both((g, mk) => rect(g, mk, '#2c2c2e', wx - 10, wy + wh - 14, ww + 20, 3));
         for (let k = 0; k <= 8; k++) both((g, mk) => rect(g, mk, '#2c2c2e', wx - 10 + k * (ww + 20) / 8, wy + wh - 14, 1.5, 22));
+        frame(wx - 10, wy + wh - 14, ww + 20, 3);
+        for (let k = 0; k <= 8; k++) frame(wx - 10 + k * (ww + 20) / 8, wy + wh - 14, 1.5, 22);
         if (rng.chance(0.6)) {
           a.fillStyle = rng.pick(['#d0453a', '#e07ab0', '#f0d040']);
           for (let k = 0; k < 7; k++) {
@@ -245,11 +258,12 @@ export function houseFacadeTextures(): [Texture, Texture] {
           }
           m.fillStyle = '#000';
           m.fillRect(wx - 10, wy + wh - 20, ww + 20, 8);
+          frame(wx - 10, wy + wh - 20, ww + 20, 8);
         }
       }
     }
   }
-  return [tex(ca), tex(cm, false)];
+  return [tex(ca), tex(cm, false), tex(cw, false)];
 }
 
 /** Clay roof tiles (texture = 2×2 m), white-ish: tinted by the roof color. */
@@ -284,10 +298,11 @@ export function roofTexture(): Texture {
   return tex(c);
 }
 
-/** Glass curtain wall (texture = 12×12 m: 4 floors × 6 panels). */
-export function glassFacadeTexture(): Texture {
+/** Glass curtain wall (texture = 12×12 m: 4 floors × 6 panels). Returns [albedo, glass mask]. */
+export function glassFacadeTexture(): [Texture, Texture] {
   const S = 512;
   const [c, g] = canvas(S);
+  const [cw, w] = canvas(S);
   const rng = new Rng(31);
   const fh = S / 4;
   const pw = S / 6;
@@ -314,13 +329,22 @@ export function glassFacadeTexture(): Texture {
     g.fillStyle = '#8f9496';
     g.fillRect(0, f * fh + 6, S, 2);
   }
-  return tex(c);
+  // glass everywhere except mullions and the floor bands
+  w.fillStyle = '#fff';
+  w.fillRect(0, 0, S, S);
+  w.fillStyle = '#000';
+  for (let k = 0; k <= 6; k++) w.fillRect(k * pw - 2, 0, 4, S);
+  for (let f = 0; f <= 4; f++) w.fillRect(0, f * fh - 7, S, 16);
+  return [tex(c), tex(cw, false)];
 }
 
-/** Concrete office block with ribbon windows (texture = 12×12 m). */
-export function officeFacadeTexture(): Texture {
+/** Concrete office block with ribbon windows (texture = 12×12 m). Returns [albedo, glass mask]. */
+export function officeFacadeTexture(): [Texture, Texture] {
   const S = 512;
   const [c, g] = canvas(S);
+  const [cw, w] = canvas(S);
+  w.fillStyle = '#000';
+  w.fillRect(0, 0, S, S);
   const rng = new Rng(41);
   g.fillStyle = grey(236);
   g.fillRect(0, 0, S, S);
@@ -336,15 +360,21 @@ export function officeFacadeTexture(): Texture {
       grad.addColorStop(1, '#2f3a42');
       g.fillStyle = grad;
       g.fillRect(x, y, S / 8 - 6, h);
+      w.fillStyle = '#fff';
+      w.fillRect(x, y, S / 8 - 6, h);
       if (rng.chance(0.3)) {
+        // blinds pulled down part of the way: opaque, no room behind them
+        const bh = h * rng.range(0.2, 0.6);
         g.fillStyle = 'rgba(230,225,210,0.7)';
-        g.fillRect(x, y, S / 8 - 6, h * rng.range(0.2, 0.6));
+        g.fillRect(x, y, S / 8 - 6, bh);
+        w.fillStyle = '#000';
+        w.fillRect(x, y, S / 8 - 6, bh);
       }
     }
     g.fillStyle = grey(200);
     g.fillRect(0, y + h, S, 4);
   }
-  return tex(c);
+  return [tex(c), tex(cw, false)];
 }
 
 /** Central island: warm sandstone slabs with golden rune grooves (texture = 4 m). Returns [albedo, emissive]. */

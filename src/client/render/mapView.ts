@@ -10,6 +10,8 @@ import { Rng } from '../../shared/math';
 import {
   coreTextures, glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture,
 } from './textures';
+import { withRooms } from './rooms';
+import { trackTexture } from './texFilter';
 
 /**
  * World-space triplanar detail map (multiplied into the color). Works for instanced boxes of any size and
@@ -54,7 +56,7 @@ function triplanar(mat: MeshStandardMaterial, map: Texture, metersPerTile: numbe
 /** Albedo map whose tinted part (mask = white) is multiplied by vertex color, the rest (frames, glass) is not. */
 function tintMasked(mat: MeshStandardMaterial, mask: Texture): MeshStandardMaterial {
   mat.onBeforeCompile = (sh) => {
-    sh.uniforms.tintMask = { value: mask };
+    sh.uniforms.tintMask = { value: trackTexture(mask) };
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform sampler2D tintMask;')
       .replace('#include <color_fragment>', '')
@@ -245,17 +247,22 @@ export function buildMapView(map: MapData): MapView {
   }
 
   // --- old-town houses
-  const [fA, fMask] = houseFacadeTextures();
+  const [fA, fMask, fGlass] = houseFacadeTextures();
   const houses = buildHouses(map.houses);
-  const wallMat = tintMasked(new MeshStandardMaterial({ map: fA, vertexColors: true, roughness: 0.9 }), fMask);
+  // rooms behind the windows: one 3 × 3 m bay per room
+  const wallMat = withRooms(tintMasked(new MeshStandardMaterial({ map: fA, vertexColors: true, roughness: 0.9 }), fMask),
+    { mask: fGlass, cells: [4, 4], metres: 12, depth: 3.5, seed: 1 });
   const roofMat = new MeshStandardMaterial({ map: roofTexture(), vertexColors: true, roughness: 0.8, side: DoubleSide });
   group.add(shadowy(new Mesh(houses.walls, wallMat)), shadowy(new Mesh(houses.roofs, roofMat)));
 
   // --- skyscrapers and office blocks
-  const towerWall = new MeshStandardMaterial({
-    map: glassFacadeTexture(), roughness: 0.18, metalness: 0.55, vertexColors: true, envMapIntensity: 1.4,
-  });
-  const officeWall = new MeshStandardMaterial({ map: officeFacadeTexture(), roughness: 0.85, vertexColors: true });
+  const [glassA, glassMask] = glassFacadeTexture();
+  const [officeA, officeMask] = officeFacadeTexture();
+  const towerWall = withRooms(new MeshStandardMaterial({
+    map: glassA, roughness: 0.18, metalness: 0.55, vertexColors: true, envMapIntensity: 1.4,
+  }), { mask: glassMask, cells: [3, 4], metres: 12, depth: 6, seed: 2, variety: 0.25, glassTint: 0.45 });
+  const officeWall = withRooms(new MeshStandardMaterial({ map: officeA, roughness: 0.85, vertexColors: true }),
+    { mask: officeMask, cells: [4, 4], metres: 12, depth: 5, seed: 3, variety: 0.35, glassTint: 0.2 });
   const roofTop = triplanar(new MeshStandardMaterial({ roughness: 0.95, color: 0x9d9a93 }), groundTextures().concrete, 4);
   for (const b of map.buildings) {
     const [hx, hy, hz] = b.half;

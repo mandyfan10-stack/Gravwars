@@ -7,6 +7,8 @@ export interface DebugToggles {
   bloom: boolean;
   sensitivity: number;
   fov: number;
+  /** Nearest texture filtering (crisp texels). */
+  pixel: boolean;
 }
 
 /** Live tuning of movement in Source units (u/s), like cvars. */

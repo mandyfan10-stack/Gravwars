@@ -192,6 +192,35 @@ await g(`(() => {
 await page.keyboard.press('Digit1');
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/19-materials.png` });
+
+// windows: rooms behind the glass on an old-town house, then the towers along the street
+const facing = async (pick: string, dist: number, pitch: number) => {
+  await g(`(() => {
+  const G = __game, sp = G.map.spawns.red.pos, h = [...G.map.houses].sort((a, b) => Math.hypot(a.pos[0] - sp[0], a.pos[1] - sp[1], a.pos[2] - sp[2]) - Math.hypot(b.pos[0] - sp[0], b.pos[1] - sp[1], b.pos[2] - sp[2]))${pick};
+  const V = G.sim.state.pos.constructor, Q = G.camera.quaternion.constructor;
+  const q = new Q(...h.quat), out = new V(0, 0, 1).applyQuaternion(q);
+  G.sim.state.pos.set(...h.pos).addScaledVector(out, h.size[2] / 2 + ${dist}).add(new V(0, 0.95, 0));
+  G.sim.state.vel.set(0, 0, 0); G.sim.mover.place(G.sim.state); G.local.snap();
+  window.__face = out;
+})()`);
+  await page.waitForTimeout(200);
+  await g(`__game.look(Math.atan2(__face.x, __face.z), ${pitch})`);
+};
+await facing('[3]', 7, 0.22);
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/20-windows.png` });
+await g(`(() => {
+  const G = __game, n = G.npcs.npcs.find((n) => n.kind === 'bum' && n.island === 'red'), p = n.sim.state.pos;
+  G.sim.state.pos.copy(p).add(new p.constructor(0.8, 0.1, 0));
+  G.sim.state.vel.set(0, 0, 0); G.sim.mover.place(G.sim.state); G.local.snap();
+  const towers = G.map.buildings.filter((b) => b.style === 'tower' && Math.abs(b.pos[1] - p.y) < 120);
+  towers.sort((a, b) => Math.hypot(a.pos[0] - p.x, a.pos[2] - p.z) - Math.hypot(b.pos[0] - p.x, b.pos[2] - p.z));
+  window.__tower = towers.find((b) => Math.hypot(b.pos[0] - p.x, b.pos[2] - p.z) > 25) ?? towers[0];
+})()`);
+await page.waitForTimeout(200);
+await g(`(() => { const G = __game, t = __tower, p = G.sim.state.pos; G.look(Math.atan2(-(t.pos[0] - p.x), -(t.pos[2] - p.z)), 0.3); })()`);
+await page.waitForTimeout(700);
+await page.screenshot({ path: `${out}/21-towers.png` });
 await browser.close();
 if (errors.length) console.log('page errors:\n' + errors.slice(0, 10).join('\n'));
 console.log('saved to', out);

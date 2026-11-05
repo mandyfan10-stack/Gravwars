@@ -11,6 +11,8 @@ export const PLAYER_HEIGHT = 1.83;
 export const PLAYER_HALF_SEGMENT = PLAYER_HEIGHT / 2 - PLAYER_RADIUS;
 /** Eye position relative to capsule center, along the player's up axis. */
 export const EYE_OFFSET = 0.71;
+/** Crouching lowers the eye by this much, m. */
+export const CROUCH_EYE_DROP = 0.5;
 
 export interface MovementConfig {
   gravity: number;

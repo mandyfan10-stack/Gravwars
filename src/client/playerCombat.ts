@@ -1,6 +1,6 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
 import { Combat, CombatEvent, Faction, MAX_HP, Target } from '../shared/combat';
-import { EYE_OFFSET, TICK_DT } from '../shared/constants';
+import { CROUCH_EYE_DROP, EYE_OFFSET, TICK_DT } from '../shared/constants';
 import { Rng, upOf } from '../shared/math';
 import { viewQuat } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
@@ -17,6 +17,8 @@ const _side = new Vector3();
 const _upv = new Vector3();
 /** Share of the recoil climb that the gun brings back by itself after the trigger is released. */
 const RECOIL_RETURN = 0.6;
+/** Crouching steadies the aim: spread × this. */
+export const CROUCH_ACCURACY = 0.65;
 
 const KILL = icon('swords');
 const SELF = icon('skull');
@@ -86,6 +88,14 @@ export class PlayerCombat {
     }
   }
 
+  /** Cone half-angle the next shot would have right now (null: not holding a gun). */
+  get nextSpread(): number | null {
+    const ws = this.weapons, s = this.sim.state;
+    if (!isGun(ws.current)) return null;
+    const planar = _upv.copy(s.vel).addScaledVector(this.me.up, -s.vel.dot(this.me.up)).length();
+    return shotSpread(WEAPONS[ws.current], ws.heat + 1, planar / this.sim.cfg.maxSpeed, !s.onGround) * (s.crouched ? CROUCH_ACCURACY : 1);
+  }
+
   /** 0..1 while reloading, otherwise 0. */
   get reloadProgress() {
     const ws = this.weapons;
@@ -110,14 +120,14 @@ export class PlayerCombat {
     this.pendingSelect = null;
     this.sinceShot += TICK_DT;
     if (fired) {
-      const eye = sim.state.pos.clone().addScaledVector(me.up, EYE_OFFSET);
+      const eye = sim.state.pos.clone().addScaledVector(me.up, EYE_OFFSET - (sim.state.crouched ? CROUCH_EYE_DROP : 0));
       viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
       const dir = new Vector3(0, 0, -1).applyQuaternion(_vq);
       const def = WEAPONS[fired];
       if (isGun(fired)) {
         // accuracy: a random point in the cone (bloom from the burst, worse on the move / in the air)
         const planar = _upv.copy(sim.state.vel).addScaledVector(me.up, -sim.state.vel.dot(me.up)).length();
-        const cone = shotSpread(def, weapons.heat, planar / sim.cfg.maxSpeed, !sim.state.onGround);
+        const cone = shotSpread(def, weapons.heat, planar / sim.cfg.maxSpeed, !sim.state.onGround) * (sim.state.crouched ? CROUCH_ACCURACY : 1);
         const a = cone * Math.sqrt(this.rng.next());
         const t = this.rng.next() * Math.PI * 2;
         _side.set(Math.cos(t), Math.sin(t), 0).applyQuaternion(_vq);

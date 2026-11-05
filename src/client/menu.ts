@@ -6,7 +6,7 @@ import type { Input } from './input';
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 /** Main / pause menu: start button, help & settings panels, volume / sensitivity / FOV sliders. */
-export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCamera, toggles: DebugToggles) {
+export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCamera, toggles: DebugToggles, onToggles: () => void) {
   $('start-game').addEventListener('click', () => audio.unlock());
 
   let started = false;
@@ -42,5 +42,10 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     toggles.fov = camera.fov;
     camera.updateProjectionMatrix();
     $('fov-value').textContent = `${fov.value}°`;
+  });
+  const filter = $<HTMLSelectElement>('tex-filter');
+  filter.addEventListener('change', () => {
+    toggles.pixel = filter.value === 'pixel';
+    onToggles();
   });
 }

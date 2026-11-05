@@ -73,6 +73,8 @@ export const NPC = {
     still: 0.35,
     /** Above this planar speed footsteps are loud (a quiet walk is ~3.4 m/s). */
     loud: 4.5,
+    /** A crouched figure is harder to make out. */
+    crouch: 0.6,
   },
   /** Islands nobody is walking on are simulated this many times slower (bums still drink, bottles still drop). */
   idleStep: 8,
@@ -440,7 +442,7 @@ export class NpcManager {
       let gain = 0;
       if ((inCone || close) && this.combat.lineOfSight(eye, _w.copy(t.center).addScaledVector(t.up, 0.5))) {
         const motion = loud ? N.run : speed > 0.5 ? N.walk : N.still;
-        gain = N.rate * motion * Math.max(0.15, 1 - d / cfg.sight) * (close ? 3 : 1);
+        gain = N.rate * motion * Math.max(0.15, 1 - d / cfg.sight) * (close ? 3 : 1) * (t.crouched ? N.crouch : 1);
         seen.add(t.id);
       } else if (loud && d < N.steps) {
         // footsteps: turn around, slowly get suspicious

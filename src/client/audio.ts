@@ -96,5 +96,59 @@ export class GameAudio {
   cast() { this.noise(.18,.05,4200,1200);this.tone('sine',900,300,.18,.02); }
   bite() { this.tone('sine',520,420,.08,.06);this.tone('sine',520,420,.08,.06,.12); }
   reel() { for (let i=0;i<6;i++) this.tone('square',2400,2200,.015,.015,i*.04); }
+  /** Footstep: soft for a quiet walk / crouch. */
+  step(soft = false) {
+    const v = soft ? .25 : 1;
+    this.noise(.06, .07 * v, 900 + Math.random() * 500, 180, 0, 'lowpass');
+    this.tone('sine', 85 + Math.random() * 20, 50, .05, .05 * v);
+  }
+  /** Landing after a fall at `speed` m/s. */
+  land(speed: number) {
+    const v = Math.min(1, speed / 14);
+    this.noise(.12, .14 * v + .03, 700, 120);
+    this.tone('sine', 70, 38, .12, .14 * v);
+  }
+
+  private amb: { gains: Record<'wind' | 'city' | 'water', GainNode>; windF: BiquadFilterNode } | null = null;
+  private birdT = 2;
+  /**
+   * Ambient loops, faded by where the player is (0..1 each): wind (open air, speed), the city's low rumble, water by
+   * the pond; birds chirp now and then near trees.
+   */
+  ambience(o: { wind: number; city: number; water: number; birds: number }, dt: number) {
+    const c = this.ctx;
+    if (!c || c.state !== 'running') return;
+    if (!this.amb) {
+      this.noise(0.001, 0.0001, 100, 100); // creates the shared noise buffer
+      if (!this.noiseBuf) return;
+      const loop = (type: BiquadFilterType, freq: number, q: number) => {
+        const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+        src.buffer = this.noiseBuf; src.loop = true;
+        f.type = type; f.frequency.value = freq; f.Q.value = q;
+        g.gain.value = 0;
+        src.connect(f).connect(g).connect(c.destination);
+        src.start(0, Math.random() * 1.5);
+        return { f, g };
+      };
+      const wind = loop('bandpass', 420, 0.8), city = loop('lowpass', 160, 0.5), water = loop('bandpass', 1300, 0.6);
+      this.amb = { gains: { wind: wind.g, city: city.g, water: water.g }, windF: wind.f };
+    }
+    const t = c.currentTime;
+    const set = (g: GainNode, v: number) => g.gain.setTargetAtTime(Math.max(0, v) * this.volume, t, 0.6);
+    set(this.amb.gains.wind, 0.035 * o.wind);
+    set(this.amb.gains.city, 0.09 * o.city);
+    set(this.amb.gains.water, 0.022 * o.water);
+    // gusts: the wind's colour drifts
+    this.amb.windF.frequency.setTargetAtTime(300 + 250 * o.wind + Math.sin(t * 0.37) * 120 + Math.sin(t * 1.3) * 40, t, 0.4);
+    this.birdT -= dt;
+    if (this.birdT <= 0) {
+      this.birdT = 1.5 + Math.random() * 5;
+      if (o.birds > 0.05) {
+        const f = 2600 + Math.random() * 2200, n = 2 + Math.floor(Math.random() * 4), v = 0.018 * o.birds;
+        for (let i = 0; i < n; i++) this.tone('sine', f * (1 + Math.random() * 0.15), f * (0.75 + Math.random() * 0.4), .06, v, i * (0.08 + Math.random() * 0.05));
+      }
+    }
+  }
+
   explosion() { this.noise(.55,.23,1600,100);this.tone('sine',100,34,.4,.20); }
 }

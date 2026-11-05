@@ -23,8 +23,10 @@ export interface Target {
   aggro?: number | null;
   /** Velocity (footstep noise for NPC hearing / sight). */
   vel?: Vector3;
-  /** Quiet walk (Shift): no footsteps. */
+  /** Quiet walk (Shift) / crouch: no footsteps. */
   quiet?: boolean;
+  /** Crouching: NPCs make it out more slowly. */
+  crouched?: boolean;
   /** Took damage from `owner` (NPCs react to being hit). */
   onHit?: (owner: number, damage: number) => void;
   center: Vector3;

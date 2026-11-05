@@ -5,6 +5,10 @@ import type { PhysicsWorld, Rapier } from './physics';
 
 /** Quiet walk speed, share of maxSpeed (Source / CS: ~0.52). */
 export const WALK_SPEED = 0.45;
+/** Crouched speed, share of maxSpeed (CS: 0.34). */
+export const CROUCH_SPEED = 0.34;
+/** A jump still works this long after running off an edge, s. */
+export const COYOTE_TIME = 0.1;
 
 export interface PlayerState {
   pos: Vector3;
@@ -18,6 +22,10 @@ export interface PlayerState {
   groundNormal: Vector3;
   jumpReleased: boolean;
   noclip: boolean;
+  /** Time since the feet left the ground without a jump (coyote jump), s; -1 = jumped / not applicable. */
+  airT: number;
+  /** Crouching this tick (slower, quieter, steadier aim, lower eye). */
+  crouched: boolean;
 }
 
 export interface MoveInput {
@@ -29,6 +37,8 @@ export interface MoveInput {
   sprint: boolean;
   /** Quiet walk (Shift): slower on the ground and silent for NPCs. */
   walk: boolean;
+  /** Crouch (Ctrl / C): slower still, silent, lower eye. */
+  crouch: boolean;
   yaw: number;
   pitch: number;
 }
@@ -36,12 +46,12 @@ export interface MoveInput {
 export function createPlayerState(): PlayerState {
   return {
     pos: new Vector3(), vel: new Vector3(), frame: new Quaternion(), yaw: 0, pitch: 0,
-    onGround: false, groundNormal: new Vector3(0, 1, 0), jumpReleased: true, noclip: false,
+    onGround: false, groundNormal: new Vector3(0, 1, 0), jumpReleased: true, noclip: false, airT: -1, crouched: false,
   };
 }
 
 export function emptyInput(): MoveInput {
-  return { forward: 0, right: 0, up: 0, jump: false, sprint: false, walk: false, yaw: 0, pitch: 0 };
+  return { forward: 0, right: 0, up: 0, jump: false, sprint: false, walk: false, crouch: false, yaw: 0, pitch: 0 };
 }
 
 const AY = new Vector3(0, 1, 0);
@@ -148,16 +158,21 @@ export class Mover {
 
     moveBasis(s.frame, s.yaw, _fwd, _right);
     _wish.set(0, 0, 0).addScaledVector(_fwd, input.forward).addScaledVector(_right, input.right);
-    const wishSpeed = Math.min(_wish.length(), 1) * cfg.maxSpeed * (input.walk ? WALK_SPEED : 1);
+    s.crouched = input.crouch;
+    const slow = input.crouch ? CROUCH_SPEED : input.walk ? WALK_SPEED : 1;
+    const wishSpeed = Math.min(_wish.length(), 1) * cfg.maxSpeed * slow;
     if (_wish.lengthSq() > 1e-8) _wish.normalize();
 
     // jump (before friction → frame-perfect bhop keeps all speed)
     if (!input.jump) s.jumpReleased = true;
     let onGround = s.onGround;
-    if (onGround && input.jump && (cfg.autoBhop || s.jumpReleased)) {
+    // coyote time: walked off an edge a moment ago and not falling fast yet → still allowed to jump
+    const coyote = !onGround && s.airT >= 0 && s.airT < COYOTE_TIME && s.vel.dot(up) <= 0;
+    if ((onGround || coyote) && input.jump && (cfg.autoBhop || s.jumpReleased)) {
       s.vel.addScaledVector(up, cfg.jumpSpeed - s.vel.dot(up));
       onGround = false;
       s.jumpReleased = false;
+      s.airT = -1;
     }
 
     if (onGround) {
@@ -203,7 +218,11 @@ export class Mover {
     }
 
     this.sync(s);
+    const wasGround = onGround;
     this.categorize(s, up);
+    if (s.onGround) s.airT = 0;
+    else if (wasGround && s.airT === 0) s.airT = dt; // just walked off
+    else if (s.airT > 0) s.airT += dt;
   }
 
   /** Ground check: short probe along gravity. */

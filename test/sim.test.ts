@@ -12,7 +12,7 @@ import { upOf } from '../src/shared/math';
 import { moveBasis } from '../src/shared/movement';
 import { HU, TICK_DT, WORLD } from '../src/shared/constants';
 import { generateMap, PLAYGROUND } from '../src/shared/map';
-import { emptyInput, MoveInput } from '../src/shared/movement';
+import { CROUCH_SPEED, emptyInput, MoveInput } from '../src/shared/movement';
 import { buildPhysicsWorld, initRapier } from '../src/shared/physics';
 import { PlayerSim } from '../src/shared/sim';
 
@@ -58,6 +58,19 @@ place(14, G + 1, 10, 0);
 run(30, {});
 run(128, { forward: 1 });
 check('ground speed ≈ maxSpeed', Math.abs(planarSpeed() - 300 * HU) < 0.05, `${(planarSpeed() / HU).toFixed(0)} u/s`);
+run(128, { forward: 1, crouch: true });
+check('crouch: slow walk', Math.abs(planarSpeed() - 300 * HU * CROUCH_SPEED) < 0.05 && s.crouched, `${(planarSpeed() / HU).toFixed(0)} u/s`);
+run(10, {});
+check('stand up again', !s.crouched);
+// coyote time: a jump right after running off an edge still works, a late one does not
+const airJump = (airT: number) => {
+  place(0, WORLD.coreHalf + 30, 0, 0);
+  s.airT = airT;
+  s.jumpReleased = true;
+  run(1, { jump: true });
+  return s.vel.y > 3;
+};
+check('coyote jump just after leaving the ground', airJump(0.05) && !airJump(0.3) && !airJump(-1));
 
 // 3. bhop + air strafe gains speed
 place(0, WORLD.coreHalf + 1, 0, 0); // open middle of the top core face
