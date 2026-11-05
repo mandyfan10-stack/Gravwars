@@ -35,6 +35,10 @@ await g(`(() => {
   const d = b.sim.state.pos.clone().sub(G.sim.state.pos).applyQuaternion(G.sim.state.frame.clone().invert());
   G.look(Math.atan2(-d.x, -d.z), -0.12);
   G.combat.targets.find((t) => t.id === 0).hp = 1e9;
+  // a rifle in its hands (bots get it later in the match)
+  Object.assign(b.weapons, { current: 'rifle' });
+  b.weapons.owned.rifle = true; b.weapons.ammo.rifle = 30;
+  G.match.time = Math.max(G.match.time, 200);
 })()`);
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/3-bot.png` });
@@ -154,6 +158,40 @@ await page.screenshot({ path: `${out}/14-gang-alert.png` });
 await g(`(() => { const t = __npc.target; __game.combat.damage(t, 999, 0, false, t.center); })()`).catch((e) => errors.push(String(e)));
 await page.waitForTimeout(1800);
 await page.screenshot({ path: `${out}/15-cash.png` });
+
+// guns: the rifle, a reload in progress, then building materials with damage (cracks)
+await home(2.4, 0.5, -Math.PI / 2, 0.02);
+await g(`(() => { const G = __game, ws = G.weapons; ws.owned.rifle = true; ws.ammo.rifle = 17; ws.reserve.rifle = 60; ws.ammo.pistol = 15; })()`);
+await page.keyboard.press('Digit3');
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/16-rifle.png` });
+await page.keyboard.press('KeyR');
+await page.waitForTimeout(650);
+await page.screenshot({ path: `${out}/17-reload.png` });
+await page.waitForTimeout(1800);
+await page.keyboard.press('Digit2');
+await g(`__game.weapons.ammo.pistol = 0`);
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/18-pistol-empty.png` });
+await g(`__game.look(-Math.PI / 2, -0.05)`);
+await page.waitForTimeout(300);
+await g(`(() => {
+  const G = __game, P = G.sim.state.pos, V = P.constructor, Q = G.camera.quaternion.constructor;
+  const f = G.camera.getWorldDirection(new V()); f.y = 0;
+  const ax = Math.abs(f.x) > Math.abs(f.z) ? new V(Math.sign(f.x), 0, 0) : new V(0, 0, Math.sign(f.z));
+  const side = new V(-ax.z, 0, ax.x);
+  const q = new Q().setFromUnitVectors(new V(1, 0, 0), ax);
+  const feet = P.y - 0.915;
+  [['wood', 1], ['stone', 0.5], ['metal', 0.25], ['wood', 0.2]].forEach(([m, hp], i) => {
+    const c = P.clone().addScaledVector(ax, 8).addScaledVector(side, (i - 1.5) * 4.1); c.y = feet + 1.5;
+    const b = G.blocks.insertPiece('wall', c, new V(0.125, 1.5, 2), q, m);
+    b.hp = Math.round(b.maxHp * hp);
+  });
+  G.blocks.version++;
+})()`);
+await page.keyboard.press('Digit1');
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/19-materials.png` });
 await browser.close();
 if (errors.length) console.log('page errors:\n' + errors.slice(0, 10).join('\n'));
 console.log('saved to', out);

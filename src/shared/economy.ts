@@ -212,7 +212,7 @@ export const SHOP: ShopItem[] = [
   { id: 'grenade', label: 'Гранаты ×2', price: 18, currency: 'cash', step: 'grenade', needs: 'rifle', kind: 'weapon', weapon: 'grenade', count: 2 },
   { id: 'stone', label: 'Камень ×12', price: 16, currency: 'cash', step: 'blocks', needs: 'grenade', kind: 'blocks', material: 'stone', count: 12 },
   { id: 'metal', label: 'Металл ×6', price: 3, currency: 'crystal', needs: 'blocks', kind: 'blocks', material: 'metal', count: 6 },
-  { id: 'ammo-pistol', label: 'Патроны: пистолет ×12', price: 4, currency: 'cash', needs: 'pistol', kind: 'ammo', weapon: 'pistol', count: 12 },
+  { id: 'ammo-pistol', label: 'Патроны: пистолет ×15', price: 4, currency: 'cash', needs: 'pistol', kind: 'ammo', weapon: 'pistol', count: 15 },
   { id: 'ammo-rifle', label: 'Патроны: автомат ×30', price: 8, currency: 'cash', needs: 'rifle', kind: 'ammo', weapon: 'rifle', count: 30 },
   { id: 'wood', label: 'Дерево ×16', price: 6, currency: 'cash', needs: 'builder', kind: 'blocks', material: 'wood', count: 16 },
   { id: 'heal', label: 'Аптечка', price: 10, currency: 'cash', kind: 'heal' },

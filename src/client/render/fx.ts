@@ -122,8 +122,16 @@ export class Fx {
 
   handle(e: CombatEvent) {
     if (e.type === 'impact') {
-      this.burst(e.pos, e.normal, 10, 6, new Color(3, 2.2, 1.2), 0.35);
-      this.burst(e.pos, e.normal, 5, 1.5, new Color(0.5, 0.45, 0.4), 0.6);
+      // by material: wood splinters, stone grit, metal sparks; the map's concrete gives a puff of dust and a few sparks
+      const m = e.material;
+      if (m === 'wood') this.burst(e.pos, e.normal, 9, 3, new Color(0.62, 0.42, 0.24), 0.5);
+      else if (m === 'metal') this.burst(e.pos, e.normal, 14, 7, new Color(3.2, 2.2, 1.1), 0.25);
+      else {
+        this.burst(e.pos, e.normal, 5, 5, new Color(2.6, 1.9, 1.1), 0.25);
+        this.burst(e.pos, e.normal, 7, 1.6, m === 'stone' ? new Color(0.62, 0.62, 0.6) : new Color(0.5, 0.47, 0.42), 0.6);
+      }
+    } else if (e.type === 'ricochet') {
+      this.burst(e.pos, e.normal, 12, 8, new Color(3.5, 2.6, 1.4), 0.2);
     } else if (e.type === 'fizzle') {
       this.burst(e.pos, null, 14, 3, new Color(2, 0.8, 3.5), 0.5);
     } else if (e.type === 'hit' && e.target !== 0) { // no sparks in the local player's own face
@@ -160,11 +168,12 @@ export class Fx {
         const mo = this.muzzleOffset.get(p.id);
         _b.copy(p.pos);
         if (mo) {
-          const k = Math.max(0, 1 - p.pos.distanceTo(mo.start) / 12);
+          const k = Math.max(0, 1 - p.pos.distanceTo(mo.start) / 40);
           _b.addScaledVector(mo.off, k);
         }
         const sp = p.vel.length();
-        const len = Math.min(sp * 0.035, p.age * sp + 0.3);
+        // a short streak behind the bullet (real bullets are fast: never longer than a few metres)
+        const len = Math.min(sp * 0.012, 6, p.age * sp + 0.3);
         _d.copy(p.vel).divideScalar(sp);
         _q.setFromUnitVectors(Z, _d);
         _m.compose(_b, _q, _s.set(0.025, 0.025, len));

@@ -59,6 +59,7 @@ async function main() {
   const blocks = new BlockSystem(R, world, sim.mover.collider);
   combat.onWorldDamage = (handle, damage) => { blocks.damageCollider(handle, damage); };
   combat.onExplosion = (pos, radius, damage) => blocks.explosion(pos, radius, damage);
+  combat.materialOf = (handle) => blocks.byCollider(handle)?.material ?? null;
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
   blocks.characters.push(...bots.bots.map((b) => b.sim.mover.collider));
@@ -100,6 +101,10 @@ async function main() {
   const generators = new GeneratorView(scene, match);
   const guide = new Guide(match, bots, sim);
   player.canRespawn = () => match.onDeath();
+  player.onRecoil = (pitch, yaw) => {
+    input.pitch = Math.max(-1.55, Math.min(1.55, input.pitch + pitch));
+    input.yaw -= yaw;
+  };
   player.onKill = (tg) => {
     if (tg.npc) return; // city NPCs pay with what they drop
     match.wallet.cash += KILL_REWARD;
@@ -212,6 +217,7 @@ async function main() {
     viewModel.update(dt, {
       speed: sim.state.vel.clone().addScaledVector(pUp, -sim.state.vel.dot(pUp)).length(),
       lookDX: lastYaw - input.yaw, lookDY: input.pitch - lastPitch, reload: player.reloadProgress,
+      empty: (player.weapons.current === 'pistol' || player.weapons.current === 'rifle') && player.weapons.ammo[player.weapons.current] === 0,
       sunCam: gfx.sunDir.clone().applyQuaternion(invCam), upCam: gfx.upDir.clone().applyQuaternion(invCam),
       aspect: camera.aspect,
     });

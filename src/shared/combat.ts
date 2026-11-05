@@ -4,7 +4,7 @@ import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 import { crossesPortal, PortalRuntime } from './portals';
 import type { TeamId } from './teams';
-import { damageFalloff, WeaponId, WEAPONS } from './weapons';
+import { energyLeft, PENETRATION, WeaponId, WEAPONS } from './weapons';
 import { Wind } from './wind';
 
 /**
@@ -49,13 +49,17 @@ export interface Projectile {
   /** Gravity direction of the shooter at fire time. */
   down: Vector3;
   age: number;
+  /** Bullets: glanced off a surface already (only once). */
+  ricochets: number;
   resting: boolean;
   alive: boolean;
 }
 
 export type CombatEvent =
   | { type: 'fire'; weapon: WeaponId; owner: number; origin: Vector3; dir: Vector3; projectile: number }
-  | { type: 'impact'; pos: Vector3; normal: Vector3 }
+  | { type: 'impact'; pos: Vector3; normal: Vector3; material?: BulletMaterial }
+  /** A bullet glanced off a hard surface at a shallow angle and flies on. */
+  | { type: 'ricochet'; pos: Vector3; normal: Vector3 }
   | { type: 'bounce'; pos: Vector3; speed: number }
   | { type: 'fizzle'; pos: Vector3 }
   | { type: 'explode'; pos: Vector3; radius: number }
@@ -67,6 +71,15 @@ export type CombatEvent =
 export interface Noise { pos: Vector3; radius: number; owner: number }
 /** Hearing radius of actions, m. */
 export const NOISE = { gun: 38, grenade: 45, punch: 9 };
+
+/** What a bullet hits in the world: a placed block / piece of some material, or the map itself (null: concrete). */
+export type BulletMaterial = keyof typeof PENETRATION;
+/** Bullets hitting hard surfaces flatter than this (cos of the angle to the normal) glance off, keeping `keep` of the speed. */
+export const RICOCHET = { cos: 0.26, keep: 0.6 };
+/** A bullet that comes out of a wall slower than this, m/s, stays in it. */
+const PIERCE_MIN_SPEED = 120;
+/** Thickest wall a bullet is tested against, m. */
+const PIERCE_PROBE = 1.2;
 
 export const MAX_HP = 100;
 const DUMMY_RESPAWN = 3;
@@ -80,6 +93,8 @@ const _c0 = new Vector3();
 const _c1 = new Vector3();
 const _p = new Vector3();
 const _q = new Vector3();
+const _rel = new Vector3();
+const _dir = new Vector3();
 
 /** Closest points between segments p0p1 and q0q1. Returns squared distance, s/t written to out. */
 function segSeg(p0: Vector3, p1: Vector3, q0: Vector3, q1: Vector3, out: { s: number; t: number }): number {
@@ -137,6 +152,8 @@ export class Combat {
   private nextId = 1;
   onWorldDamage: (handle: number, damage: number) => void = () => {};
   onExplosion: (pos: Vector3, radius: number, damage: number) => void = () => {};
+  /** Material of a world collider for bullets (placed blocks); null = map geometry, not penetrable. */
+  materialOf: (handle: number) => BulletMaterial | null = () => null;
   /** Handles of character-controller colliders: rays pass through them (capsules are tested analytically). */
   private readonly characters = new Set<number>();
   /** Ray filter that skips every character capsule. */
@@ -172,7 +189,7 @@ export class Combat {
     const p: Projectile = {
       id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(), origin: origin.clone(),
       vel: dir.clone().normalize().multiplyScalar(def.speed).addScaledVector(ownerVel, def.inherit),
-      down: down.clone().normalize(), age: 0, resting: false, alive: true,
+      down: down.clone().normalize(), age: 0, ricochets: 0, resting: false, alive: true,
     };
     this.projectiles.push(p);
     if (weapon !== 'grenade') this.noises.push({ pos: origin.clone(), radius: NOISE.gun, owner });
@@ -285,6 +302,52 @@ export class Combat {
     }
   }
 
+  /**
+   * A bullet reaches a world surface: it damages what it hit, then glances off (shallow angle, hard surface),
+   * goes through (a wall thin and soft enough for its speed, it slows down) or stays there.
+   */
+  private bulletHitsWorld(p: Projectile, end: Vector3, normal: Vector3, handle: number) {
+    const def = WEAPONS[p.weapon];
+    const speed = p.vel.length();
+    const dir = _dir.copy(p.vel).divideScalar(speed);
+    const material = this.materialOf(handle);
+    const cos = -dir.dot(normal);
+    // measure the wall before the damage can remove it
+    const thick = material && material !== 'metal' ? this.thickness(handle, end, dir) : null;
+    this.onWorldDamage(handle, Math.max(1, Math.round(def.damage * energyLeft(def, speed))));
+    this.events.push({ type: 'impact', pos: end.clone(), normal: normal.clone(), material: material ?? undefined });
+    if (material !== 'wood' && cos < RICOCHET.cos && p.ricochets === 0) {
+      p.ricochets++;
+      p.vel.addScaledVector(normal, -2 * p.vel.dot(normal)).multiplyScalar(RICOCHET.keep);
+      // a little scatter off the surface (deterministic per bullet)
+      const j = Math.sin(p.id * 12.9898) * 43758.5453;
+      p.vel.addScaledVector(normal, speed * RICOCHET.keep * 0.05 * (j - Math.floor(j)));
+      p.pos.copy(end).addScaledVector(normal, 0.02);
+      this.events.push({ type: 'ricochet', pos: end.clone(), normal: normal.clone() });
+      return;
+    }
+    if (material && thick !== null) {
+      const left = speed - thick * PENETRATION[material];
+      if (left > PIERCE_MIN_SPEED) {
+        p.vel.multiplyScalar(left / speed);
+        p.pos.copy(end).addScaledVector(dir, thick + 0.02);
+        this.events.push({ type: 'impact', pos: p.pos.clone(), normal: dir.clone(), material });
+        return;
+      }
+    }
+    p.alive = false;
+    p.pos.copy(end);
+  }
+
+  /** How far a ray entering collider `handle` at `entry` along `dir` travels inside it (null: thicker than the probe). */
+  private thickness(handle: number, entry: Vector3, dir: Vector3): number | null {
+    const from = _p.copy(entry).addScaledVector(dir, PIERCE_PROBE);
+    const hit = this.world.castRay(new this.R.Ray(from, _q.copy(dir).negate()), PIERCE_PROBE, true,
+      undefined, undefined, undefined, undefined, (c) => c.handle === handle);
+    if (!hit || hit.timeOfImpact < 1e-4) return null;
+    return PIERCE_PROBE - hit.timeOfImpact;
+  }
+
   tick(dt: number) {
     this.time += dt;
     for (const tg of this.targets) {
@@ -311,7 +374,12 @@ export class Combat {
       }
       if (p.resting) continue;
       _acc.copy(p.down).multiplyScalar(DEFAULT_MOVEMENT.gravity * def.gravityScale);
-      _acc.add(this.wind.felt(this.time, p.down, _wind).multiplyScalar(def.windScale * this.windMul));
+      this.wind.felt(this.time, p.down, _wind).multiplyScalar(def.windScale * this.windMul);
+      if (def.drag) {
+        // bullets: quadratic air drag against the moving air (the wind is the air's velocity here, m/s)
+        _rel.copy(p.vel).sub(_wind);
+        _acc.addScaledVector(_rel, -def.drag * _rel.length());
+      } else _acc.add(_wind); // grenades: the wind pushes them along (Worms style)
       p.vel.addScaledVector(_acc, dt);
       _a.copy(p.pos);
       _b.copy(p.pos).addScaledVector(p.vel, dt);
@@ -329,16 +397,13 @@ export class Combat {
       if (th && (!wh || th.t <= wh.t)) {
         p.alive = false;
         p.pos.copy(end);
-        const fall = damageFalloff(def, p.origin.distanceTo(end));
-        this.damage(th.target, Math.max(1, Math.round(def.damage * fall * (th.head ? def.headMul : 1))), p.owner, th.head, end);
+        const energy = energyLeft(def, p.vel.length());
+        this.damage(th.target, Math.max(1, Math.round(def.damage * energy * (th.head ? def.headMul : 1))), p.owner, th.head, end);
         continue;
       }
       if (wh) {
         if (p.weapon !== 'grenade') {
-          p.alive = false;
-          p.pos.copy(end);
-          this.onWorldDamage(wh.handle, Math.max(1, Math.round(def.damage * damageFalloff(def, p.origin.distanceTo(end)))));
-          this.events.push({ type: 'impact', pos: end, normal: wh.normal });
+          this.bulletHitsWorld(p, end, wh.normal, wh.handle);
           continue;
         }
         // grenade bounce

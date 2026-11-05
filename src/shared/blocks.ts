@@ -6,9 +6,10 @@ import type { TeamId } from './teams';
 
 export type BlockMaterial = 'wood' | 'stone' | 'metal';
 export const BLOCK_MATERIALS: Record<BlockMaterial, { label: string; hp: number; color: number }> = {
-  wood: { label: 'Дерево', hp: 60, color: 0xb88753 },
-  stone: { label: 'Камень', hp: 140, color: 0x959899 },
-  metal: { label: 'Металл', hp: 300, color: 0x9eacb4 },
+  // phase 4: wood +100 %, stone +200 %, metal +350 % over the first prototype (60 / 140 / 300)
+  wood: { label: 'Дерево', hp: 120, color: 0xb88753 },
+  stone: { label: 'Камень', hp: 420, color: 0x959899 },
+  metal: { label: 'Металл', hp: 1350, color: 0x9eacb4 },
 };
 export const BLOCK_ORDER: BlockMaterial[] = ['wood', 'stone', 'metal'];
 /** Edge length of a fortification block, m. */
@@ -208,6 +209,11 @@ export class BlockSystem {
   /** Unchecked 1 m block (map fortifications). Pass refresh = false when adding many, then call `refresh()`. */
   add(center: Vector3, material: BlockMaterial, team: TeamId | null, refresh = true): Block {
     return this.insert('block', center, new Vector3(HALF, HALF, HALF), IDENTITY, material, team, 1, null, 0, BLOCK_MATERIALS[material].hp, refresh);
+  }
+
+  /** Unchecked piece of any shape (tests, map setups). */
+  insertPiece(kind: BlockKind, center: Vector3, half: Vector3, quat: Quaternion, material: BlockMaterial, team: TeamId | null = null): Block {
+    return this.insert(kind, center, half, quat, material, team, PIECE_COST, null, 0, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
   }
 
   private insert(kind: BlockKind, center: Vector3, half: Vector3, quat: Quaternion, material: BlockMaterial, team: TeamId | null,

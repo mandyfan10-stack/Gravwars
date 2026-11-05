@@ -6,23 +6,20 @@ import {
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { WeaponId } from '../../shared/weapons';
 import type { GameAssets } from './assets';
+import { GunModel, pistolModel, rifleModel } from './guns';
 
 /**
- * Blaster placement in the weapon group: canted so the barrels show in profile and the stock leaves the screen at
- * the bottom-right corner. Tuned with the screenshot stand. The model's barrels point along its +Z.
+ * Gun placement in the weapon group (guns are real size, barrel along -Z, origin at the grip): the rifle shouldered
+ * low on the right, the pistol held out in two hands. Tuned with the screenshot stand.
  */
-const RIFLE_SCALE = 0.17;
-const RIFLE_ROT = [0.1, Math.PI + 0.26, 0.3] as const;
-const RIFLE_OFFSET = new Vector3(0.13, -0.05, -0.06);
+const RIFLE_ROT = [0.02, 0.05, -0.04] as const;
+const RIFLE_OFFSET = new Vector3(-0.03, 0.055, 0.16);
 /** Spade rest pitch (blade up); the dig swing rotates around it. */
 const SHOVEL_TILT = 0.7;
-/** Barrel tip in model units. */
-const MUZZLE_MODEL = new Vector3(0, 0.45, 1.2);
-/** Pistol (Kenney small blaster): held lower and closer, same cant. */
-const PISTOL_SCALE = 0.115;
-const PISTOL_ROT = [0.1, Math.PI + 0.2, 0.2] as const;
-const PISTOL_OFFSET = new Vector3(0.1, 0.0, -0.1);
-const PISTOL_MUZZLE_MODEL = new Vector3(0, 0.5, 0.9);
+const PISTOL_ROT = [0.03, 0.08, -0.03] as const;
+const PISTOL_OFFSET = new Vector3(-0.13, 0.1, 0.02);
+/** How far the slide / bolt travels back, m. */
+const SLIDE_TRAVEL = { pistol: 0.035, rifle: 0.075 };
 
 /** What the hands hold besides weapons. */
 export type ViewTool = 'build' | 'rod' | null;
@@ -85,6 +82,8 @@ export class ViewModel {
   private hemi = new HemisphereLight(0xfff1dc, 0x6a5a48, 0.7);
   private kick = 0;
   private flashT = 1;
+  private guns!: { rifle: GunModel; pistol: GunModel };
+  private reloadEmpty = false;
   private swayX = 0;
   private swayY = 0;
   private bobT = 0;
@@ -92,14 +91,34 @@ export class ViewModel {
   current: WeaponId = 'fists';
 
   constructor(teamColor: number, assets: GameAssets) {
-    // rifle: Kenney repeater blaster, barrel along -Z
-    const gun = assets.rifle.clone();
-    gun.scale.setScalar(RIFLE_SCALE);
-    gun.rotation.set(...RIFLE_ROT);
-    gun.position.copy(RIFLE_OFFSET);
-    gun.updateMatrix();
-    this.muzzle.copy(MUZZLE_MODEL).applyMatrix4(gun.matrix);
-    this.rifle.add(gun);
+    void assets;
+    const skinM = new MeshStandardMaterial({ color: 0xd9a27e, roughness: 0.8, flatShading: true });
+    const sleeveM = new MeshStandardMaterial({ color: 0x3a3e47, roughness: 0.9, flatShading: true });
+    const cuffM = new MeshStandardMaterial({ color: teamColor, roughness: 0.5, flatShading: true });
+    /** A hand closed around something, its forearm going back (+Z) and down out of the screen. */
+    const hand = (x: number, y: number, z: number, rx: number, ry: number, rz: number) => {
+      const h = new Group();
+      const palm = new Mesh(new RoundedBoxGeometry(0.06, 0.075, 0.07, 2, 0.018), skinM);
+      const cuff = new Mesh(new RoundedBoxGeometry(0.075, 0.08, 0.03, 1, 0.01), cuffM);
+      cuff.position.set(0, -0.01, 0.06);
+      const sleeve = new Mesh(new RoundedBoxGeometry(0.08, 0.08, 0.32, 2, 0.025), sleeveM);
+      sleeve.position.set(0, -0.012, 0.23);
+      h.add(palm, cuff, sleeve);
+      h.position.set(x, y, z);
+      h.rotation.set(rx, ry, rz);
+      h.scale.setScalar(0.72);
+      return h;
+    };
+
+    // rifle: right hand on the pistol grip, left hand under the handguard
+    const rifleGun = rifleModel();
+    rifleGun.root.rotation.set(...RIFLE_ROT);
+    rifleGun.root.position.copy(RIFLE_OFFSET);
+    rifleGun.root.add(hand(0.006, -0.05, 0.07, 0.55, 0, 0), hand(-0.012, -0.005, -0.27, 0.9, 0.5, 0.25));
+    rifleGun.root.updateMatrix();
+    this.muzzle.copy(rifleGun.muzzle).applyMatrix4(rifleGun.root.matrix);
+    this.rifle.add(rifleGun.root);
+    const gun = rifleGun.root;
 
     // muzzle flash: two crossed additive quads
     const fm = new MeshBasicMaterial({ map: flashTexture(), color: new Color(2.2, 1.6, 1.1), transparent: true, blending: AdditiveBlending, depthWrite: false, side: DoubleSide });
@@ -113,20 +132,21 @@ export class ViewModel {
     front.rotation.x = 0;
     this.flash.add(front);
     this.flash.quaternion.copy(gun.quaternion); // quads along the barrel
-    this.flash.position.copy(new Vector3(0, 0, 0.04).applyQuaternion(gun.quaternion)).add(this.muzzle);
+    this.flash.position.copy(new Vector3(0, 0, -0.04).applyQuaternion(gun.quaternion)).add(this.muzzle);
     this.flash.visible = false;
     this.rifle.add(this.flash);
     this.flashLight.position.copy(this.muzzle);
     this.rifle.add(this.flashLight);
 
-    // pistol: Kenney small blaster
-    const pistolGun = assets.blaster.clone();
-    pistolGun.scale.setScalar(PISTOL_SCALE);
-    pistolGun.rotation.set(...PISTOL_ROT);
-    pistolGun.position.copy(PISTOL_OFFSET);
-    pistolGun.updateMatrix();
-    this.pistolMuzzle.copy(PISTOL_MUZZLE_MODEL).applyMatrix4(pistolGun.matrix);
-    this.pistol.add(pistolGun);
+    // pistol: two-handed grip, the left hand wraps under the right one
+    const pistolGun = pistolModel();
+    pistolGun.root.rotation.set(...PISTOL_ROT);
+    pistolGun.root.position.copy(PISTOL_OFFSET);
+    pistolGun.root.add(hand(0.004, -0.045, 0.02, 0.35, 0, 0), hand(-0.03, -0.06, 0.0, 0.5, 0.45, 0.4));
+    pistolGun.root.updateMatrix();
+    this.pistolMuzzle.copy(pistolGun.muzzle).applyMatrix4(pistolGun.root.matrix);
+    this.pistol.add(pistolGun.root);
+    this.guns = { rifle: rifleGun, pistol: pistolGun };
 
     // grenade + shovel: chunky low-poly in the Kenney palette (flat shaded, bevelled), team-coloured accents
     const flat = (color: number, rough = 0.7) => new MeshStandardMaterial({ color, roughness: rough, flatShading: true });
@@ -172,7 +192,6 @@ export class ViewModel {
     this.shovel.scale.setScalar(0.8);
 
     // fists: wrapped knuckles, team-coloured sleeves, both hands low in the corners
-    const skinM = flat(0xd9a27e, 0.8);
     const wrapM = flat(0xe8e2d6, 0.9);
     for (const side of [-1, 1]) {
       const hand = new Group();
@@ -248,6 +267,11 @@ export class ViewModel {
     this.swing = 1;
   }
 
+  /** Reload started: `empty` = the slide / bolt has to be racked at the end. */
+  reload(empty: boolean) {
+    this.reloadEmpty = empty;
+  }
+
   fire() {
     if (this.current === 'fists') {
       this.punchHand = -this.punchHand;
@@ -290,7 +314,9 @@ export class ViewModel {
     return tip.add(camera.position);
   }
 
-  update(dt: number, opts: { speed: number; lookDX: number; lookDY: number; reload: number; sunCam: Vector3; upCam: Vector3; aspect: number }) {
+  update(dt: number, opts: { speed: number; lookDX: number; lookDY: number; reload: number; sunCam: Vector3; upCam: Vector3; aspect: number;
+    /** The magazine is empty: the slide stays locked back. */
+    empty?: boolean; }) {
     this.camera.aspect = opts.aspect;
     this.camera.updateProjectionMatrix();
     this.kick = Math.max(0, this.kick - dt * 9);
@@ -305,11 +331,13 @@ export class ViewModel {
     const bob = sp * 0.012;
     const k = this.kick;
     const rel = opts.reload;
+    // reload: the gun rolls to show the magazine well, then comes back
     const relDip = rel > 0 ? Math.sin(Math.min(rel, 1) * Math.PI) : 0;
     const r = this.root;
-    r.position.set(0.25 - this.swayX + Math.cos(this.bobT) * bob, -0.25 - this.swayY - Math.abs(Math.sin(this.bobT)) * bob - this.lower * 0.25 - relDip * 0.12,
+    r.position.set(0.25 - this.swayX + Math.cos(this.bobT) * bob - relDip * 0.04, -0.25 - this.swayY - Math.abs(Math.sin(this.bobT)) * bob - this.lower * 0.25 - relDip * 0.04,
       -0.5 + k * 0.05);
-    r.rotation.set(k * 0.09 + relDip * 0.5, -0.04 + this.swayX * 0.6, relDip * 0.4);
+    r.rotation.set(k * 0.09 + relDip * 0.18, -0.04 + this.swayX * 0.6 + relDip * 0.15, relDip * 0.45);
+    this.animateGun(rel, opts.empty ?? false);
     this.swing = Math.max(0, this.swing - dt * 5);
     const weapon = this.tool === null;
     this.rifle.visible = weapon && this.current === 'rifle';
@@ -337,6 +365,29 @@ export class ViewModel {
     this.grenade.scale.setScalar(0.7);
     this.sun.position.copy(opts.sunCam).multiplyScalar(5);
     this.hemi.position.copy(opts.upCam);
+  }
+
+  /** Magazine out / in and the slide or bolt during a reload; the slide cycles on a shot and locks back when empty. */
+  private animateGun(rel: number, empty: boolean) {
+    if (this.current !== 'rifle' && this.current !== 'pistol') return;
+    const g = this.guns[this.current];
+    const travel = SLIDE_TRAVEL[this.current];
+    const smooth = (a: number, b: number, x: number) => {
+      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    };
+    let magDrop = 0;
+    let slide = Math.min(1, this.kick * 1.2) * 0.8;
+    if (rel > 0) {
+      // old magazine out (0.1–0.38), new one in from below (0.42–0.7)
+      magDrop = rel < 0.4 ? smooth(0.1, 0.38, rel) : 1 - smooth(0.42, 0.7, rel);
+      // empty: the pistol slide is already locked back, the rifle bolt gets pulled; both slam home at the end
+      const pull = this.current === 'pistol' ? 1 : smooth(0.76, 0.84, rel);
+      slide = this.reloadEmpty ? (rel < 0.88 ? pull : 1 - smooth(0.88, 0.92, rel)) : 0;
+    } else if (empty && this.current === 'pistol') slide = 1;
+    g.mag.position.set(0, -magDrop * 0.3, magDrop * 0.05);
+    g.mag.visible = magDrop < 0.95;
+    g.slide.position.z = slide * travel;
   }
 
   render(renderer: WebGLRenderer) {

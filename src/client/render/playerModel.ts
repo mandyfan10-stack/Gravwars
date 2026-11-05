@@ -4,6 +4,7 @@ import {
 } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { GameAssets } from './assets';
+import { pistolModel, rifleModel } from './guns';
 
 /** Model units → metres: the Kenney character is 0.84 tall, the player capsule 1.83. */
 const SCALE = 2.05;
@@ -108,14 +109,17 @@ export class PlayerModel {
     this.materials.push(...mats.values());
     this.group.add(this.body);
 
-    // the blaster sits in both hands, barrels forward (character and blaster both face +Z)
+    // the gun sits in both hands, barrel forward (the character faces +Z, gun models point along -Z); the figure is
+    // stylised (big head, short body), so the guns are scaled down to ~80 % to match its proportions
     const torso = this.body.getObjectByName('torso')!;
-    const rifle = assets.rifle.clone();
-    rifle.scale.setScalar(0.22);
-    rifle.position.set(-0.06, 0, 0.26);
-    const pistol = assets.blaster.clone();
-    pistol.scale.setScalar(0.2);
-    pistol.position.set(-0.06, 0.02, 0.3);
+    const rifle = rifleModel().root;
+    rifle.scale.setScalar(0.8 / SCALE);
+    rifle.rotation.y = Math.PI;
+    rifle.position.set(-0.06, 0.02, 0.12);
+    const pistol = pistolModel().root;
+    pistol.scale.setScalar(0.9 / SCALE);
+    pistol.rotation.y = Math.PI;
+    pistol.position.set(-0.04, 0.06, 0.26);
     torso.add(rifle, pistol);
     this.guns = { rifle, pistol };
 

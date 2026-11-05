@@ -162,7 +162,7 @@ for (const [i, pad] of map.pads.entries()) {
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
 import { Combat, MAX_HP, Target } from '../src/shared/combat';
-import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAPONS } from '../src/shared/weapons';
+import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
 {
   sim.team = TEAMS[0];
   sim.respawn();
@@ -184,19 +184,30 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
     for (let k = 0; k < 20; k++) combat.tick(TICK_DT);
     for (const e of combat.events.splice(0)) if (e.type === 'hit' && e.target === 1) { hits++; killed ||= e.killed; }
   }
-  check('rifle hits dummy at 10 m', hits === 5 && killed, `hits=${hits} killed=${killed}`);
+  check('rifle hits dummy at 10 m: four rounds kill', hits === 4 && killed, `hits=${hits} killed=${killed}`);
   check('dead dummy respawns', (() => { for (let k = 0; k < 64 * 3.2; k++) combat.tick(TICK_DT); return dummy.alive && dummy.hp === MAX_HP; })());
 
-  // bullet drop + wind drift over 100 m (in empty space off the ±Z core faces)
-  const shot = combat.fire('rifle', 0, new Vector3(0, 0, -100), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
-  const start = combat.time;
-  let drop = 0;
-  for (let k = 0; k < 64; k++) {
-    combat.tick(TICK_DT);
-    if (shot.pos.z < -200) { drop = -shot.pos.y; break; }
-  }
-  const w = combat.wind.felt(start, new Vector3(0, -1, 0));
-  check('bullet drops with shooter gravity', drop > 0.8 && drop < 3, `drop=${drop.toFixed(2)}m wind=${w.length().toFixed(1)}`);
+  // ballistics over 100 m (in empty space off the ±Z core faces): drop with the shooter's gravity, drag
+  const flight = (weapon: 'rifle' | 'pistol') => {
+    const shot = combat.fire(weapon, 0, new Vector3(0, 0, -100), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
+    let t = 0;
+    for (let k = 0; k < 128; k++) {
+      combat.tick(TICK_DT);
+      t += TICK_DT;
+      if (shot.pos.z < -200) break;
+    }
+    return { drop: -shot.pos.y, speed: shot.vel.length() / WEAPONS[weapon].speed, t };
+  };
+  const rf = flight('rifle');
+  const pf = flight('pistol');
+  check('rifle: flat and fast over 100 m', rf.drop > 0.04 && rf.drop < 0.3 && rf.speed > 0.88 && rf.speed < 0.97 && rf.t < 0.2,
+    `drop=${rf.drop.toFixed(2)}m speed=${(rf.speed * 100).toFixed(0)}% t=${rf.t.toFixed(2)}s`);
+  check('pistol: drops more and slows down', pf.drop > rf.drop * 3 && pf.speed < rf.speed && pf.speed > 0.7,
+    `drop=${pf.drop.toFixed(2)}m speed=${(pf.speed * 100).toFixed(0)}%`);
+  check('damage follows the energy left', energyLeft(WEAPONS.rifle, WEAPONS.rifle.speed) === 1
+    && Math.abs(energyLeft(WEAPONS.pistol, WEAPONS.pistol.speed * 0.8) - 0.64) < 1e-9 && energyLeft(WEAPONS.pistol, 10) === WEAPONS.pistol.minEnergy);
+  check('spread: steady first shot, bloom in a burst, worse on the move',
+    shotSpread(WEAPONS.rifle, 1, 0) === WEAPONS.rifle.spread && shotSpread(WEAPONS.rifle, 8, 0) > 0.02 && shotSpread(WEAPONS.rifle, 1, 1) > 0.03);
   combat.events.length = 0;
 
   // weapon state: fists at the start, guns need ammo, pistol is semi-automatic, reload takes spare rounds
@@ -213,14 +224,24 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
   check('rifle auto-fire respects interval', (() => {
     let n = 0;
     for (let k = 0; k < 64; k++) if (tick(true)) n++;
-    return n >= 8 && n <= 10;
+    return n >= 10 && n <= 11;
   })());
   for (let k = 0; k < 64 * 4; k++) tick(true);
   check('empty gun without spare ammo does not fire or reload', ws.ammo.rifle === 0 && ws.reloadT === 0 && tick(true) === null && !hasAmmo(ws, 'rifle'));
   ws.reserve.rifle = 40;
   tick(false, { reload: true });
-  for (let k = 0; k < 64 * 2; k++) tick(false);
+  check('empty reload takes longer (bolt)', ws.reloadT === WEAPONS.rifle.reloadEmpty);
+  for (let k = 0; k < 64 * 3; k++) tick(false);
   check('reload moves spare rounds into the magazine', ws.ammo.rifle === 30 && ws.reserve.rifle === 10, `mag=${ws.ammo.rifle} spare=${ws.reserve.rifle}`);
+  for (let k = 0; k < 5; k++) { tick(true); for (let j = 0; j < 8; j++) tick(false); }
+  tick(false, { reload: true });
+  check('tactical reload is faster', ws.reloadT === WEAPONS.rifle.reload);
+  for (let k = 0; k < 64 * 3; k++) tick(false);
+  check('tactical reload keeps one in the chamber: 30 + 1', ws.ammo.rifle === 31 && ws.reserve.rifle === 4, `mag=${ws.ammo.rifle} spare=${ws.reserve.rifle}`);
+  ws.ammo.rifle = 0; ws.reserve.rifle = 0;
+  for (let k = 0; k < 20; k++) tick(false);
+  tick(true);
+  check('empty gun clicks', ws.dry);
   giveWeapon(ws, 'pistol');
   tick(false, { select: 'pistol' });
   for (let k = 0; k < 20; k++) tick(false);
@@ -334,8 +355,8 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
   const bw = new R.World({ x: 0, y: 0, z: 0 });
   const fb = new BlockSystem(R, bw);
   const stone = fb.add(new Vector3(-3.5, 0.87, 0.5), 'stone', 'blue');
-  fb.damageCollider(stone.collider.handle, 100);
-  check('material determines HP', stone.maxHp === BLOCK_MATERIALS.stone.hp && stone.hp === BLOCK_MATERIALS.stone.hp - 100);
+  fb.damageCollider(stone.collider.handle, 380);
+  check('material determines HP', stone.maxHp === BLOCK_MATERIALS.stone.hp && stone.hp === BLOCK_MATERIALS.stone.hp - 380);
   fb.explosion(stone.center.clone().add(new Vector3(0, 1.5, 0)), 5.5, 75);
   check('explosion destroys a damaged block and its collider', !fb.byCollider(stone.collider.handle)
     && !bw.castRay(new R.Ray(new Vector3(-3.5, 3, 0.5), { x: 0, y: -1, z: 0 }), 1.8, true));
@@ -347,14 +368,37 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
     c.fire('rifle', 99, new Vector3(-6.5, 1.37, -2), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
     for (let k = 0; k < 6; k++) c.tick(TICK_DT);
   }
-  check('three close rifle hits break a wood block', !fb.byCollider(wood.collider.handle), `hp=${wood.hp}`);
-  const farWood = fb.add(new Vector3(-6.5, 1.37, -40), 'wood', 'blue');
-  c.fire('rifle', 99, new Vector3(-6.5, 1.37, -2), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
-  for (let k = 0; k < 64; k++) c.tick(TICK_DT);
-  const farDmg = BLOCK_MATERIALS.wood.hp - farWood.hp;
-  check('rifle damage falls off with distance', farDmg > 0 && farDmg < WEAPONS.rifle.damage * 0.6, `damage at 38 m = ${farDmg}`);
-  check('falloff curve', damageFalloff(WEAPONS.rifle, 5) === 1 && damageFalloff(WEAPONS.rifle, 1000) === WEAPONS.rifle.falloff!.min
-    && damageFalloff(WEAPONS.rifle, 25) < 1 && damageFalloff(WEAPONS.rifle, 25) > WEAPONS.rifle.falloff!.min);
+  check('three close rifle hits chip a wood block (+100 % HP)', fb.byCollider(wood.collider.handle) === wood
+    && wood.hp >= BLOCK_MATERIALS.wood.hp - 3 * WEAPONS.rifle.damage && wood.hp <= BLOCK_MATERIALS.wood.hp - 3 * (WEAPONS.rifle.damage - 1), `hp=${wood.hp}`);
+  check('building HP: wood ×2, stone ×3, metal ×4.5', BLOCK_MATERIALS.wood.hp === 120 && BLOCK_MATERIALS.stone.hp === 420 && BLOCK_MATERIALS.metal.hp === 1350);
+  // penetration: a wooden wall piece (0.25 m) stops a pistol round but not a rifle round; stone stops both
+  c.materialOf = (h) => fb.byCollider(h)?.material ?? null;
+  const wallAt = (material: 'wood' | 'stone', z: number) => {
+    const q = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2); // thin along z
+    return fb.insertPiece('wall', new Vector3(-20, 1.5, z), new Vector3(PIECE_THICK / 2, 1.5, 2), q, material);
+  };
+  const through = (weapon: 'rifle' | 'pistol', z: number) => {
+    const target: Target = { id: 50, team: 'green', center: new Vector3(-20, 1.4, z - 3), up: new Vector3(0, 1, 0), hp: 1000, alive: true, respawnIn: -1 };
+    c.targets.push(target);
+    c.fire(weapon, 99, new Vector3(-20, 1.4, z + 5), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
+    for (let k = 0; k < 32; k++) c.tick(TICK_DT);
+    c.targets.splice(c.targets.indexOf(target), 1);
+    return 1000 - target.hp;
+  };
+  wallAt('wood', -60);
+  const rifleThrough = through('rifle', -60);
+  const pistolThrough = through('pistol', -60);
+  wallAt('stone', -80);
+  const stoneThrough = through('rifle', -80);
+  check('rifle goes through a wooden wall, weaker', rifleThrough > 0 && rifleThrough < WEAPONS.rifle.damage, `damage=${rifleThrough}`);
+  check('pistol stays in the wooden wall; stone stops the rifle', pistolThrough === 0 && stoneThrough === 0, `pistol=${pistolThrough} stone=${stoneThrough}`);
+  // ricochet: a shallow shot onto a stone floor glances off and flies on
+  fb.insertPiece('floor', new Vector3(-20, 0, -100), new Vector3(2, PIECE_THICK / 2, 2), new Quaternion(), 'stone');
+  c.events.length = 0;
+  const glancing = c.fire('rifle', 99, new Vector3(-20, 0.5, -96.5), new Vector3(0, -0.12, -1).normalize(), new Vector3(), new Vector3(0, -1, 0));
+  for (let k = 0; k < 4; k++) c.tick(TICK_DT);
+  const ric = c.events.some((e) => e.type === 'ricochet');
+  check('shallow hit on stone ricochets', ric && glancing.ricochets === 1, `events=${c.events.map((e) => e.type).join(',')}`);
 }
 
 // Building on the real map: pieces fit on the streets of the island.
@@ -399,7 +443,7 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
   const bup = new Vector3(...st.up);
   const roofEye = blue.pos.clone().addScaledVector(bup, -4 + 1.625).add(new Vector3(3, 0, 0).applyQuaternion(new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), bup)));
   check('fortification blocks the enemy bed', m.reachableBed(roofEye) === null);
-  for (const b of [...bs.blocks.values()]) if (b.team === 'blue') bs.damageCollider(b.collider.handle, 1000);
+  for (const b of [...bs.blocks.values()]) if (b.team === 'blue') bs.damageCollider(b.collider.handle, b.hp);
   check('enemy bed reachable once the wall is gone', m.reachableBed(roofEye) === blue, `d=${roofEye.distanceTo(blue.pos).toFixed(2)}`);
   for (let k = 0; k < 64 * 2; k++) m.breakTick(TICK_DT, roofEye, true);
   check('holding E breaks the bed', !blue.alive && m.events.some((e) => e.type === 'bedBroken' && e.team === 'blue'));
@@ -441,7 +485,7 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
     && ws.owned.rifle && ws.ammo.grenade === 2);
   check('bought tools leave the shelf', !eco.offers().some((o) => ['rod', 'builder', 'pistol', 'rifle'].includes(o.item.id)), shelf());
   eco.buy(item('ammo-pistol'));
-  check('ammo is bought per gun', ws.reserve.pistol === 12 && ws.reserve.rifle === 0);
+  check('ammo is bought per gun: a magazine of pistol rounds', ws.reserve.pistol === WEAPONS.pistol.mag && ws.reserve.rifle === 0);
   eco.buy(item('grenade'));
   check('grenades are capped', eco.buy(item('grenade')) === 'full' && ws.ammo.grenade === WEAPONS.grenade.mag);
   eco.items.apple = 1;
