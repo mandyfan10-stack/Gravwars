@@ -1,6 +1,7 @@
 import { Vector3 } from 'three';
 import { PLAYER_HEIGHT, WORLD } from '../shared/constants';
-import { SHOP } from '../shared/match';
+import type { Economy } from '../shared/economy';
+import type { WeaponId } from '../shared/weapons';
 import { upOf } from '../shared/math';
 import type { PlayerSim } from '../shared/sim';
 import { TEAMS } from '../shared/teams';
@@ -11,6 +12,7 @@ import type { Input } from './input';
 import type { LocalPlayer } from './localPlayer';
 import type { MatchUi } from './matchUi';
 import type { PlayerCombat } from './playerCombat';
+import type { Pockets } from './pockets';
 
 export interface KeyContext {
   input: Input;
@@ -19,6 +21,8 @@ export interface KeyContext {
   build: BlockController;
   player: PlayerCombat;
   ui: MatchUi;
+  eco: Economy;
+  pockets: Pockets;
   /** Is the player standing at their shop? */
   nearShop: () => boolean;
   hud: Hud;
@@ -29,7 +33,17 @@ export interface KeyContext {
 
 /** Edge-triggered keyboard shortcuts (weapons, blocks, shop, debug). Call once per frame. */
 export function createKeyHandler(ctx: KeyContext): () => void {
-  const { input, sim, local, build, player, ui, hud, toggles, gui } = ctx;
+  const { input, sim, local, build, player, ui, hud, toggles, gui, eco, pockets } = ctx;
+  /** Hold one thing at a time: a weapon, the build tool or the rod. */
+  const hold = (what: WeaponId | 'build' | 'rod') => {
+    if (what === 'build' && !eco.has('builder')) return;
+    if (what === 'rod' && !eco.has('rod')) return;
+    if (what !== 'build' && what !== 'rod' && !player.weapons.owned[what]) return;
+    build.active = what === 'build';
+    pockets.setRod(what === 'rod');
+    if (what !== 'build' && what !== 'rod') player.pendingSelect = what;
+  };
+  const slots: (WeaponId | 'build' | 'rod')[] = ['fists', 'pistol', 'rifle', 'grenade', 'build', 'rod'];
   let guiVisible = false;
 
   return () => {
@@ -38,17 +52,23 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     TEAMS.forEach((t, i) => {
       if (shift && input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...t.down));
     });
-    // E: shop when standing at it (holding E at an enemy crystal is handled every frame by the caller)
-    if (input.take('KeyE') && (ui.shopOpen || ctx.nearShop())) ui.toggleShop();
-    if (ui.shopOpen) {
-      SHOP.forEach((_, i) => { if (input.take(`Digit${i + 1}`)) ui.buy(i); });
-    } else {
-      if (input.take('Digit1')) { build.active = false; player.pendingSelect = 'rifle'; }
-      if (input.take('Digit2')) { build.active = false; player.pendingSelect = 'grenade'; }
-      if (input.take('Digit3')) build.active = true;
+    // E: shop when standing at it, otherwise pick up the item in reach (holding E at an enemy crystal: per frame)
+    if (input.take('KeyE')) {
+      if (ui.shopOpen || ctx.nearShop()) ui.toggleShop();
+      else pockets.interact();
     }
-    if (input.take('KeyB')) build.active = !build.active;
-    if (input.take('KeyQ')) { if (build.active) build.cycleMaterial(1); else player.toggleWeapon(); }
+    if (ui.shopOpen) {
+      for (let i = 1; i <= 9; i++) if (input.take(`Digit${i}`)) ui.choose(i);
+      if (input.take('KeyQ') || input.take('Tab')) ui.switchTab();
+    } else {
+      slots.forEach((w, i) => { if (input.take(`Digit${i + 1}`)) hold(w); });
+      if (input.take('KeyQ')) {
+        if (build.active) build.cycleMaterial(1);
+        else { hold('fists'); player.toggleWeapon(); }
+      }
+    }
+    if (input.take('KeyB')) hold(build.active ? player.weapons.current : 'build');
+    if (input.take('KeyF')) pockets.eat();
     if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
     if (input.take('KeyR')) player.pendingReload = true;
     if (input.take('KeyK')) sim.respawn('manual');

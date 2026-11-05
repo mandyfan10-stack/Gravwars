@@ -4,7 +4,7 @@
 :root {
   --red: #ff3b3b; --blue: #3b6bff; --green: #3bff6b; --yellow: #ffd23b; --aqua: #2ff3e0; --pink: #ff4fd8;
   --ink: rgba(14, 16, 22, .62); --line: rgba(255, 255, 255, .14); --muted: rgba(255, 255, 255, .62);
-  --copper: #e8b27a; --crystal: #8fdcf0; --hp: #fff;
+  --cash: #e2c27a; --crystal: #8fdcf0; --hp: #fff;
   --shadow: 0 1px 2px rgba(0, 0, 0, .75), 0 0 8px rgba(0, 0, 0, .35);
   --display: 'Inter', system-ui, sans-serif;
 }
@@ -36,7 +36,7 @@ body.debug #info, body.debug #speed { display: block; }
 #grav-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); }
 #wallet { display: flex; align-items: center; gap: 14px; font: 600 15px var(--display); }
 #wallet span { display: flex; align-items: center; gap: 6px; }
-#wallet .copper .ic { color: var(--copper); font-size: 16px; }
+#wallet .cash .ic { color: var(--cash); font-size: 16px; }
 #wallet .crystal .ic { color: var(--crystal); font-size: 15px; }
 #wallet .time { color: var(--muted); font-size: 13px; font-weight: 500; }
 
@@ -95,6 +95,25 @@ body.debug #info, body.debug #speed { display: block; }
 #ammo .pips i { width: 9px; height: 9px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
 #ammo .pips i.empty { background: rgba(255, 255, 255, .22); }
 #ammo .reload { font-size: 13px; color: #fff; }
+#ammo .empty { color: #ff8e83; }
+
+/* pockets: items and spare ammo, small and quiet above the HP */
+#pockets { position: absolute; left: 172px; bottom: 78px; display: flex; align-items: center; gap: 14px; font: 600 14px var(--display); }
+#pockets span { display: flex; align-items: center; gap: 5px; }
+#pockets .ic { font-size: 16px; color: rgba(255, 255, 255, .85); }
+#pockets .zero { color: rgba(255, 255, 255, .38); }
+#pockets .zero .ic { color: rgba(255, 255, 255, .38); }
+#pockets .sep { width: 1px; height: 14px; background: var(--line); }
+#pockets .ammo-ic { font-size: 14px; color: var(--muted); margin-right: -6px; }
+#pockets i { font-style: normal; }
+#pockets .hint { font: 500 11px 'Inter', sans-serif; color: var(--muted); gap: 4px; margin-left: -6px; }
+#pockets .hint kbd { min-width: 16px; height: 16px; font-size: 10px; }
+
+/* fishing strike bar: a marker sweeps once, press in the zone */
+#fish-bar { position: absolute; left: 50%; top: 63%; width: 240px; height: 8px; margin-left: -120px; background: rgba(255, 255, 255, .18);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5); opacity: 0; transition: opacity .12s; }
+#fish-bar .zone { position: absolute; top: 0; bottom: 0; background: rgba(120, 220, 140, .85); }
+#fish-bar .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); }
 
 #build-hud { position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; padding: 6px 12px; border-radius: 4px;
   background: var(--ink); font-size: 12px; font-weight: 600; white-space: nowrap; text-shadow: none; }
@@ -120,14 +139,22 @@ body.debug #info, body.debug #speed { display: block; }
 #hud #shop .ic { filter: none; }
 #shop h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font: 700 16px var(--display); }
 #shop h3 .ic { font-size: 20px; color: #fff; }
-#shop h3 small { margin-left: auto; font: 500 11px 'Inter', sans-serif; color: var(--muted); }
-#shop .item { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 4px; border-top: 1px solid var(--line); font-size: 14px; font-weight: 600; }
+#shop h3 nav { display: flex; gap: 14px; margin-left: auto; font: 600 13px 'Inter', sans-serif; color: var(--muted); }
+#shop h3 nav span { padding-bottom: 3px; border-bottom: 2px solid transparent; }
+#shop h3 nav span.on { color: #fff; border-color: #fff; }
+#shop .label { display: flex; flex-direction: column; gap: 1px; }
+#shop .item.locked { opacity: .45; }
+#shop .item.locked kbd.lock { border-style: dashed; }
+#shop .item.total { font-weight: 700; }
+#shop footer { display: flex; align-items: center; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+#shop footer kbd { margin-left: 8px; } #shop footer kbd:first-child { margin-left: 0; }
+#shop .item { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 0 4px; border-top: 1px solid var(--line); font-size: 14px; font-weight: 600; }
 #shop .item > .ic { font-size: 20px; color: var(--c, #fff); }
 #shop .item.poor { opacity: .4; }
 #shop .item em { font-style: normal; font-size: 11px; color: var(--muted); font-weight: 500; }
 #shop .price { margin-left: auto; display: flex; align-items: center; gap: 5px; font: 600 14px var(--display); }
 #shop .price .ic { font-size: 14px; }
-#shop .price.copper .ic { color: var(--copper); } #shop .price.crystal .ic { color: var(--crystal); }
+#shop .price.cash .ic { color: var(--cash); } #shop .price.crystal .ic { color: var(--crystal); }
 
 #result { position: absolute; left: 50%; top: 36%; transform: translate(-50%, -50%) scale(.96); display: flex; flex-direction: column; align-items: center; gap: 8px;
   font: 800 48px var(--display); letter-spacing: -.02em; text-align: center; opacity: 0; transition: opacity .4s, transform .4s; }

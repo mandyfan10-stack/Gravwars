@@ -18,6 +18,14 @@ const RIFLE_OFFSET = new Vector3(0.13, -0.05, -0.06);
 const SHOVEL_TILT = 0.7;
 /** Barrel tip in model units. */
 const MUZZLE_MODEL = new Vector3(0, 0.45, 1.2);
+/** Pistol (Kenney small blaster): held lower and closer, same cant. */
+const PISTOL_SCALE = 0.115;
+const PISTOL_ROT = [0.1, Math.PI + 0.2, 0.2] as const;
+const PISTOL_OFFSET = new Vector3(0.1, 0.0, -0.1);
+const PISTOL_MUZZLE_MODEL = new Vector3(0, 0.5, 0.9);
+
+/** What the hands hold besides weapons. */
+export type ViewTool = 'build' | 'rod' | null;
 
 /** Muzzle flash sprite: a hot core with four soft spikes, fading to transparent. */
 function flashTexture() {
@@ -52,10 +60,22 @@ export class ViewModel {
   readonly camera = new PerspectiveCamera(62, 1, 0.01, 10);
   private root = new Group();
   private rifle = new Group();
+  private pistol = new Group();
+  private fists = new Group();
+  private rod = new Group();
   private grenade = new Group();
+  /** Fist punch: which hand and progress 1 → 0. */
+  private punchHand = 1;
+  private punchT = 0;
+  /** Rod: cast swing 1 → 0, and a twitch while a fish bites. */
+  private castT = 0;
+  bite = 0;
+  /** Rod tip in the rod group's space. */
+  private rodTip = new Vector3();
+  private pistolMuzzle = new Vector3();
   /** Build tool (shovel), shown instead of the weapon while building. */
   private shovel = new Group();
-  private toolOn = false;
+  private tool: ViewTool = null;
   private swing = 0;
   private flash: Group;
   /** Barrel tip in the rifle group's space. */
@@ -69,7 +89,7 @@ export class ViewModel {
   private swayY = 0;
   private bobT = 0;
   private lower = 0;
-  current: WeaponId = 'rifle';
+  current: WeaponId = 'fists';
 
   constructor(teamColor: number, assets: GameAssets) {
     // rifle: Kenney repeater blaster, barrel along -Z
@@ -98,6 +118,15 @@ export class ViewModel {
     this.rifle.add(this.flash);
     this.flashLight.position.copy(this.muzzle);
     this.rifle.add(this.flashLight);
+
+    // pistol: Kenney small blaster
+    const pistolGun = assets.blaster.clone();
+    pistolGun.scale.setScalar(PISTOL_SCALE);
+    pistolGun.rotation.set(...PISTOL_ROT);
+    pistolGun.position.copy(PISTOL_OFFSET);
+    pistolGun.updateMatrix();
+    this.pistolMuzzle.copy(PISTOL_MUZZLE_MODEL).applyMatrix4(pistolGun.matrix);
+    this.pistol.add(pistolGun);
 
     // grenade + shovel: chunky low-poly in the Kenney palette (flat shaded, bevelled), team-coloured accents
     const flat = (color: number, rough = 0.7) => new MeshStandardMaterial({ color, roughness: rough, flatShading: true });
@@ -142,9 +171,55 @@ export class ViewModel {
     this.shovel.position.set(0.1, -0.08, 0.05);
     this.shovel.scale.setScalar(0.8);
 
-    this.root.add(this.rifle, this.grenade, this.shovel);
+    // fists: wrapped knuckles, team-coloured sleeves, both hands low in the corners
+    const skinM = flat(0xd9a27e, 0.8);
+    const wrapM = flat(0xe8e2d6, 0.9);
+    for (const side of [-1, 1]) {
+      const hand = new Group();
+      const fist = new Mesh(new RoundedBoxGeometry(0.085, 0.075, 0.1, 2, 0.022), skinM);
+      const wrap = new Mesh(new RoundedBoxGeometry(0.09, 0.05, 0.06, 1, 0.012), wrapM);
+      wrap.position.set(0, -0.005, 0.045);
+      const thumb = new Mesh(new RoundedBoxGeometry(0.03, 0.028, 0.06, 1, 0.01), skinM);
+      thumb.position.set(-side * 0.04, -0.025, -0.01);
+      const sleeve = new Mesh(new RoundedBoxGeometry(0.095, 0.09, 0.3, 2, 0.03), flat(0x3a3e47, 0.9));
+      sleeve.position.set(0, -0.01, 0.24);
+      const cuff = new Mesh(new RoundedBoxGeometry(0.1, 0.095, 0.03, 1, 0.01), teamM);
+      cuff.position.set(0, -0.01, 0.1);
+      hand.add(fist, wrap, thumb, sleeve, cuff);
+      // guard: fists up in the lower corners, forearms going down and back out of the screen
+      hand.position.set(side * 0.24 - 0.25, 0.06, -0.02);
+      hand.rotation.set(0.6, -side * 0.2, side * 0.35);
+      hand.scale.setScalar(0.78);
+      hand.userData.rest = hand.position.clone();
+      this.fists.add(hand);
+    }
+
+    // fishing rod: cork grip, reel, a long tapered blank going up and out of the screen; the line is drawn in the world
+    const corkM = flat(0xb98a5a, 0.95);
+    const blankM = flat(0x2c3138, 0.35);
+    const rodLen = 0.85;
+    const cork = new Mesh(new CylinderGeometry(0.016, 0.019, 0.2, 7), corkM);
+    cork.rotation.x = Math.PI / 2;
+    cork.position.z = 0.06;
+    const blank = new Mesh(new CylinderGeometry(0.004, 0.011, rodLen, 6).translate(0, rodLen / 2, 0), blankM);
+    blank.rotation.x = -Math.PI / 2;
+    blank.position.z = -0.04;
+    const reel = new Mesh(new CylinderGeometry(0.03, 0.03, 0.026, 10), steelM);
+    reel.rotation.z = Math.PI / 2;
+    reel.position.set(0, -0.04, 0.0);
+    const reelFoot = new Mesh(new RoundedBoxGeometry(0.012, 0.03, 0.03, 1, 0.004), steelM);
+    reelFoot.position.set(0, -0.022, 0.0);
+    const rodGroup = new Group();
+    rodGroup.add(cork, blank, reel, reelFoot);
+    rodGroup.rotation.set(0.62, -0.28, -0.1);
+    rodGroup.position.set(0.05, 0.02, 0.02);
+    rodGroup.updateMatrix();
+    this.rodTip.set(0, 0, -0.04 - rodLen).applyMatrix4(rodGroup.matrix);
+    this.rod.add(rodGroup);
+
+    this.root.add(this.rifle, this.pistol, this.fists, this.rod, this.grenade, this.shovel);
     this.scene.add(this.root, this.sun, this.sun.target, this.hemi);
-    this.setWeapon('rifle');
+    this.setWeapon('fists');
   }
 
   set environment(t: Texture | null) {
@@ -157,10 +232,15 @@ export class ViewModel {
     this.current = w;
   }
 
-  /** Show the build tool instead of the current weapon. */
-  setTool(on: boolean) {
-    if (on !== this.toolOn) this.lower = 1;
-    this.toolOn = on;
+  /** Show the build tool / fishing rod instead of the current weapon. */
+  setTool(tool: ViewTool) {
+    if (tool !== this.tool) this.lower = 1;
+    this.tool = tool;
+  }
+
+  /** Rod cast swing. */
+  cast() {
+    this.castT = 1;
   }
 
   /** Shovel swing when a piece is placed. */
@@ -169,8 +249,19 @@ export class ViewModel {
   }
 
   fire() {
-    this.kick = 1;
-    if (this.current === 'rifle') {
+    if (this.current === 'fists') {
+      this.punchHand = -this.punchHand;
+      this.punchT = 1;
+      return;
+    }
+    this.kick = this.current === 'pistol' ? 0.7 : 1;
+    if (this.current === 'rifle' || this.current === 'pistol') {
+      // the flash lives on the current gun's muzzle
+      const gun = this.current === 'rifle' ? this.rifle : this.pistol;
+      const m = this.current === 'rifle' ? this.muzzle : this.pistolMuzzle;
+      gun.add(this.flash, this.flashLight);
+      this.flash.position.copy(m);
+      this.flashLight.position.copy(m);
       this.flashT = 0;
       this.flash.rotation.z = Math.random() * Math.PI;
       this.flash.scale.setScalar(0.8 + Math.random() * 0.5);
@@ -179,8 +270,24 @@ export class ViewModel {
 
   /** Muzzle position in camera space (for tracers). */
   muzzleCameraSpace(out = new Vector3()): Vector3 {
-    this.rifle.updateWorldMatrix(true, false);
-    return out.copy(this.muzzle).applyMatrix4(this.rifle.matrixWorld);
+    const pistol = this.current === 'pistol';
+    const gun = pistol ? this.pistol : this.rifle;
+    gun.updateWorldMatrix(true, false);
+    return out.copy(pistol ? this.pistolMuzzle : this.muzzle).applyMatrix4(gun.matrixWorld);
+  }
+
+  /**
+   * Where the rod tip appears in the world camera's view: the viewmodel has its own FOV, so the tip is projected to
+   * the screen with the viewmodel camera and put back on the same screen point at the same distance with `camera`.
+   */
+  rodTipWorld(camera: PerspectiveCamera, out = new Vector3()): Vector3 {
+    this.rod.updateWorldMatrix(true, false);
+    const tip = out.copy(this.rodTip).applyMatrix4(this.rod.matrixWorld);
+    const dist = tip.length();
+    tip.project(this.camera);
+    tip.z = 0.5;
+    tip.unproject(camera).sub(camera.position).normalize().multiplyScalar(dist);
+    return tip.add(camera.position);
   }
 
   update(dt: number, opts: { speed: number; lookDX: number; lookDY: number; reload: number; sunCam: Vector3; upCam: Vector3; aspect: number }) {
@@ -204,9 +311,27 @@ export class ViewModel {
       -0.5 + k * 0.05);
     r.rotation.set(k * 0.09 + relDip * 0.5, -0.04 + this.swayX * 0.6, relDip * 0.4);
     this.swing = Math.max(0, this.swing - dt * 5);
-    this.rifle.visible = !this.toolOn && this.current === 'rifle';
-    this.grenade.visible = !this.toolOn && this.current === 'grenade';
-    this.shovel.visible = this.toolOn;
+    const weapon = this.tool === null;
+    this.rifle.visible = weapon && this.current === 'rifle';
+    this.pistol.visible = weapon && this.current === 'pistol';
+    this.fists.visible = weapon && this.current === 'fists';
+    this.grenade.visible = weapon && this.current === 'grenade';
+    this.shovel.visible = this.tool === 'build';
+    this.rod.visible = this.tool === 'rod';
+    // punch: the active fist jabs forward and a bit inward, then comes back
+    this.punchT = Math.max(0, this.punchT - dt * 4.5);
+    const jab = Math.sin(Math.min(1, (1 - this.punchT) * 1.6) * Math.PI) * (this.punchT > 0 ? 1 : 0);
+    this.fists.children.forEach((h, i) => {
+      const side = i === 0 ? -1 : 1;
+      const rest = h.userData.rest as Vector3;
+      const on = side === this.punchHand ? jab : 0;
+      h.position.set(rest.x - side * on * 0.12, rest.y + on * 0.08, rest.z - on * 0.32);
+    });
+    // rod: cast flick, small tremble while a fish bites
+    this.castT = Math.max(0, this.castT - dt * 3);
+    const flick = Math.sin(this.castT * Math.PI);
+    this.rod.rotation.set(-flick * 0.6 + Math.sin(this.bobT * 9) * this.bite * 0.04, 0, 0);
+    this.rod.position.set(0, this.bite * Math.sin(this.bobT * 13) * 0.006, 0);
     this.shovel.rotation.x = SHOVEL_TILT - Math.sin(this.swing * Math.PI) * 0.9;
     this.grenade.position.set(0.04, 0.02 - k * 0.1, 0.0 - k * 0.2);
     this.grenade.scale.setScalar(0.7);

@@ -27,7 +27,7 @@ export class BotView {
 
   constructor(scene: Scene, private bots: BotManager, assets: GameAssets) {
     this.views = bots.bots.map((b) => {
-      const model = new PlayerModel(assets, getTeam(b.team).color);
+      const model = new PlayerModel(assets, getTeam(b.team).color, 'fists');
       scene.add(model.group);
       return { model, hp: b.target.hp, shots: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0 };
     });
@@ -59,6 +59,9 @@ export class BotView {
       if (b.target.hp < v.hp) m.hit();
       v.hp = b.target.hp;
       m.group.visible = true;
+      const w = b.weapons.current;
+      const held = w === 'rifle' || w === 'pistol' ? w : 'fists';
+      if (held !== m.held) m.setHeld(held);
       const s = b.sim.state;
       // big jumps (portal, respawn) are not interpolated
       if (b.prevPos.distanceToSquared(s.pos) > 25) _p.copy(s.pos);

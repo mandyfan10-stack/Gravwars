@@ -1,15 +1,12 @@
 import { Vector3 } from 'three';
-import { BlockMaterial, BlockSystem } from './blocks';
+import { BlockSystem } from './blocks';
+import type { Currency } from './economy';
 import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 import { TeamId } from './teams';
 
-export type Currency = 'copper' | 'crystal';
-export const CURRENCY_LABEL: Record<Currency, string> = { copper: 'медь', crystal: 'кристаллы' };
-
-/** Generator output: one unit every `interval` s, up to `cap` waiting to be picked up. */
-export const GENERATORS: Record<Currency, { interval: number; cap: number }> = {
-  copper: { interval: 1, cap: 48 },
+/** Crystal generators on the middle islands: one unit every `interval` s, up to `cap` waiting to be picked up. */
+export const GENERATORS: Record<'crystal', { interval: number; cap: number }> = {
   crystal: { interval: 15, cap: 4 },
 };
 /** Walk this close (player centre → generator pad) to collect. */
@@ -18,37 +15,26 @@ export const PICKUP_RADIUS = 2.4;
 export const BED_REACH = 4.5;
 export const BED_BREAK_TIME = 1.5;
 export const SHOP_RADIUS = 4.5;
-/** Copper for killing an enemy. */
+/** Money for killing an enemy. */
 export const KILL_REWARD = 3;
 
-export type ShopItem =
-  | { id: string; label: string; price: number; currency: Currency; kind: 'blocks'; material: BlockMaterial; count: number }
-  | { id: string; label: string; price: number; currency: Currency; kind: 'heal' };
-
-export const SHOP: ShopItem[] = [
-  { id: 'wood', label: 'Дерево ×16', price: 8, currency: 'copper', kind: 'blocks', material: 'wood', count: 16 },
-  { id: 'stone', label: 'Камень ×12', price: 24, currency: 'copper', kind: 'blocks', material: 'stone', count: 12 },
-  { id: 'metal', label: 'Металл ×6', price: 3, currency: 'crystal', kind: 'blocks', material: 'metal', count: 6 },
-  { id: 'heal', label: 'Аптечка', price: 10, currency: 'copper', kind: 'heal' },
-];
-
-export interface Generator { currency: Currency; pos: Vector3; up: Vector3; stored: number; timer: number }
+export interface Generator { currency: 'crystal'; pos: Vector3; up: Vector3; stored: number; timer: number }
 export interface Bed { team: TeamId; pos: Vector3; up: Vector3; alive: boolean }
 
 export type MatchEvent =
-  | { type: 'pickup'; currency: Currency; amount: number }
+  | { type: 'pickup'; currency: 'crystal'; amount: number }
   | { type: 'bedBroken'; team: TeamId }
   | { type: 'win'; time: number }
   | { type: 'lose' };
 
 /**
- * Bedwars rules for one player's team: generators, wallet, shop, beds, win / lose.
+ * Bedwars rules for one player's team: crystal generators, wallet, beds, win / lose. Shop and items: economy.ts.
  * Enemy beds start fortified with blocks.
  */
 export class Match {
   readonly beds: Bed[];
   readonly generators: Generator[] = [];
-  readonly wallet: Record<Currency, number> = { copper: 0, crystal: 0 };
+  readonly wallet: Record<Currency, number> = { cash: 0, crystal: 0 };
   readonly events: MatchEvent[] = [];
   time = 0;
   result: 'win' | 'lose' | null = null;
@@ -68,7 +54,6 @@ export class Match {
     const base = map.bases.find((b) => b.team === team);
     this.shop = base ? new Vector3(...base.shop) : null;
     this.beds = map.statues.map((s) => ({ team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up), alive: true }));
-    for (const b of map.bases) this.generators.push({ currency: 'copper', pos: new Vector3(...b.generator), up: new Vector3(...b.up), stored: 0, timer: 0 });
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
     // fortify enemy beds
     for (const s of map.statues) {
@@ -188,14 +173,6 @@ export class Match {
       this.events.push({ type: 'lose' });
     }
     return false;
-  }
-
-  /** Buy an item. `heal` is applied by the caller. */
-  buy(item: ShopItem): 'ok' | 'money' {
-    if (this.wallet[item.currency] < item.price) return 'money';
-    this.wallet[item.currency] -= item.price;
-    if (item.kind === 'blocks') this.blocks.inventory[item.material] += item.count;
-    return 'ok';
   }
 
   nearShop(pos: Vector3) {

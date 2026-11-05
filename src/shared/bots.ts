@@ -10,7 +10,7 @@ import type { PhysicsWorld, Rapier } from './physics';
 import { crossesPortal } from './portals';
 import { PlayerSim } from './sim';
 import { TEAMS, TeamId, teamByDown } from './teams';
-import { createWeaponState, WeaponState, weaponTick } from './weapons';
+import { createWeaponState, giveWeapon, isGun, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
 
 /** Tuning. Times in seconds, distances in metres. */
 export const BOT = {
@@ -36,6 +36,12 @@ export const BOT = {
   giveUp: 20,
   /** Walk speed (share of max) for the last metres before stepping off a face edge, so the fall stays on the island. */
   edgeWalk: 0.2,
+  /**
+   * Simplified economy: bots do not fish or shop. Everybody starts with fists like the player; a pistol arrives at
+   * this match time, a rifle later. Ammo is unlimited.
+   */
+  pistolAt: 20,
+  rifleAt: 150,
 };
 
 /** Closer to the face edge than this (local |x| or |z|) = slow down for the drop. */
@@ -431,10 +437,13 @@ export class BotManager {
         }
       }
       upOf(bot.sim.state.frame, bot.target.up);
-      const fired = weaponTick(bot.weapons, { fire, reload: false, select: null }, dt);
+      const select = this.arm(bot);
+      // semi-automatic guns fire on the press: release the trigger every other tick
+      const pull = fire && (WEAPONS[bot.weapons.current].auto || !bot.weapons.held);
+      const fired = weaponTick(bot.weapons, { fire: pull, reload: false, select }, dt);
       if (fired && aim) {
         const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
-        this.combat.fire(fired, bot.id, eye, aim, bot.sim.state.vel, bot.target.up.clone().negate());
+        this.combat.use(fired, bot.id, eye, aim, bot.sim.state.vel, bot.target.up.clone().negate());
         bot.shotsTotal++;
         if (++bot.shots >= BOT.burst) {
           bot.shots = 0;
@@ -442,6 +451,21 @@ export class BotManager {
         }
       }
     }
+  }
+
+  /** Bot loadout by match time (see BOT.pistolAt); returns the weapon to hold. Spare ammo never runs out. */
+  private arm(bot: Bot): WeaponId {
+    const ws = bot.weapons;
+    const t = this.match.time;
+    if (t >= BOT.pistolAt && !ws.owned.pistol) giveWeapon(ws, 'pistol');
+    if (t >= BOT.rifleAt && !ws.owned.rifle) giveWeapon(ws, 'rifle');
+    for (const w of ['pistol', 'rifle'] as const) if (isGun(w) && ws.owned[w]) ws.reserve[w] = 999;
+    return ws.owned.rifle ? 'rifle' : ws.owned.pistol ? 'pistol' : 'fists';
+  }
+
+  /** How far the bot's current weapon is worth using. */
+  private range(bot: Bot) {
+    return bot.weapons.current === 'fists' ? WEAPONS.fists.reach : BOT.sightRange;
   }
 
   private think(bot: Bot, dt: number): { input: MoveInput; fire: boolean; aim: Vector3 | null } {
@@ -568,7 +592,7 @@ export class BotManager {
     }
 
     // combat overrides the view: shoot the enemy while still walking the route
-    if (bot.enemy && bot.seenT > BOT.reaction) {
+    if (bot.enemy && bot.seenT > BOT.reaction && eye.distanceTo(bot.enemy.center) < this.range(bot) + 0.3) {
       aimAt = bot.enemy.center.clone().addScaledVector(bot.enemy.up, 0.25);
       wantFire = true;
     }

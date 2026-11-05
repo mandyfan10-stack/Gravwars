@@ -1,9 +1,20 @@
 import { Vector3 } from 'three';
 import { HU } from '../shared/constants';
 import type { PlayerSim } from '../shared/sim';
-import { WEAPONS, WeaponState } from '../shared/weapons';
+import { isGun, WeaponId, WEAPONS, WeaponState } from '../shared/weapons';
 import { teamByDown } from '../shared/teams';
-import { icon } from './icons';
+import { icon, IconName } from './icons';
+import type { ViewTool } from './render/viewmodel';
+
+/** Hotbar: fixed keys, only what you own is shown. */
+export const SLOTS: { id: WeaponId | 'build' | 'rod'; name: string; icon: IconName }[] = [
+  { id: 'fists', name: 'Кулаки', icon: 'fist' },
+  { id: 'pistol', name: 'Пистолет', icon: 'pistol' },
+  { id: 'rifle', name: 'Автомат', icon: 'rifle' },
+  { id: 'grenade', name: 'Гранаты', icon: 'grenade' },
+  { id: 'build', name: 'Строительство', icon: 'shovel' },
+  { id: 'rod', name: 'Удочка', icon: 'rod' },
+];
 
 const $ = (id: string) => document.getElementById(id)!;
 const _down = new Vector3();
@@ -46,24 +57,35 @@ export class Hud {
   private readonly weaponIc = document.getElementById('weapon-ic')!;
   private hotbarKey = '';
 
-  /** Weapon / ammo panel and the 1-2-3 hotbar (rifle, grenade, shovel). */
-  setWeapon(ws: WeaponState, building = false) {
-    const active = building ? 'shovel' : ws.current;
-    if (active !== this.hotbarKey) {
-      this.hotbarKey = active;
-      this.hotbar.innerHTML = ([['rifle', 'Винтовка'], ['grenade', 'Граната'], ['shovel', 'Лопатка']] as const)
-        .map(([id, name], i) => `<div class="slot${id === active ? ' on' : ''}" title="${name}"><kbd>${i + 1}</kbd>${icon(id)}</div>`).join('');
-      this.weaponIc.innerHTML = icon(active);
+  /** Weapon / ammo panel and the hotbar. `owns` tells which tools (build, rod) are bought. */
+  setWeapon(ws: WeaponState, tool: ViewTool, owns: { build: boolean; rod: boolean }) {
+    const active = tool ?? ws.current;
+    const slots = SLOTS.map((s, i) => ({ ...s, key: i + 1 }))
+      .filter((s) => s.id === 'build' ? owns.build : s.id === 'rod' ? owns.rod : ws.owned[s.id]);
+    const key = active + slots.map((s) => s.id).join();
+    if (key !== this.hotbarKey) {
+      this.hotbarKey = key;
+      this.hotbar.innerHTML = slots
+        .map((s) => `<div class="slot${s.id === active ? ' on' : ''}" title="${s.name}"><kbd>${s.key}</kbd>${icon(s.icon)}</div>`).join('');
+      this.weaponIc.innerHTML = icon(SLOTS.find((s) => s.id === active)!.icon);
     }
-    if (building) {
-      this.wName.textContent = 'Лопатка';
+    if (tool === 'build') {
+      this.wName.textContent = 'Строительство';
       this.ammo.innerHTML = '<small>ЛКМ — строить</small>';
       return;
     }
-    const def = WEAPONS[ws.current];
+    if (tool === 'rod') {
+      this.wName.textContent = 'Удочка';
+      this.ammo.innerHTML = '<small>ЛКМ — забросить в пруд</small>';
+      return;
+    }
+    const w = ws.current;
+    const def = WEAPONS[w];
     this.wName.textContent = def.name;
-    if (ws.current === 'rifle') {
-      this.ammo.innerHTML = ws.reloadT > 0 ? '<span class="reload">перезарядка…</span>' : `${ws.ammo.rifle}<small>/${def.mag}</small>`;
+    if (w === 'fists') this.ammo.innerHTML = '<small>ЛКМ — удар</small>';
+    else if (isGun(w)) {
+      this.ammo.innerHTML = ws.reloadT > 0 ? '<span class="reload">перезарядка…</span>'
+        : `<span class="${ws.ammo[w] === 0 ? 'empty' : ''}">${ws.ammo[w]}</span><small>/${ws.reserve[w]}</small>`;
     } else {
       this.ammo.innerHTML = `<div class="pips">${'<i></i>'.repeat(ws.ammo.grenade)}${'<i class="empty"></i>'.repeat(def.mag - ws.ammo.grenade)}</div>`;
     }

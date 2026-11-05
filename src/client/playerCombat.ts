@@ -5,7 +5,7 @@ import { upOf } from '../shared/math';
 import { viewQuat } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
-import { createWeaponState, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
+import { createWeaponState, hasAmmo, isGun, WEAPON_ORDER, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
 import { icon } from './icons';
@@ -46,29 +46,37 @@ export class PlayerCombat {
     combat.targets.push(this.me);
   }
 
-  /** Restore HP and weapons (after death / respawn). */
+  /** Restore HP after death / respawn. Bought weapons and ammo are kept. */
   reset() {
     this.me.hp = MAX_HP;
     this.me.alive = true;
-    Object.assign(this.weapons, createWeaponState());
+    this.weapons.reloadT = 0;
+    this.weapons.cooldown = 0;
     this.hud.setHp(this.me.hp);
   }
 
-  /** Medkit: back to full HP. False if already full. */
-  heal(): boolean {
+  /** Heal by `amount` (medkit: to full). False if already full. */
+  heal(amount = MAX_HP): boolean {
     if (!this.me.alive || this.me.hp >= MAX_HP) return false;
-    this.me.hp = MAX_HP;
+    this.me.hp = Math.min(MAX_HP, this.me.hp + amount);
     this.hud.setHp(this.me.hp);
     return true;
   }
 
+  /** Q: next owned weapon that can be used. */
   toggleWeapon() {
-    this.pendingSelect = this.weapons.current === 'rifle' ? 'grenade' : 'rifle';
+    const ws = this.weapons;
+    const i = WEAPON_ORDER.indexOf(ws.current);
+    for (let k = 1; k <= WEAPON_ORDER.length; k++) {
+      const w = WEAPON_ORDER[(i + k) % WEAPON_ORDER.length];
+      if (hasAmmo(ws, w)) { this.pendingSelect = w; return; }
+    }
   }
 
-  /** 0..1 while reloading the rifle, otherwise 0. */
+  /** 0..1 while reloading, otherwise 0. */
   get reloadProgress() {
-    return this.weapons.reloadT > 0 ? 1 - this.weapons.reloadT / WEAPONS.rifle.reload : 0;
+    const ws = this.weapons;
+    return ws.reloadT > 0 ? 1 - ws.reloadT / WEAPONS[ws.current].reload : 0;
   }
 
   /** Runs once per simulation tick, right after the movement tick. */
@@ -85,22 +93,31 @@ export class PlayerCombat {
       const eye = sim.state.pos.clone().addScaledVector(me.up, EYE_OFFSET);
       viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
       const dir = new Vector3(0, 0, -1).applyQuaternion(_vq);
-      const p = this.combat.fire(fired, 0, eye, dir, sim.state.vel, sim.gravityDown());
-      if (fired === 'rifle') {
+      const p = this.combat.use(fired, 0, eye, dir, sim.state.vel, sim.gravityDown());
+      if (p && isGun(fired)) {
         const muzzle = this.viewModel.muzzleCameraSpace().applyQuaternion(_vq).add(eye);
         this.fx.setMuzzle(p.id, eye, muzzle);
       }
       this.viewModel.fire();
-      this.punch = Math.min(this.punch + (fired === 'rifle' ? 0.5 : 0.3), 1.5);
+      this.punch = Math.min(this.punch + (fired === 'rifle' ? 0.5 : fired === 'pistol' ? 0.6 : fired === 'fists' ? 0.15 : 0.3), 1.5);
+      // threw the last grenade: back to the best thing in hand
+      if (fired === 'grenade' && weapons.ammo.grenade === 0) this.pendingSelect = this.best();
     }
     this.combat.tick(TICK_DT);
     for (const e of this.combat.events.splice(0)) this.onCombat(e);
   }
 
+  /** Best weapon with something to shoot. */
+  best(): WeaponId {
+    const ws = this.weapons;
+    return (['rifle', 'pistol'] as const).find((w) => hasAmmo(ws, w)) ?? 'fists';
+  }
+
   private onCombat(e: CombatEvent) {
     const { hud, me } = this;
     this.fx.handle(e);
-    if (e.type === 'fire' && e.weapon === 'rifle') this.audio.shot();
+    if (e.type === 'fire' && isGun(e.weapon)) this.audio.shot(e.weapon === 'pistol');
+    if (e.type === 'melee' && e.owner === 0) this.audio.punch(e.pos !== null);
     if (e.type === 'explode') this.audio.explosion();
     if (e.type === 'hit') {
       const tg = this.combat.target(e.target)!;

@@ -3,8 +3,10 @@ import { Quaternion, Vector3 } from 'three';
 import {
   BLOCK_MATERIALS, BlockSystem, PIECE_CELL, PIECE_COST, PIECE_HP_MUL, PIECE_LEVEL, PIECE_THICK, START_BLOCKS,
 } from '../src/shared/blocks';
-import { BotManager } from '../src/shared/bots';
-import { GENERATORS, Match, SHOP } from '../src/shared/match';
+import { BOT, BotManager } from '../src/shared/bots';
+import { GENERATORS, Match } from '../src/shared/match';
+import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, LADDER, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
+import { Fishing, FISHING } from '../src/shared/fishing';
 import { HU, TICK_DT, WORLD } from '../src/shared/constants';
 import { generateMap, PLAYGROUND } from '../src/shared/map';
 import { emptyInput, MoveInput } from '../src/shared/movement';
@@ -157,7 +159,7 @@ for (const [i, pad] of map.pads.entries()) {
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
 import { Combat, MAX_HP, Target } from '../src/shared/combat';
-import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/shared/weapons';
+import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAPONS } from '../src/shared/weapons';
 {
   sim.team = TEAMS[0];
   sim.respawn();
@@ -194,16 +196,63 @@ import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/sh
   check('bullet drops with shooter gravity', drop > 0.8 && drop < 3, `drop=${drop.toFixed(2)}m wind=${w.length().toFixed(1)}`);
   combat.events.length = 0;
 
-  // grenade: weapon state + fuse + self knockback
+  // weapon state: fists at the start, guns need ammo, pistol is semi-automatic, reload takes spare rounds
   const ws = createWeaponState();
+  const tick = (fire: boolean, extra: Partial<{ reload: boolean; select: 'fists' | 'pistol' | 'rifle' | 'grenade' | null }> = {}) =>
+    weaponTick(ws, { fire, reload: false, select: null, ...extra }, TICK_DT);
+  check('start with fists only', ws.current === 'fists' && !ws.owned.pistol && !ws.owned.rifle && !ws.owned.grenade);
+  check('fists swing without ammo', tick(true) === 'fists');
+  tick(false, { select: 'rifle' });
+  check('cannot pick a weapon you do not own', ws.current === 'fists');
+  giveWeapon(ws, 'rifle');
+  tick(false, { select: 'rifle' });
+  for (let k = 0; k < 20; k++) tick(false);
   check('rifle auto-fire respects interval', (() => {
     let n = 0;
-    for (let k = 0; k < 64; k++) if (weaponTick(ws, { fire: true, reload: false, select: null }, TICK_DT)) n++;
+    for (let k = 0; k < 64; k++) if (tick(true)) n++;
     return n >= 8 && n <= 10;
   })());
-  weaponTick(ws, { fire: false, reload: false, select: 'grenade' }, TICK_DT);
-  for (let k = 0; k < 20; k++) weaponTick(ws, { fire: false, reload: false, select: null }, TICK_DT);
-  check('grenade selected', weaponTick(ws, { fire: true, reload: false, select: null }, TICK_DT) === 'grenade' && ws.ammo.grenade === 2);
+  for (let k = 0; k < 64 * 4; k++) tick(true);
+  check('empty gun without spare ammo does not fire or reload', ws.ammo.rifle === 0 && ws.reloadT === 0 && tick(true) === null && !hasAmmo(ws, 'rifle'));
+  ws.reserve.rifle = 40;
+  tick(false, { reload: true });
+  for (let k = 0; k < 64 * 2; k++) tick(false);
+  check('reload moves spare rounds into the magazine', ws.ammo.rifle === 30 && ws.reserve.rifle === 10, `mag=${ws.ammo.rifle} spare=${ws.reserve.rifle}`);
+  giveWeapon(ws, 'pistol');
+  tick(false, { select: 'pistol' });
+  for (let k = 0; k < 20; k++) tick(false);
+  check('pistol is semi-automatic', (() => {
+    let n = 0;
+    for (let k = 0; k < 64; k++) if (tick(true)) n++;
+    return n === 1;
+  })());
+  check('pistol fires once per click', (() => {
+    let n = 0;
+    for (let k = 0; k < 20; k++) tick(false);
+    for (let k = 0; k < 64; k++) if (tick(k % 16 < 8)) n++;
+    return n === 4;
+  })());
+  giveWeapon(ws, 'grenade', 3);
+  tick(false, { select: 'grenade' });
+  for (let k = 0; k < 20; k++) tick(false);
+  check('grenade selected', tick(true) === 'grenade' && ws.ammo.grenade === 2);
+
+  // fists: a punch at 1.5 m hits, at 3 m it does not; a wall in between stops it
+  const punchDummy: Target = { id: 2, team: 'blue', center: new Vector3(), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1 };
+  combat.targets.push(punchDummy);
+  const punchAt = (dist: number) => {
+    punchDummy.center.copy(eye).add(new Vector3(0, -0.3, -dist));
+    punchDummy.hp = MAX_HP;
+    combat.use('fists', 0, eye, new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0));
+    return MAX_HP - punchDummy.hp;
+  };
+  dummy.alive = false;
+  dummy.respawnIn = 1e9;
+  const near = punchAt(1.2);
+  const far = punchAt(3.5);
+  check('punch hits up close for small damage', near === WEAPONS.fists.damage && far === 0, `near=${near} far=${far}`);
+  punchDummy.alive = false;
+  combat.events.length = 0;
   place(14, G + 1, 6, 0);
   run(30, {});
   sim.events.length = 0;
@@ -331,17 +380,15 @@ import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/sh
   const fortOf = (team: string) => [...bs.blocks.values()].filter((b) => b.team === team).length;
   check('enemy beds are fortified, own bed is not', TEAMS.every((t) => t.id === 'red' ? fortOf(t.id) === 0 : fortOf(t.id) >= 30),
     TEAMS.map((t) => `${t.id}=${fortOf(t.id)}`).join(' '));
-  const gen = m.generators.find((g) => g.currency === 'copper')!;
+  const gen = m.generators[0];
   const away = new Vector3(0, 500, 0);
-  for (let k = 0; k < 64 * 5; k++) m.tick(TICK_DT, away);
-  check('copper generator accumulates', gen.stored === 5, `stored=${gen.stored}`);
+  check('no free money generator at the base', m.generators.every((g) => g.currency === 'crystal') && m.generators.length === map.crystalSpots.length);
+  for (let k = 0; k < 64 * 31; k++) m.tick(TICK_DT, away);
+  check('crystal generator accumulates', gen.stored === 2, `stored=${gen.stored}`);
   for (let k = 0; k < 64 * 100; k++) m.tick(TICK_DT, away);
-  check('generator caps', gen.stored === GENERATORS.copper.cap);
+  check('generator caps', gen.stored === GENERATORS.crystal.cap);
   m.tick(TICK_DT, gen.pos.clone().addScaledVector(gen.up, 0.95));
-  check('walking onto the generator collects', m.wallet.copper === GENERATORS.copper.cap && gen.stored === 0 && m.events.some((e) => e.type === 'pickup'));
-  const stoneItem = SHOP.find((i) => i.id === 'stone')!;
-  check('shop sells blocks', m.buy(stoneItem) === 'ok' && bs.inventory.stone === 12 && m.wallet.copper === GENERATORS.copper.cap - 24);
-  check('shop refuses without money', m.buy(SHOP.find((i) => i.id === 'metal')!) === 'money' && bs.inventory.metal === 0);
+  check('walking onto the generator collects', m.wallet.crystal === GENERATORS.crystal.cap && gen.stored === 0 && m.events.some((e) => e.type === 'pickup'));
   check('player can stand at the shop', m.nearShop(new Vector3(...map.spawns.red.pos)) === false && m.shop !== null);
   // enemy bed: walled off from the roof, reachable after breaking the wall
   const blue = m.bed('blue');
@@ -361,6 +408,100 @@ import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/sh
   check('no bed = eliminated on death', m2.onDeath() === false && m2.result === 'lose');
 }
 
+// Economy: start broke, sell junk, the purchase ladder, ammo per gun.
+{
+  const w = buildPhysicsWorld(R, map);
+  const bs = new BlockSystem(R, w);
+  bs.inventory.wood = 0;
+  const ws = createWeaponState();
+  const eco = new Economy({ cash: 0, crystal: 0 }, bs, ws);
+  const item = (id: string) => SHOP.find((i) => i.id === id)!;
+  const shelf = () => eco.offers().map((o) => `${o.item.id}:${o.state}`).join(' ');
+  check('start with no money and no tools', eco.wallet.cash === 0 && !eco.has('rod') && ws.current === 'fists');
+  check('only the rod is open at first', eco.buy(item('pistol')) === 'locked' && eco.buy(item('rod')) === 'money'
+    && eco.offers().filter((o) => o.state !== 'locked').every((o) => o.item.id === 'rod' || o.item.id === 'heal'), shelf());
+  eco.items.bottle = 4; eco.items.apple = 1; eco.items.fish = 1;
+  const value = eco.sellValue;
+  check('selling pays per item, cheaply', eco.sellAll() === value && value === 4 * ITEMS.bottle.sell + ITEMS.apple.sell + ITEMS.fish.sell
+    && eco.wallet.cash === value && eco.items.bottle === 0, `got ${value}`);
+  eco.wallet.cash = 1000;
+  const order: string[] = [];
+  for (let guard = 0; guard < 10; guard++) {
+    const next = eco.offers().find((o) => o.state === 'ok' && o.item.step && !eco.has(o.item.step));
+    if (!next) break;
+    order.push(next.item.step!);
+    eco.buy(next.item);
+  }
+  check('purchase ladder: rod → build tool → pistol → rifle → grenades → blocks', order.join(',') === LADDER.join(','), order.join(','));
+  check('build tool comes with some wood', bs.inventory.wood === BUILDER_WOOD);
+  check('weapons from the shop come loaded, no spare ammo', ws.owned.pistol && ws.ammo.pistol === WEAPONS.pistol.mag && ws.reserve.pistol === 0
+    && ws.owned.rifle && ws.ammo.grenade === 2);
+  check('bought tools leave the shelf', !eco.offers().some((o) => ['rod', 'builder', 'pistol', 'rifle'].includes(o.item.id)), shelf());
+  eco.buy(item('ammo-pistol'));
+  check('ammo is bought per gun', ws.reserve.pistol === 12 && ws.reserve.rifle === 0);
+  eco.buy(item('grenade'));
+  check('grenades are capped', eco.buy(item('grenade')) === 'full' && ws.ammo.grenade === WEAPONS.grenade.mag);
+  eco.items.apple = 1;
+  check('eating takes an apple', eco.eat() && eco.items.apple === 0 && !eco.eat() && APPLE_HEAL > 0);
+}
+
+// Pickups: apples under trees, bottles on the streets of every base island; taken items come back later.
+{
+  const w = buildPhysicsWorld(R, map);
+  const p = new Pickups(R, w, map);
+  const apples = p.items.filter((i) => i.kind === 'apple');
+  const bottles = p.items.filter((i) => i.kind === 'bottle');
+  const trees = map.trees.filter((t) => t.kind === 'tree').length;
+  check('an apple under (almost) every tree', apples.length >= trees * 0.9, `${apples.length}/${trees}`);
+  check('bottles on every base island', TEAMS.every((t) => bottles.filter((b) => b.up.equals(new Vector3(...t.down).negate())).length === PICKUPS.bottlesPerIsland),
+    `${bottles.length} bottles`);
+  const onRed = bottles.find((b) => b.up.y > 0.99)!;
+  check('bottles lie on the street level', Math.abs(onRed.pos.y - G) < 0.3, `y=${(onRed.pos.y - G).toFixed(2)}`);
+  check('nearest item within reach', p.nearest(onRed.pos.clone().add(new Vector3(0, 0.9, 0))) === onRed);
+  p.take(onRed);
+  check('taken item is gone', !onRed.alive && p.nearest(onRed.pos) !== onRed);
+  for (let k = 0; k < 64 * (PICKUPS.bottleRespawn + 1); k++) p.tick(TICK_DT);
+  check('bottle comes back somewhere on the same island', onRed.alive && onRed.up.y > 0.99);
+}
+
+// Fishing: only at a pond; cast → wait → bite → strike inside the zone = fish; too early / outside = nothing.
+{
+  const pond = map.ponds.find((q) => q.team === 'red')!;
+  const water = new Vector3(...pond.pos);
+  const eye = water.clone().add(new Vector3(-4, 1.8, 0));
+  const dir = water.clone().sub(eye).normalize();
+  const f = new Fishing(map.ponds, 5);
+  const body = eye.clone().add(new Vector3(0, -0.7, 0));
+  const until = (phase: string, max = 64 * 10) => { for (let k = 0; k < max && f.phase !== phase; k++) f.tick(TICK_DT, body); return f.phase === phase; };
+  f.use(eye, new Vector3(0, 0, -1).add(new Vector3(0, -0.05, 0)).normalize());
+  check('cannot fish away from water', f.phase === 'idle' && f.events.some((e) => e.type === 'noWater'));
+  f.events.length = 0;
+  f.use(eye, dir);
+  check('cast lands in the pond', f.phase === 'cast' && f.bobber.distanceTo(water) < 0.5);
+  check('a fish bites after a few seconds', until('wait') && (() => { const t0 = f.dur; return until('bite') && t0 >= FISHING.waitMin; })());
+  while (f.marker < f.zoneAt + FISHING.zone / 2) f.tick(TICK_DT, body);
+  f.use(eye, dir);
+  check('strike inside the zone catches a fish', f.events.some((e) => e.type === 'catch'));
+  until('idle');
+  f.events.length = 0;
+  f.use(eye, dir);
+  until('wait');
+  f.use(eye, dir);
+  check('striking before the bite scares the fish', f.events.some((e) => e.type === 'miss' && e.reason === 'early'));
+  until('idle');
+  f.events.length = 0;
+  f.use(eye, dir);
+  until('bite');
+  f.use(eye, dir); // marker at the very start: the zone never starts there
+  check('strike outside the zone misses', f.events.some((e) => e.type === 'miss' && e.reason === 'zone') && !f.events.some((e) => e.type === 'catch'));
+  until('idle');
+  f.events.length = 0;
+  f.use(eye, dir);
+  until('wait');
+  f.tick(TICK_DT, body.clone().add(new Vector3(30, 0, 0)));
+  check('walking away reels the line in', f.events.some((e) => e.type === 'miss' && e.reason === 'away'));
+}
+
 // Bots: verified drop points, a full headless match (player parked out of reach): crystals fall, nobody gets lost.
 {
   const w = buildPhysicsWorld(R, map);
@@ -378,7 +519,9 @@ import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/sh
   check('every core face has a verified drop point', TEAMS.every((t) => bots.dropOk.has(t.id)),
     TEAMS.filter((t) => !bots.dropOk.has(t.id)).map((t) => t.id).join(' '));
   check('two bots per enemy team', bots.bots.length === (TEAMS.length - 1) * 2 && !bots.bots.some((b) => b.team === 'red'));
+  check('bots start with fists like the player', bots.bots.every((b) => b.weapons.current === 'fists' && !b.weapons.owned.pistol));
   let kills = 0;
+  let pistolAt = -1;
   let maxAir = 0;
   const air = new Map<number, number>();
   const t0 = performance.now();
@@ -387,6 +530,7 @@ import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/sh
     combat.tick(TICK_DT);
     m.tick(TICK_DT, ps.state.pos);
     for (const e of combat.events.splice(0)) if (e.type === 'hit' && e.killed) kills++;
+    if (pistolAt < 0 && bots.bots.every((b) => b.weapons.current === 'pistol')) pistolAt = m.time;
     for (const b of bots.bots) {
       const a = b.target.alive && !b.sim.state.onGround ? (air.get(b.id) ?? 0) + TICK_DT : 0;
       air.set(b.id, a);
@@ -394,6 +538,8 @@ import { createWeaponState, damageFalloff, weaponTick, WEAPONS } from '../src/sh
     }
   }
   const broken = m.beds.filter((b) => !b.alive).map((b) => b.team);
+  check('bots get a pistol on a timer, then a rifle', pistolAt >= BOT.pistolAt && pistolAt < BOT.pistolAt + 1
+    && bots.bots.every((b) => b.out || b.weapons.current === 'rifle'), `pistol at ${pistolAt.toFixed(1)} s`);
   check('bots break crystals within 4 minutes', broken.length > 0, `broken=${broken.join(',')}`);
   check('bots fight each other', kills >= 2, // 3 enemy teams on a big map: fewer encounters in 4 min
     `kills=${kills}`);

@@ -27,10 +27,12 @@
       <div id="toast"></div>
       <div id="prompt"></div>
       <div id="bed-break"><i></i></div>
+      <div id="fish-bar"><div class="zone"></div><div class="mark"></div></div>
+      <div id="pockets"></div>
       <div id="hp" class="panel"><span class="hp-ic"></span><span id="hp-val">100</span><div class="bar"><div id="hp-bar"></div></div></div>
       <div id="build-hud" class="panel" style="display:none"></div>
       <div id="hotbar"></div>
-      <div id="weapon" class="panel"><span id="weapon-ic"></span><div><div id="weapon-name">Винтовка</div><div id="ammo">30</div></div></div>
+      <div id="weapon" class="panel"><span id="weapon-ic"></span><div><div id="weapon-name">Кулаки</div><div id="ammo"></div></div></div>
       <div id="shop" class="panel" hidden></div>
       <div id="result"></div>
     </div>
@@ -43,7 +45,7 @@
           <button id="show-help" class="btn">Управление</button>
           <button id="show-settings" class="btn">Настройки</button>
         </nav>
-        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок, зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>огонь / постройка</span></div><div class="row"><span class="keys"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span><span>винтовка, граната, лопатка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Q</kbd><kbd>Z</kbd></span><span>материал постройки</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–6</kbd></span><span>сменить гравитацию</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>пауза</span></div></div>
+        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок, зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>удар / огонь / постройка / заброс удочки</span></div><div class="row"><span class="keys"><kbd>1</kbd>–<kbd>6</kbd></span><span>кулаки, пистолет, автомат, гранаты, строительство, удочка</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>подобрать; магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>F</kbd></span><span>съесть яблоко</span></div><div class="row"><span class="keys"><kbd>Q</kbd></span><span>следующее оружие; в магазине — вкладка</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–4</kbd></span><span>сменить гравитацию</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>пауза</span></div></div>
         <div id="menu-settings" class="menu-details" hidden>
           <label>Громкость <input id="volume" type="range" min="0" max="1" step="0.05" value="0.45"><output id="volume-value">45%</output></label>
           <label>Чувствительность <input id="sensitivity" type="range" min="0.0008" max="0.005" step="0.0002" value="0.0022"><output id="sensitivity-value">100%</output></label>
@@ -51,13 +53,13 @@
         </div>
       </div>
       <aside class="menu-roster panel">
-        <h2>Шесть островов — шесть гравитаций</h2>
+        <h2>Четыре острова — четыре гравитации</h2>
         <ul>
           <li style="--c:var(--red)">Красные <small>ты</small></li><li style="--c:var(--blue)">Синие</li>
           <li style="--c:var(--green)">Зелёные</li><li style="--c:var(--yellow)">Жёлтые</li>
-          <li style="--c:var(--aqua)">Бирюзовые</li><li style="--c:var(--pink)">Розовые</li>
         </ul>
         <p>Сломай чужие кристаллы и выбей всех, кто остался без них. Свой кристалл береги: без него смерть — навсегда.</p>
+        <p>Начинаешь с кулаками и пустыми карманами: собирай бутылки и яблоки, продавай в магазине, купи удочку — дальше пойдёт.</p>
       </aside>
     </div>
     <script type="module" src="/src/client/main.ts"></script>

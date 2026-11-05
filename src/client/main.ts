@@ -10,6 +10,7 @@ import { BotManager } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { generateMap } from '../shared/map';
+import { Economy, Pickups } from '../shared/economy';
 import { KILL_REWARD, Match } from '../shared/match';
 import { upOf } from '../shared/math';
 import { moveBasis, viewQuat } from '../shared/movement';
@@ -29,12 +30,15 @@ import { icon } from './icons';
 import { MatchUi } from './matchUi';
 import { setupMenu } from './menu';
 import { PlayerCombat } from './playerCombat';
+import { Pockets } from './pockets';
 import { Fx } from './render/fx';
 import { GeneratorView } from './render/generatorView';
 import { GravityGizmo } from './render/gizmo';
 import { Graphics } from './render/graphics';
 import { loadAssets } from './render/assets';
 import { BotView } from './render/botView';
+import { KeeperView } from './render/keeperView';
+import { FishingView, PickupView } from './render/pickupView';
 import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
 import { PortalView } from './render/portalView';
@@ -56,6 +60,9 @@ async function main() {
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
   blocks.characters.push(...bots.bots.map((b) => b.sim.mover.collider));
+  const pickups = new Pickups(R, world, map);
+  // the build tool and its blocks come from the shop
+  blocks.inventory.wood = 0;
 
   // --- rendering
   const assets = await loadAssets();
@@ -79,12 +86,17 @@ async function main() {
   const botView = new BotView(scene, bots, assets);
   const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
   build.onPlace = () => viewModel.dig();
-  const ui = new MatchUi(match, hud, audio, () => player.heal());
+  const eco = new Economy(match.wallet, blocks, player.weapons);
+  const ui = new MatchUi(match, eco, hud, audio, () => player.heal());
+  const pockets = new Pockets(eco, pickups, sim, player, hud, audio, map.ponds);
+  const pickupView = new PickupView(scene, pickups);
+  const fishingView = new FishingView(scene, pockets.fishing);
+  const keepers = new KeeperView(scene, map, assets);
   const generators = new GeneratorView(scene, match);
   const guide = new Guide(match, bots, sim);
   player.canRespawn = () => match.onDeath();
   player.onKill = () => {
-    match.wallet.copper += KILL_REWARD;
+    match.wallet.cash += KILL_REWARD;
   };
 
   const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: input.sensitivity, fov: 80 };
@@ -101,7 +113,7 @@ async function main() {
   const local = new LocalPlayer(sim, input);
   local.onTick = () => {
     if (!match.result) bots.tick(TICK_DT);
-    player.tick(!build.active && input.locked && input.down('Mouse0'));
+    player.tick(!build.active && !pockets.rod && !ui.shopOpen && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
   };
   local.onEvent = (e) => {
@@ -119,12 +131,12 @@ async function main() {
 
   window.addEventListener('resize', () => gfx.resize());
   const handleKeys = createKeyHandler({
-    input, sim, local, build, player, ui, nearShop: () => match.nearShop(sim.state.pos), hud, toggles, applyToggles, gui,
+    input, sim, local, build, player, ui, eco, pockets, nearShop: () => match.nearShop(sim.state.pos), hud, toggles, applyToggles, gui,
   });
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, bots, map, hud, icon, ready: true,
+    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, bots, map, hud, icon, eco, pockets, pickups, ui, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -167,8 +179,13 @@ async function main() {
         audio.explosion();
       }
     }
-    ui.update(match.nearShop(sim.state.pos), reachable);
+    // rod: LMB casts / strikes
+    if (pockets.rod && input.locked && !ui.shopOpen && input.take('Mouse0')) pockets.useRod(camera);
+    const pocketPrompt = pockets.update(dt, camera, () => viewModel.cast());
+    ui.update(match.nearShop(sim.state.pos), reachable, pocketPrompt);
     generators.update(time);
+    pickupView.update(time, pockets.near);
+    keepers.update(dt, time);
     guide.update(camera);
 
     botView.update(dt, local.alpha);
@@ -177,6 +194,7 @@ async function main() {
     mapView.update(time, dt);
     player.applyCameraKick(camera, dt);
 
+    fishingView.update(time, pockets.rod ? viewModel.rodTipWorld(camera) : null);
     portalView.render(camera, time);
     gfx.render(dt);
     const invCam = camera.quaternion.clone().invert();
@@ -189,14 +207,15 @@ async function main() {
     });
     lastYaw = input.yaw;
     lastPitch = input.pitch;
-    viewModel.setTool(build.active);
+    viewModel.setTool(build.active ? 'build' : pockets.rod ? 'rod' : null);
+    viewModel.bite = pockets.fishing.phase === 'bite' ? 1 : 0;
     viewModel.render(renderer);
 
     // HUD wind: what the local player's projectiles feel
     const w = combat.wind.felt(combat.time, pUp.clone().negate());
     moveBasis(sim.state.frame, input.yaw, _wf, _wr);
     hud.setWind(Math.atan2(w.dot(_wr), w.dot(_wf)) - Math.PI / 2, w.length(), 0);
-    hud.setWeapon(player.weapons, build.active);
+    hud.setWeapon(player.weapons, build.active ? 'build' : pockets.rod ? 'rod' : null, { build: eco.has('builder'), rod: eco.has('rod') });
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
     gizmo.render(renderer, viewQ, teamByDown(sim.gravityDown()).id);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);

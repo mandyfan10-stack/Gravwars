@@ -43,7 +43,9 @@ export type CombatEvent =
   | { type: 'bounce'; pos: Vector3; speed: number }
   | { type: 'fizzle'; pos: Vector3 }
   | { type: 'explode'; pos: Vector3; radius: number }
-  | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3 };
+  | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3 }
+  /** A punch: `pos` = what it landed on (null = swung at the air). */
+  | { type: 'melee'; owner: number; pos: Vector3 | null; target: number | null };
 
 export const MAX_HP = 100;
 const DUMMY_RESPAWN = 3;
@@ -154,6 +156,39 @@ export class Combat {
     return p;
   }
 
+  /** Fire a gun / throw a grenade, or punch with the fists. */
+  use(weapon: WeaponId, owner: number, eye: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3): Projectile | null {
+    if (WEAPONS[weapon].speed === 0) {
+      this.melee(weapon, owner, eye, dir);
+      return null;
+    }
+    return this.fire(weapon, owner, eye, dir, ownerVel, down);
+  }
+
+  /** Instant short-range hit along the view: the first capsule or world surface within reach. Walls stop it. */
+  melee(weapon: WeaponId, owner: number, eye: Vector3, dir: Vector3) {
+    const def = WEAPONS[weapon];
+    const to = eye.clone().addScaledVector(dir.clone().normalize(), def.reach);
+    const fake = { owner, team: this.target(owner)?.team ?? null } as Projectile;
+    const wh = this.rayWorld(eye, to);
+    const th = this.rayTargets(fake, eye, to);
+    if (th && (!wh || th.t <= wh.t)) {
+      const pos = eye.clone().lerp(to, th.t);
+      this.events.push({ type: 'melee', owner, pos: pos.clone(), target: th.target.id });
+      const push = to.clone().sub(eye).normalize().addScaledVector(th.target.up, 0.3).multiplyScalar(2.2);
+      th.target.onImpulse?.(push);
+      this.damage(th.target, Math.round(def.damage * (th.head ? def.headMul : 1)), owner, th.head, pos);
+      return;
+    }
+    if (wh) {
+      const pos = eye.clone().lerp(to, wh.t);
+      this.onWorldDamage(wh.handle, Math.round(def.damage * 0.5));
+      this.events.push({ type: 'melee', owner, pos, target: null });
+      return;
+    }
+    this.events.push({ type: 'melee', owner, pos: null, target: null });
+  }
+
   private rayWorld(from: Vector3, to: Vector3) {
     const d = _seg.copy(to).sub(from);
     const len = d.length();
@@ -165,7 +200,7 @@ export class Combat {
     return { t: hit.timeOfImpact / len, normal: new Vector3(hit.normal.x, hit.normal.y, hit.normal.z), handle: hit.collider.handle };
   }
 
-  private rayTargets(p: Projectile, from: Vector3, to: Vector3) {
+  private rayTargets(p: Pick<Projectile, 'owner' | 'team'>, from: Vector3, to: Vector3) {
     let best: { t: number; target: Target; head: boolean } | null = null;
     const st = { s: 0, t: 0 };
     for (const tg of this.targets) {
@@ -255,7 +290,7 @@ export class Combat {
       _b.copy(p.pos).addScaledVector(p.vel, dt);
 
       const wh = this.rayWorld(_a, _b);
-      const th = p.weapon === 'rifle' ? this.rayTargets(p, _a, _b) : null;
+      const th = p.weapon !== 'grenade' ? this.rayTargets(p, _a, _b) : null;
       const tEnd = Math.min(wh ? wh.t : 1, th ? th.t : 1);
       const end = _a.clone().lerp(_b, tEnd);
       // v1: portals swallow projectiles
@@ -272,7 +307,7 @@ export class Combat {
         continue;
       }
       if (wh) {
-        if (p.weapon === 'rifle') {
+        if (p.weapon !== 'grenade') {
           p.alive = false;
           p.pos.copy(end);
           this.onWorldDamage(wh.handle, Math.max(1, Math.round(def.damage * damageFalloff(def, p.origin.distanceTo(end)))));

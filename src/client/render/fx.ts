@@ -128,6 +128,8 @@ export class Fx {
       this.burst(e.pos, null, 14, 3, new Color(2, 0.8, 3.5), 0.5);
     } else if (e.type === 'hit' && e.target !== 0) { // no sparks in the local player's own face
       this.burst(e.pos, null, e.head ? 18 : 10, 4, e.head ? new Color(4, 1, 0.6) : new Color(3, 0.6, 0.5), 0.35);
+    } else if (e.type === 'melee' && e.pos && e.target === null) {
+      this.burst(e.pos, null, 5, 1.2, new Color(0.7, 0.65, 0.6), 0.3); // knuckles on a wall: dust
     } else if (e.type === 'bounce') {
       this.burst(e.pos, null, 3, 1.5, new Color(1.5, 1.2, 0.8), 0.25);
     } else if (e.type === 'explode') {
@@ -153,7 +155,7 @@ export class Fx {
     for (const p of combat.projectiles) {
       if (!p.alive) continue;
       live.add(p.id);
-      if (p.weapon === 'rifle') {
+      if (p.weapon !== 'grenade') {
         if (n >= MAX_TRACERS) continue;
         const mo = this.muzzleOffset.get(p.id);
         _b.copy(p.pos);

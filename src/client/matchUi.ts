@@ -1,17 +1,32 @@
 import { BLOCK_MATERIALS } from '../shared/blocks';
-import { Bed, CURRENCY_LABEL, Match, MatchEvent, SHOP } from '../shared/match';
+import { CURRENCY_LABEL, Economy, ITEM_ORDER, ITEMS, ShopItem, ShopOffer, STEP_LABEL } from '../shared/economy';
+import { Bed, Match, MatchEvent } from '../shared/match';
 import { getTeam, TEAMS } from '../shared/teams';
+import { WEAPONS } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
-import { icon } from './icons';
+import { icon, IconName } from './icons';
 
 const $ = (id: string) => document.getElementById(id)!;
 
 const formatTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 
-/** Bedwars UI: wallet, bed status row, interaction prompt, bed-break progress, shop panel, result banner. */
+export type ShopTab = 'buy' | 'sell';
+
+const ITEM_ICON: Record<string, IconName> = { bottle: 'bottle', apple: 'apple', fish: 'fish' };
+
+function shopIcon(item: ShopItem): string {
+  if (item.kind === 'blocks') return icon(item.material);
+  if (item.kind === 'ammo') return icon('ammo');
+  if (item.kind === 'heal') return icon('heart');
+  if (item.kind === 'weapon') return icon(item.weapon === 'grenade' ? 'grenade' : item.weapon === 'pistol' ? 'pistol' : 'rifle');
+  return icon(item.id === 'rod' ? 'rod' : 'shovel');
+}
+
+/** Bedwars UI: wallet, bed status row, interaction prompt, bed-break progress, shop (buy / sell), result banner. */
 export class MatchUi {
   shopOpen = false;
+  tab: ShopTab = 'buy';
   private readonly wallet = $('wallet');
   private readonly bedsEl = $('beds');
   private readonly prompt = $('prompt');
@@ -20,29 +35,60 @@ export class MatchUi {
   private readonly shopEl = $('shop');
   private readonly resultEl = $('result');
   private bedsKey = '';
+  private shopKey = '';
 
-  constructor(private match: Match, private hud: Hud, private audio: GameAudio, private heal: () => boolean) {}
+  constructor(private match: Match, private eco: Economy, private hud: Hud, private audio: GameAudio, private heal: () => boolean) {}
 
   toggleShop() {
     this.shopOpen = !this.shopOpen;
+    if (this.shopOpen) this.tab = this.eco.sellValue > 0 ? 'sell' : 'buy';
     this.audio.select();
   }
 
-  /** Buy the n-th shop item (0-based). */
-  buy(index: number) {
-    const item = SHOP[index];
-    if (!item) return;
-    if (item.kind === 'heal' && !this.heal()) {
+  switchTab() {
+    this.tab = this.tab === 'buy' ? 'sell' : 'buy';
+    this.audio.select();
+  }
+
+  /** Buyable offers in key order (locked teasers get no key). */
+  private buyable(): ShopOffer[] {
+    return this.eco.offers().filter((o) => o.state !== 'locked');
+  }
+
+  /** Number key n (1-based) in the open tab. */
+  choose(n: number) {
+    if (this.tab === 'sell') this.sell(n);
+    else this.buy(n);
+  }
+
+  private buy(n: number) {
+    const offer = this.buyable()[n - 1];
+    if (!offer) return;
+    const item = offer.item;
+    if (item.kind === 'heal' && this.eco.wallet[item.currency] >= item.price && !this.heal()) {
       this.audio.reject();
       this.hud.toast('Здоровье и так полное', '#ffb49e', 1);
       return;
     }
-    if (this.match.buy(item) === 'ok') {
-      this.audio.place();
-      this.hud.toast(`Куплено: ${item.label}`, '#c6ffdb', 1);
+    const r = this.eco.buy(item);
+    if (r === 'ok') {
+      this.audio.coins();
+      this.hud.toast(`Куплено: ${item.label}`, '#c6ffdb', 1.2);
     } else {
       this.audio.reject();
-      this.hud.toast(`Не хватает: ${CURRENCY_LABEL[item.currency]}`, '#ff8e83', 1);
+      this.hud.toast(r === 'full' ? 'Больше не унести' : `Не хватает: ${CURRENCY_LABEL[item.currency]}`, '#ff8e83', 1);
+    }
+  }
+
+  private sell(n: number) {
+    const id = ITEM_ORDER[n - 1];
+    const got = id ? this.eco.sell(id) : n === ITEM_ORDER.length + 1 ? this.eco.sellAll() : 0;
+    if (got > 0) {
+      this.audio.coins();
+      this.hud.toast(`Продано: +${got}`, '#c6ffdb', 1);
+    } else {
+      this.audio.reject();
+      this.hud.toast('Нечего продавать', '#ffb49e', 1);
     }
   }
 
@@ -68,12 +114,14 @@ export class MatchUi {
     this.resultEl.classList.add('show');
   }
 
-  update(nearShop: boolean, reachable: Bed | null) {
+  /** `extraPrompt`: interaction hint from elsewhere (pick up an item, fishing). */
+  update(nearShop: boolean, reachable: Bed | null, extraPrompt = '') {
     const m = this.match;
     if (this.shopOpen && !nearShop) this.shopOpen = false;
 
-    this.wallet.innerHTML = `<span class="copper" title="Медь">${icon('coins')}${m.wallet.copper}</span>`
-      + `<span class="crystal" title="Кристаллы">${icon('crystal')}${m.wallet.crystal}</span><span class="time">${formatTime(m.time)}</span>`;
+    this.wallet.innerHTML = `<span class="cash" title="Деньги">${icon('coins')}${m.wallet.cash}</span>`
+      + (m.wallet.crystal ? `<span class="crystal" title="Кристаллы">${icon('crystal')}${m.wallet.crystal}</span>` : '')
+      + `<span class="time">${formatTime(m.time)}</span>`;
 
     const key = m.beds.map((b) => `${+b.alive}${m.membersAlive(b.team)}${+m.isOut(b.team)}`).join('');
     if (key !== this.bedsKey) {
@@ -93,22 +141,51 @@ export class MatchUi {
     if (m.breaking) prompt = `Ломаешь кристалл: ${getTeam(m.breaking.bed.team).name}`;
     else if (reachable) prompt = `<b>E</b> держи — сломать кристалл (${getTeam(reachable.team).name})`;
     else if (nearShop && !this.shopOpen) prompt = '<b>E</b> магазин';
+    else if (!this.shopOpen) prompt = extraPrompt;
     this.prompt.innerHTML = prompt;
     this.prompt.style.opacity = prompt ? '1' : '0';
     this.breakEl.style.opacity = m.breaking ? '1' : '0';
     this.breakBar.style.width = `${(m.breaking?.progress ?? 0) * 100}%`;
 
     this.shopEl.hidden = !this.shopOpen;
-    if (this.shopOpen) {
-      this.shopEl.innerHTML = `<h3>${icon('shop')}Магазин<small>цифра — купить · E — закрыть</small></h3>` + SHOP.map((item, i) => {
-        const afford = m.wallet[item.currency] >= item.price;
-        const have = item.kind === 'blocks' ? `<em>есть ${m.blocks.inventory[item.material]}</em>` : '';
-        const look = item.kind === 'blocks'
-          ? `style="--c:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : 'style="--c:#ff5a6a"';
-        const ic = icon(item.kind === 'blocks' ? item.material : 'heart');
-        const cur = icon(item.currency === 'copper' ? 'coins' : 'crystal');
-        return `<div class="item${afford ? '' : ' poor'}" ${look}><kbd>${i + 1}</kbd>${ic}${item.label}${have}<span class="price ${item.currency}">${cur}${item.price}</span></div>`;
+    if (this.shopOpen) this.renderShop();
+  }
+
+  private renderShop() {
+    const eco = this.eco;
+    const ws = eco.weapons;
+    const offers = this.tab === 'buy' ? eco.offers() : [];
+    const key = [this.tab, eco.wallet.cash, eco.wallet.crystal, ...ITEM_ORDER.map((i) => eco.items[i]), offers.map((o) => o.item.id + o.state).join(),
+      ws.reserve.pistol, ws.reserve.rifle, ws.ammo.grenade, ...Object.values(eco.blocks.inventory)].join('|');
+    if (key === this.shopKey) return;
+    this.shopKey = key;
+    const tabs = `<nav><span class="${this.tab === 'buy' ? 'on' : ''}">Купить</span><span class="${this.tab === 'sell' ? 'on' : ''}">Продать</span></nav>`;
+    const head = `<h3>${icon('shop')}Магазин${tabs}</h3>`;
+    const foot = `<footer><kbd>Q</kbd> вкладка<kbd>1</kbd>–<kbd>9</kbd> выбрать<kbd>E</kbd> закрыть</footer>`;
+    let rows = '';
+    if (this.tab === 'buy') {
+      let n = 0;
+      rows = offers.map(({ item, state }) => {
+        const locked = state === 'locked';
+        const k = locked ? `<kbd class="lock"></kbd>` : `<kbd>${++n}</kbd>`;
+        let have = '';
+        if (item.kind === 'blocks') have = `есть ${eco.blocks.inventory[item.material]}`;
+        else if (item.kind === 'ammo') have = `запас ${ws.reserve[item.weapon]}`;
+        else if (item.kind === 'weapon' && item.weapon === 'grenade') have = `есть ${ws.ammo.grenade} из ${WEAPONS.grenade.mag}`;
+        const note = locked ? `откроется после: ${STEP_LABEL[item.needs!].toLowerCase()}` : have || item.note;
+        const look = item.kind === 'blocks' ? `style="--c:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : '';
+        const cur = icon(item.currency === 'cash' ? 'coins' : 'crystal');
+        return `<div class="item${state === 'money' ? ' poor' : ''}${locked ? ' locked' : ''}" ${look}>${k}${shopIcon(item)}<span class="label">${item.label}`
+          + `${note ? `<em>${note}</em>` : ''}</span><span class="price ${item.currency}">${cur}${item.price}</span></div>`;
       }).join('');
+    } else {
+      rows = ITEM_ORDER.map((id, i) => {
+        const n = eco.items[id];
+        return `<div class="item${n ? '' : ' poor'}"><kbd>${i + 1}</kbd>${icon(ITEM_ICON[id])}<span class="label">${ITEMS[id].plural}`
+          + `<em>${n} шт. · по ${ITEMS[id].sell}</em></span><span class="price cash">+${n * ITEMS[id].sell}</span></div>`;
+      }).join('') + `<div class="item total${eco.sellValue ? '' : ' poor'}"><kbd>${ITEM_ORDER.length + 1}</kbd><span class="label">Продать всё</span>`
+        + `<span class="price cash">${icon('coins')}+${eco.sellValue}</span></div>`;
     }
+    this.shopEl.innerHTML = head + rows + foot;
   }
 }

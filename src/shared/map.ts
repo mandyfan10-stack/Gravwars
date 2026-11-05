@@ -32,7 +32,8 @@ export interface SpawnDef { pos: V3; quat: Q4; yaw: number }
 /** The team's "bed": a crystal on a pedestal. `bed` = crystal centre, `pos` = small floating marker above it. */
 export interface StatueDef { team: string; pos: V3; bed: V3; up: V3; color: number; fort: { pos: V3; material: BlockMaterial }[] }
 /** Base facilities on the skyscraper roof. */
-export interface BaseDef { team: string; up: V3; shop: V3; generator: V3 }
+/** keeper: shopkeeper behind the counter (capsule centre, body frame; faces the frame's +Z). */
+export interface BaseDef { team: string; up: V3; shop: V3; keeper: { pos: V3; quat: Q4 } }
 /** Crystal generator on a core face. */
 export interface CrystalSpotDef { pos: V3; up: V3 }
 export interface FaceDef { normal: V3; quat: Q4; team: string }
@@ -324,6 +325,23 @@ function houseRow(b: Builder, f: Frame, rng: Rng, axis: 'x' | 'z', a0: number, a
 
 type TileKind = 'base' | 'park' | 'houses' | 'office' | 'plaza' | 'parking' | 'construction' | 'playground' | 'gate' | 'landing';
 interface Tile { i: number; j: number; kind: TileKind }
+
+/** Pond of a park tile, relative to the tile centre: centre offset and half size. */
+const POND = { dx: 1.5, dz: 1, hx: 5.5, hz: 4 };
+const pondRect = (cx: number, cz: number) => ({ x0: cx + POND.dx - POND.hx, x1: cx + POND.dx + POND.hx, z0: cz + POND.dz - POND.hz, z1: cz + POND.dz + POND.hz });
+
+/** Square tile-sized box (centre cx/cz, half H), optionally with a rectangular hole: four boxes around it. */
+function slab(b: Builder, f: Frame, cx: number, y: number, cz: number, H: number, hy: number,
+  hole: { x0: number; x1: number; z0: number; z1: number } | null, color: number, mat: MatKind, collide: boolean) {
+  if (!hole) { b.box(f, cx, y, cz, H, hy, H, color, mat, collide); return; }
+  const piece = (x0: number, x1: number, z0: number, z1: number) => {
+    if (x1 - x0 > 1e-3 && z1 - z0 > 1e-3) b.box(f, (x0 + x1) / 2, y, (z0 + z1) / 2, (x1 - x0) / 2, hy, (z1 - z0) / 2, color, mat, collide);
+  };
+  piece(cx - H, hole.x0, cz - H, cz + H);
+  piece(hole.x1, cx + H, cz - H, cz + H);
+  piece(hole.x0, hole.x1, cz - H, hole.z0);
+  piece(hole.x0, hole.x1, hole.z1, cz + H);
+}
 const key = (i: number, j: number) => `${i},${j}`;
 
 /**
@@ -335,10 +353,11 @@ function cityGround(b: Builder, f: Frame, rng: Rng, tiles: Tile[], team: TeamDef
   const H = TILE / 2;
   for (const t of tiles) {
     const cx = t.i * TILE, cz = t.j * TILE;
-    // slab + asphalt; the block (sidewalk) is raised
-    b.box(f, cx, -0.75, cz, H, 0.75, H, 0x9a948a, 'concrete');
+    // slab + asphalt; the block (sidewalk) is raised. A park leaves a hole for its sunken pond.
+    const hole = t.kind === 'park' ? pondRect(cx, cz) : null;
+    slab(b, f, cx, -0.75, cz, H, 0.75, hole, 0x9a948a, 'concrete', true);
     b.box(f, cx, -2.1, cz, H - 0.5, 0.6, H - 0.5, 0x7a5a3e, 'dirt');
-    b.box(f, cx, 0.012, cz, H, 0.012, H, 0x77736d, 'asphalt', false);
+    slab(b, f, cx, 0.012, cz, H, 0.012, hole, 0x77736d, 'asphalt', false);
     if (t.kind !== 'park' && t.kind !== 'parking' && t.kind !== 'playground') b.block(f, cx, 0, cz, BLOCK, SW / 2, BLOCK, 0xcfc4ac, 'paving');
     // rock underneath: a fat inverted pyramid per tile + a few hanging chunks
     const depth = rng.range(16, 30);
@@ -493,7 +512,7 @@ function tileConstruction(b: Builder, f: Frame, rng: Rng, cx: number, cz: number
 
 /** Park with a pond (fishing) — the only water on the island. */
 function tilePark(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, team: TeamDef) {
-  const px = cx + 1.5, pz = cz + 1, phx = 5.5, phz = 4;
+  const px = cx + POND.dx, pz = cz + POND.dz, phx = POND.hx, phz = POND.hz;
   // grass around a sunken pond (4 slabs leave a hole), pond bottom + water surface
   b.block(f, cx, 0, cz - (BLOCK + pz - phz) / 2 + (pz - cz) / 2 - 0, BLOCK, SW / 2, (BLOCK + (pz - cz) - phz) / 2, 0x6f9a45, 'grass');
   b.block(f, cx, 0, (pz + phz + cz + BLOCK) / 2, BLOCK, SW / 2, (cz + BLOCK - (pz + phz)) / 2, 0x6f9a45, 'grass');
@@ -612,7 +631,7 @@ function genBaseIsland(b: Builder, team: TeamDef, rng: Rng, playground: boolean)
   };
 }
 
-/** Team skyscraper: spawn, shop, crystal, generator on the roof; lift up from the street, descent pad back down. */
+/** Team skyscraper: spawn, shop with its keeper, crystal on the roof; lift up from the street, descent pad back down. */
 function genBase(b: Builder, f: Frame, team: TeamDef) {
   const [cx, cz] = BASE_C;
   const hw = TOWER_HW;
@@ -683,20 +702,17 @@ function genBase(b: Builder, f: Frame, team: TeamDef) {
   }
   b.block(st, 0, R, 0.95, 1.5, 0.5, 0.32, 0x9a6a45, 'paint');
   b.box(st, 0, R + 1.04, 0.95, 1.62, 0.05, 0.42, 0x6b4630, 'paint');
-  b.prop(st, 'trophy', 0.9, R + 1.09, 0.95, 1.3);
-  b.prop(st, 'block', -0.8, R + 1.09, 0.95, 0.7, 0.3);
+  b.prop(st, 'trophy', 1.15, R + 1.09, 0.95, 1.3);
+  b.prop(st, 'block', -1.15, R + 1.09, 0.95, 0.7, 0.3);
   for (const x of [-1, 1]) b.prop(st, 'weapon-rack', x, R, -0.85, 2.2);
   b.prop(st, 'banner', 2.75, R, 0.9, 2.6, 0, team.color);
   b.signDecal(st, 0, R + 3.72, -1.18, 2.8, 0.62, 0, team.color, 'МАГАЗИН');
   b.block(st, 0, R + 3.3, -1.32, 1.5, 0.12, 0.1, 0x6b4630, 'paint', false);
-  b.data.bases.push({ team: team.id, up: f.up(), shop: st.raw(0, R + 1.4, 1.2), generator: r.p(4.5, R + 0.05, -4.5) });
-
-  // resource generator
-  b.block(r, 4.5, R, -4.5, 1.4, 0.05, 1.4, 0xffc94a, 'glow', false);
-  for (const gx of [-1, 1]) for (const gz of [-1, 1]) {
-    b.prop(r, 'column', 4.5 + gx * 1.7, R, -4.5 + gz * 1.7, 1.4);
-    b.solid(r, 4.5 + gx * 1.7, R, -4.5 + gz * 1.7, 0.4, 0.7, 0.4);
-  }
+  // the keeper stands on a low step behind the counter (the character is short, the counter is not)
+  const step = 0.5;
+  b.block(st, 0, R, -0.2, 0.7, step / 2, 0.45, 0x5a3c2a, 'paint');
+  b.data.bases.push({ team: team.id, up: f.up(), shop: st.raw(0, R + 1.4, 1.2),
+    keeper: { pos: st.p(0, R + step + PLAYER_HEIGHT / 2, -0.2), quat: st.rot(0) } });
   b.block(r, 1, R, -6.2, 1.4, 0.5, 0.8, 0xa3a6aa, 'metal');
   b.block(r, 5.8, R, 0.5, 0.8, 0.5, 1.4, 0xa3a6aa, 'metal');
 

@@ -1,5 +1,5 @@
 /**
- * HUD icons from game-icons.net (CC BY 3.0: Lorc, Delapouite, Zeromancer — see README), inlined as SVG.
+ * HUD icons from game-icons.net (CC BY 3.0: Lorc, Delapouite, Zeromancer, John Colburn — see README), inlined as SVG.
  * They are painted with currentColor.
  */
 const files = import.meta.glob('./icons/*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
@@ -8,7 +8,7 @@ for (const [path, svg] of Object.entries(files)) icons[path.slice(8, -4)] = svg.
 
 export type IconName =
   | 'heart' | 'coins' | 'crystal' | 'rifle' | 'grenade' | 'shovel' | 'wind' | 'shop' | 'trophy' | 'skull' | 'wall'
-  | 'stairs' | 'wood' | 'stone' | 'metal' | 'swords';
+  | 'stairs' | 'wood' | 'stone' | 'metal' | 'swords' | 'fist' | 'pistol' | 'rod' | 'apple' | 'bottle' | 'fish' | 'ammo';
 
 export function icon(name: IconName, cls = ''): string {
   const svg = icons[name] ?? '';

@@ -39,28 +39,88 @@ await g(`(() => {
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/3-bot.png` });
 
-// shop + build mode
-await page.keyboard.press('Digit3');
-await page.waitForTimeout(800);
-await page.screenshot({ path: `${out}/4-build.png` });
-// shop: back home, stand at the kiosk, press E; a toast and a kill line for the feed
-await page.keyboard.press('Digit1');
-await g(`(() => {
+// back home; give the ladder up to the build tool and some pockets
+const home = async (dx: number, dz: number, yaw: number, pitch = 0) => {
+  await g(`(() => {
   const G = __game;
   G.sim.setGravity(new G.sim.state.pos.constructor(0, -1, 0));
   G.sim.respawn('manual');
   const base = G.map.bases.find((b) => b.team === 'red');
-  G.sim.state.pos.set(base.shop[0] + 3, base.shop[1] + 0.2, base.shop[2]);
+  G.sim.state.pos.set(base.shop[0] + ${dx}, base.shop[1] + 0.2, base.shop[2] + ${dz});
   G.sim.state.vel.set(0, 0, 0);
   G.sim.mover.place(G.sim.state);
   G.local.snap();
-  G.match.wallet.copper = 31; G.match.wallet.crystal = 2;
+})()`);
+  // the respawn resets the view on the next frame: look afterwards
+  await page.waitForTimeout(200);
+  await g(`__game.look(${yaw}, ${pitch})`);
+};
+await home(2.4, 0.5, Math.PI / 2, 0.03);
+await g(`(() => {
+  const G = __game, shop = (id) => G.eco.offers().find((o) => o.item.id === id).item;
+  G.match.wallet.cash = 200;
+  for (const id of ['rod', 'builder', 'pistol']) G.eco.buy(shop(id));
+  G.eco.buy(shop('ammo-pistol'));
+  G.match.wallet.cash = 23;
+  Object.assign(G.eco.items, { bottle: 7, apple: 2, fish: 3 });
   G.hud.killfeed('<span style="color:#3b6bff">Синие</span>' + G.icon('swords') + '<span style="color:#3bff6b">Зелёные</span>');
 })()`);
-await page.waitForTimeout(400);
+// shopkeeper close-up, pistol in hand
+await page.keyboard.press('Digit2');
+await page.waitForTimeout(1200);
+await page.screenshot({ path: `${out}/4-keeper.png` });
+// shop: opens on the sell tab when there is something to sell; then the buy tab
 await page.keyboard.press('KeyE');
+await page.waitForTimeout(500);
+await page.screenshot({ path: `${out}/5-shop-sell.png` });
+await page.keyboard.press('KeyQ');
+await page.waitForTimeout(400);
+await page.screenshot({ path: `${out}/6-shop-buy.png` });
+await page.keyboard.press('KeyE');
+
+// fists, build tool
+await page.keyboard.press('Digit1');
+await page.waitForTimeout(700);
+await page.screenshot({ path: `${out}/7-fists.png` });
+await page.keyboard.press('Digit5');
+await page.waitForTimeout(700);
+await page.screenshot({ path: `${out}/8-build.png` });
+
+// park: stand at the pond with the rod, cast, force a bite
+await page.keyboard.press('Digit6');
+await g(`(() => {
+  const G = __game, p = G.map.ponds.find((q) => q.team === 'red');
+  G.sim.state.pos.set(p.pos[0] - p.half[0] - 0.8, p.pos[1] + 0.25 + 0.1 + 0.95, p.pos[2]);
+  G.sim.state.vel.set(0, 0, 0);
+  G.sim.mover.place(G.sim.state);
+  G.local.snap();
+})()`);
+await page.waitForTimeout(150);
+await g(`__game.look(-Math.PI / 2, -0.45)`);
+await page.waitForTimeout(800);
+await page.screenshot({ path: `${out}/9-pond.png` });
+await page.mouse.down();
+await page.waitForTimeout(50);
+await page.mouse.up();
+await page.waitForTimeout(800);
+// skip the wait: the fish bites now
+await g(`(() => { const f = __game.pockets.fishing; f.dur = 0; })()`);
 await page.waitForTimeout(600);
-await page.screenshot({ path: `${out}/5-shop.png` });
+await page.screenshot({ path: `${out}/10-bite.png` });
+
+// apples under a tree on the home island
+await g(`(() => {
+  const G = __game, a = G.pickups.items.find((i) => i.kind === 'apple' && i.up.y > 0.99 && i.alive);
+  G.sim.state.pos.set(a.pos.x + 1.1, a.pos.y + 0.95, a.pos.z + 1.1);
+  G.sim.state.vel.set(0, 0, 0);
+  G.sim.mover.place(G.sim.state);
+  G.local.snap();
+})()`);
+await page.waitForTimeout(150);
+await g(`__game.look(Math.PI / 4, -0.55)`);
+await page.keyboard.press('Digit1');
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/11-apple.png` });
 await browser.close();
 if (errors.length) console.log('page errors:\n' + errors.slice(0, 10).join('\n'));
 console.log('saved to', out);

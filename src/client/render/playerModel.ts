@@ -48,6 +48,9 @@ export function teamMaterial(src: MeshStandardMaterial, team: number) {
   return m;
 }
 
+/** fists / none: empty hands (punching / standing behind a counter). */
+export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none';
+
 export interface ModelState {
   /** Planar speed, m/s. */
   speed: number;
@@ -69,13 +72,17 @@ export class PlayerModel {
   private readonly clips = new Map<string, AnimationAction>();
   private readonly materials: MeshStandardMaterial[] = [];
   private current: AnimationAction | null = null;
-  private arms: AnimationAction;
-  private armsShoot: AnimationAction;
+  private arms!: AnimationAction;
+  private armsShoot!: AnimationAction;
   private shootT = 0;
   private flash = 0;
   private dying = false;
+  private readonly guns: Record<'rifle' | 'pistol', Object3D>;
+  private readonly armClips: Record<'both' | 'free', [AnimationAction, AnimationAction]>;
+  /** What the character holds: arm pose + gun model. */
+  held: HeldItem = 'rifle';
 
-  constructor(assets: GameAssets, teamColor: number) {
+  constructor(assets: GameAssets, teamColor: number, held: HeldItem = 'rifle') {
     const src = assets.character;
     this.body = SkeletonUtils.clone(src.scene);
     this.body.scale.setScalar(SCALE);
@@ -93,10 +100,14 @@ export class PlayerModel {
 
     // the blaster sits in both hands, barrels forward (character and blaster both face +Z)
     const torso = this.body.getObjectByName('torso')!;
-    const gun = assets.rifle.clone();
-    gun.scale.setScalar(0.22);
-    gun.position.set(-0.06, 0, 0.26);
-    torso.add(gun);
+    const rifle = assets.rifle.clone();
+    rifle.scale.setScalar(0.22);
+    rifle.position.set(-0.06, 0, 0.26);
+    const pistol = assets.blaster.clone();
+    pistol.scale.setScalar(0.2);
+    pistol.position.set(-0.06, 0.02, 0.3);
+    torso.add(rifle, pistol);
+    this.guns = { rifle, pistol };
 
     this.mixer = new AnimationMixer(this.body);
     const find = (n: string) => AnimationClip.findByName(src.animations, n)!;
@@ -105,11 +116,36 @@ export class PlayerModel {
     die.setLoop(LoopOnce, 1);
     die.clampWhenFinished = true;
     this.clips.set('die', die);
-    this.arms = this.mixer.clipAction(armsOnly(find('holding-both')));
-    this.armsShoot = this.mixer.clipAction(armsOnly(find('holding-both-shoot')));
-    this.armsShoot.setLoop(LoopOnce, 1);
+    const once = (a: AnimationAction) => { a.setLoop(LoopOnce, 1); return a; };
+    this.armClips = {
+      both: [this.mixer.clipAction(armsOnly(find('holding-both'))), once(this.mixer.clipAction(armsOnly(find('holding-both-shoot'))))],
+      // bare hands: natural arm swing, a right hook to punch
+      free: [this.mixer.clipAction(armsOnly(find('idle'))), once(this.mixer.clipAction(armsOnly(find('attack-melee-right'))))],
+    };
+    [this.arms, this.armsShoot] = this.armClips.both;
     this.arms.play();
     this.play('idle', 0);
+    this.setHeld(held);
+  }
+
+  /** Switch the gun model and the arm pose. */
+  setHeld(held: HeldItem) {
+    this.guns.rifle.visible = held === 'rifle';
+    this.guns.pistol.visible = held === 'pistol';
+    const [arms, shoot] = this.armClips[held === 'rifle' || held === 'pistol' ? 'both' : 'free'];
+    if (arms !== this.arms) {
+      this.arms.stop();
+      this.armsShoot.stop();
+      this.arms = arms;
+      this.armsShoot = shoot;
+      if (!this.dying) this.arms.reset().play();
+    }
+    this.held = held;
+  }
+
+  /** Bone to hang accessories on (sunglasses on the head). */
+  bone(name: string) {
+    return this.body.getObjectByName(name)!;
   }
 
   private play(name: string, fade = 0.15) {
@@ -159,7 +195,7 @@ export class PlayerModel {
       loco.timeScale = Math.max(0.6, s.speed / 3.2);
       if (s.fired) {
         this.armsShoot.reset().play();
-        this.shootT = 0.2;
+        this.shootT = this.held === 'fists' ? 0.45 : 0.2;
       }
     }
     this.shootT = Math.max(0, this.shootT - dt);
