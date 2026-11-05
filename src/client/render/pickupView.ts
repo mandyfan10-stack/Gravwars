@@ -1,5 +1,5 @@
 import {
-  BufferGeometry, CylinderGeometry, Group, IcosahedronGeometry, LatheGeometry, Line, LineBasicMaterial, Mesh, MeshPhysicalMaterial,
+  BoxGeometry, BufferGeometry, CylinderGeometry, Group, IcosahedronGeometry, LatheGeometry, Line, LineBasicMaterial, Mesh, MeshPhysicalMaterial,
   MeshStandardMaterial, Quaternion, Scene, SphereGeometry, Vector2, Vector3,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -21,7 +21,7 @@ function appleMeshes() {
 }
 
 /** Empty bottle lying on its side: green glass, lathe profile. */
-function bottleMeshes() {
+export function bottleMeshes() {
   const pts = [[0, 0], [0.034, 0], [0.036, 0.01], [0.036, 0.15], [0.03, 0.18], [0.013, 0.215], [0.012, 0.26], [0.015, 0.265], [0.0, 0.265]]
     .map(([x, y]) => new Vector2(x, y));
   const glass = new LatheGeometry(pts, 10).translate(0, -0.13, 0).rotateZ(Math.PI / 2).translate(0, 0.036, 0);
@@ -32,20 +32,35 @@ function bottleMeshes() {
   return g;
 }
 
-/** Items lying on the map. Each pickup gets a mesh once; visibility follows the simulation. */
+/** A wad of banknotes with a band (dropped by bandits). */
+function cashMeshes() {
+  const g = new Group();
+  const notes = new Mesh(new BoxGeometry(0.16, 0.035, 0.075).translate(0, 0.018, 0), new MeshStandardMaterial({ color: 0x8aa37a, roughness: 0.9 }));
+  const band = new Mesh(new BoxGeometry(0.03, 0.038, 0.078).translate(0, 0.019, 0), new MeshStandardMaterial({ color: 0xd8cfa8, roughness: 0.8 }));
+  g.add(notes, band);
+  return g;
+}
+
+/** Items lying on the map. Each pickup gets a mesh when it shows up; meshes of items gone for good are removed. */
 export class PickupView {
   private readonly meshes = new Map<number, Group>();
+  private readonly protos: Record<Pickup['kind'], Group> = { apple: appleMeshes(), bottle: bottleMeshes(), cash: cashMeshes() };
 
-  constructor(scene: Scene, private pickups: Pickups) {
-    const apple = appleMeshes();
-    const bottle = bottleMeshes();
-    for (const it of pickups.items) {
-      const g = (it.kind === 'apple' ? apple : bottle).clone();
+  constructor(private scene: Scene, private pickups: Pickups) {
+    this.sync();
+  }
+
+  private sync() {
+    for (const it of this.pickups.items) {
+      if (this.meshes.has(it.id)) continue;
+      const g = this.protos[it.kind].clone();
       g.traverse((o) => { o.castShadow = true; });
       this.place(g, it);
-      scene.add(g);
+      this.scene.add(g);
       this.meshes.set(it.id, g);
     }
+    const ids = new Set(this.pickups.items.map((i) => i.id));
+    for (const [id, g] of this.meshes) if (!ids.has(id)) { this.scene.remove(g); this.meshes.delete(id); }
   }
 
   private place(g: Group, it: Pickup) {
@@ -56,6 +71,7 @@ export class PickupView {
 
   /** `near`: item in reach gets a gentle bob so it reads as interactive. */
   update(time: number, near: Pickup | null) {
+    this.sync();
     for (const it of this.pickups.items) {
       const g = this.meshes.get(it.id)!;
       if (g.visible !== it.alive || !g.position.equals(it.pos)) this.place(g, it);

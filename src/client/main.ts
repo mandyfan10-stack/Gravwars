@@ -10,6 +10,7 @@ import { BotManager } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { generateMap } from '../shared/map';
+import { NpcManager } from '../shared/npcs';
 import { Economy, Pickups } from '../shared/economy';
 import { KILL_REWARD, Match } from '../shared/match';
 import { upOf } from '../shared/math';
@@ -38,6 +39,7 @@ import { Graphics } from './render/graphics';
 import { loadAssets } from './render/assets';
 import { BotView } from './render/botView';
 import { KeeperView } from './render/keeperView';
+import { NpcView } from './render/npcView';
 import { FishingView, PickupView } from './render/pickupView';
 import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
@@ -61,6 +63,8 @@ async function main() {
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
   blocks.characters.push(...bots.bots.map((b) => b.sim.mover.collider));
   const pickups = new Pickups(R, world, map);
+  const npcs = new NpcManager(R, world, map, combat, pickups);
+  blocks.characters.push(...npcs.colliders);
   // the build tool and its blocks come from the shop
   blocks.inventory.wood = 0;
 
@@ -84,6 +88,7 @@ async function main() {
   const hud = new Hud();
   const player = new PlayerCombat(sim, combat, hud, fx, audio, viewModel);
   const botView = new BotView(scene, bots, assets);
+  const npcView = new NpcView(scene, npcs, assets);
   const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
   build.onPlace = () => viewModel.dig();
   const eco = new Economy(match.wallet, blocks, player.weapons);
@@ -95,7 +100,8 @@ async function main() {
   const generators = new GeneratorView(scene, match);
   const guide = new Guide(match, bots, sim);
   player.canRespawn = () => match.onDeath();
-  player.onKill = () => {
+  player.onKill = (tg) => {
+    if (tg.npc) return; // city NPCs pay with what they drop
     match.wallet.cash += KILL_REWARD;
   };
 
@@ -112,7 +118,10 @@ async function main() {
 
   const local = new LocalPlayer(sim, input);
   local.onTick = () => {
-    if (!match.result) bots.tick(TICK_DT);
+    // NPCs judge the player by how they move: speed, and whether they sneak (Shift)
+    player.me.vel = sim.state.vel;
+    player.me.quiet = local.input.walk;
+    if (!match.result) { bots.tick(TICK_DT); npcs.tick(TICK_DT); }
     player.tick(!build.active && !pockets.rod && !ui.shopOpen && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
   };
@@ -136,7 +145,7 @@ async function main() {
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, bots, map, hud, icon, eco, pockets, pickups, ui, ready: true,
+    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -189,6 +198,7 @@ async function main() {
     guide.update(camera);
 
     botView.update(dt, local.alpha);
+    npcView.update(dt, local.alpha, camera);
     fx.down.copy(gfx.upDir).negate();
     fx.update(dt, combat, time);
     mapView.update(time, dt);

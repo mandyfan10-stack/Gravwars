@@ -11,7 +11,7 @@ import type { PlayerCombat } from './playerCombat';
 
 const $ = (id: string) => document.getElementById(id)!;
 const ITEM_ICON: Record<string, IconName> = { bottle: 'bottle', apple: 'apple', fish: 'fish' };
-const PICK_NAME = { apple: 'яблоко', bottle: 'бутылку' } as const;
+const PICK_NAME = { apple: 'яблоко', bottle: 'бутылку', cash: 'деньги' } as const;
 const _dir = new Vector3();
 
 /**
@@ -41,9 +41,15 @@ export class Pockets {
     const it = this.near;
     if (!it) return false;
     this.pickups.take(it);
-    this.eco.items[it.kind]++;
-    this.audio.pickup();
-    this.hud.toast(`+1 ${ITEMS[it.kind].name.toLowerCase()}`, '#e8e2d6', 0.8);
+    if (it.kind === 'cash') {
+      this.eco.wallet.cash += it.amount;
+      this.audio.coins();
+      this.hud.toast(`+${it.amount} денег`, '#e2c27a', 0.9);
+    } else {
+      this.eco.items[it.kind]++;
+      this.audio.pickup();
+      this.hud.toast(`+1 ${ITEMS[it.kind].name.toLowerCase()}`, '#e8e2d6', 0.8);
+    }
     this.near = null;
     return true;
   }

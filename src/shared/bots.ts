@@ -391,6 +391,8 @@ export class BotManager {
       if (!t.alive || t.team === bot.team) continue;
       if (home && t.center.distanceTo(home) > BOT.defendRadius) continue;
       const d = eye.distanceTo(t.center);
+      // city NPCs: only those who go for this bot or get in its face
+      if (t.npc && t.aggro !== bot.id && d > 4) continue;
       if (d > bestD || !this.combat.lineOfSight(eye, t.center)) continue;
       best = t;
       bestD = d;

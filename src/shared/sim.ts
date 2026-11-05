@@ -32,6 +32,8 @@ export class PlayerSim {
   readonly portals: PortalRuntime[];
   readonly events: SimEvent[] = [];
   team: TeamDef;
+  /** Lifts / geysers launch this body (NPCs stay in their streets). */
+  usePads = true;
 
   constructor(R: Rapier, world: PhysicsWorld, readonly map: MapData, teamId: TeamId,
     readonly cfg: MovementConfig = { ...DEFAULT_MOVEMENT }) {
@@ -102,7 +104,7 @@ export class PlayerSim {
     }
 
     // geysers
-    if (s.onGround && !s.noclip) {
+    if (s.onGround && !s.noclip && this.usePads) {
       const up = upOf(s.frame, _up);
       for (const pad of this.map.pads) {
         const pu = new Vector3(...pad.up);

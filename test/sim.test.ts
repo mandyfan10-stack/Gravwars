@@ -7,6 +7,9 @@ import { BOT, BotManager } from '../src/shared/bots';
 import { GENERATORS, Match } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, LADDER, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
 import { Fishing, FISHING } from '../src/shared/fishing';
+import { NPC, NpcManager } from '../src/shared/npcs';
+import { upOf } from '../src/shared/math';
+import { moveBasis } from '../src/shared/movement';
 import { HU, TICK_DT, WORLD } from '../src/shared/constants';
 import { generateMap, PLAYGROUND } from '../src/shared/map';
 import { emptyInput, MoveInput } from '../src/shared/movement';
@@ -502,6 +505,99 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
   check('walking away reels the line in', f.events.some((e) => e.type === 'miss' && e.reason === 'away'));
 }
 
+// City NPCs: bums and gangs on the streets, gradual noticing (sight cone, distance, movement), hearing, loot.
+{
+  const w = buildPhysicsWorld(R, map);
+  const combat = new Combat(R, w, map, []);
+  combat.windMul = 0;
+  const pk = new Pickups(R, w, map);
+  const npcs = new NpcManager(R, w, map, combat, pk);
+  const vel = new Vector3();
+  const me: Target = { id: 0, team: 'red', center: new Vector3(14, G + 0.95, 10), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1,
+    vel, quiet: false };
+  combat.targets.push(me);
+  check('bums and a gang on every base island', TEAMS.every((t) => npcs.npcs.filter((n) => n.island === t.id && n.kind === 'bum').length === NPC.bumsPerIsland
+    && npcs.npcs.filter((n) => n.island === t.id && n.kind === 'gang').length === NPC.gangSize));
+  const step = (sec: number, each?: () => void) => {
+    for (let k = 0; k < 64 * sec; k++) { each?.(); npcs.tick(TICK_DT); combat.tick(TICK_DT); combat.events.length = 0; }
+  };
+  step(2);
+  const red = npcs.npcs.filter((n) => n.island === 'red');
+  check('NPCs stand on the streets', red.every((n) => n.sim.state.onGround && Math.abs(n.sim.state.pos.y - G - 0.94) < 0.3),
+    red.map((n) => (n.sim.state.pos.y - G).toFixed(2)).join(' '));
+
+  // stealth against one gang member: a target kept at a fixed spot relative to where it looks
+  const g = red.find((n) => n.kind === 'gang')!;
+  const others = npcs.npcs.filter((n) => n !== g);
+  const hold = (dist: number, behind: boolean, speed: number, quiet: boolean) => () => {
+    const s2 = g.sim.state;
+    const f = new Vector3();
+    moveBasis(s2.frame, s2.yaw, f, new Vector3());
+    me.center.copy(s2.pos).addScaledVector(f, behind ? -dist : dist);
+    vel.copy(f).multiplyScalar(speed);
+    me.quiet = quiet;
+    for (const o of others) o.target.alive && o.suspicion.clear(); // only `g` is under test
+  };
+  const reset = () => { g.suspicion.clear(); g.foe = null; g.target.aggro = null; g.state = 'patrol'; g.lookAt = null; me.hp = MAX_HP; };
+  const timeToNotice = (dist: number, speed: number) => {
+    reset();
+    let t = 0;
+    for (; t < 10 && !g.foe; t += TICK_DT) step(TICK_DT, hold(dist, false, speed, speed < 4));
+    return t;
+  };
+  const tStill = timeToNotice(9, 0);
+  const tRun = timeToNotice(9, 7);
+  check('a target in view gets noticed gradually, not at once', tStill > 1 && tStill < 8, `standing at 9 m: ${tStill.toFixed(1)} s`);
+  check('running in view is noticed faster', tRun < tStill * 0.6, `running: ${tRun.toFixed(1)} s`);
+  check('noticed closer = sooner', timeToNotice(4, 0) < tStill, `4 m: ${timeToNotice(4, 0).toFixed(1)} s`);
+  reset();
+  step(4, hold(5, true, 3.4, true));
+  check('quiet walk behind the back goes unnoticed', !g.foe && npcs.awareness(g, 0) < 0.3, `awareness ${npcs.awareness(g, 0).toFixed(2)}`);
+  reset();
+  step(1.5, hold(5, true, 7, false));
+  check('running footsteps behind the back are heard', npcs.awareness(g, 0) > 0.2 && g.lookAt !== null, `awareness ${npcs.awareness(g, 0).toFixed(2)}`);
+  reset();
+  timeToNotice(7, 0);
+  const hp0 = me.hp;
+  step(5, hold(7, false, 0, true));
+  check('an alerted gang member shoots', me.hp < hp0, `hp ${me.hp}`);
+  check('the rest of the gang is told', red.filter((n) => n.kind === 'gang' && n !== g).some((n) => n.state === 'search' || n.foe === me));
+
+  // a gunshot draws a patrolling gang member to look
+  const g2 = red.filter((n) => n.kind === 'gang')[1];
+  g2.foe = null; g2.state = 'patrol'; g2.suspicion.clear();
+  me.center.set(0, -3000, 0);
+  combat.noises.push({ pos: g2.sim.state.pos.clone().add(new Vector3(20, 0, 0)), radius: 38, owner: 0 });
+  step(0.3);
+  check('a gunshot within earshot sends the gang to search', (g2.state as string) === 'search' && !!g2.searchAt, g2.state);
+
+  // loot: a dead bandit drops money
+  const cash0 = pk.items.filter((i) => i.kind === 'cash').length;
+  combat.damage(g2.target, 1000, 0, false, g2.target.center);
+  step(0.1);
+  check('a dead bandit drops money', pk.items.filter((i) => i.kind === 'cash').length === cash0 + 1 && (g2.state as string) === 'dead');
+
+  // a minute of street life with somebody around: bums drink, litter, scuffle
+  me.center.set(14, G + 0.95, 10); vel.set(0, 0, 0); me.hp = 1e9;
+  const bottles0 = pk.countOn('bottle', new Vector3(0, 1, 0));
+  let brawls = 0;
+  const t0 = performance.now();
+  for (let k = 0; k < 64 * 90; k++) {
+    npcs.tick(TICK_DT);
+    combat.tick(TICK_DT);
+    for (const e of combat.events.splice(0)) {
+      const a = combat.target(e.type === 'hit' ? e.owner : -1), b = e.type === 'hit' ? combat.target(e.target) : null;
+      if (a?.npc === 'bum' && b?.npc === 'bum') brawls++;
+    }
+  }
+  const ms = (performance.now() - t0) / 90;
+  check('bums drink and leave empty bottles', pk.countOn('bottle', new Vector3(0, 1, 0)) > bottles0, `${bottles0} → ${pk.countOn('bottle', new Vector3(0, 1, 0))}`);
+  check('bums pick fights with each other', brawls > 0, `${brawls} hits`);
+  check('NPCs stay on the streets', npcs.npcs.every((n) => n.state === 'dead' || n.sim.state.pos.toArray().every(Number.isFinite)
+    && Math.abs(n.sim.state.pos.dot(upOf(n.sim.state.frame)) + WORLD.islandDistance - 0.94) < 3));
+  check('NPCs are cheap to simulate', ms < 40, `${ms.toFixed(1)} ms per game second, ${npcs.npcs.length} NPCs`);
+}
+
 // Bots: verified drop points, a full headless match (player parked out of reach): crystals fall, nobody gets lost.
 {
   const w = buildPhysicsWorld(R, map);
@@ -516,6 +612,8 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
   ps.mover.place(ps.state);
   combat.targets.push(me);
   const bots = new BotManager(R, w, map, combat, m, bs, 'red');
+  // the city lives on: bots cross the streets past bums and gangs
+  const npcs = new NpcManager(R, w, map, combat, new Pickups(R, w, map));
   check('every core face has a verified drop point', TEAMS.every((t) => bots.dropOk.has(t.id)),
     TEAMS.filter((t) => !bots.dropOk.has(t.id)).map((t) => t.id).join(' '));
   check('two bots per enemy team', bots.bots.length === (TEAMS.length - 1) * 2 && !bots.bots.some((b) => b.team === 'red'));
@@ -527,9 +625,10 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
   const t0 = performance.now();
   for (let k = 0; k < 64 * 240; k++) {
     bots.tick(TICK_DT);
+    npcs.tick(TICK_DT);
     combat.tick(TICK_DT);
     m.tick(TICK_DT, ps.state.pos);
-    for (const e of combat.events.splice(0)) if (e.type === 'hit' && e.killed) kills++;
+    for (const e of combat.events.splice(0)) if (e.type === 'hit' && e.killed && !combat.target(e.target)?.npc && !combat.target(e.owner)?.npc) kills++;
     if (pistolAt < 0 && bots.bots.every((b) => b.weapons.current === 'pistol')) pistolAt = m.time;
     for (const b of bots.bots) {
       const a = b.target.alive && !b.sim.state.onGround ? (air.get(b.id) ?? 0) + TICK_DT : 0;
@@ -545,7 +644,7 @@ import { createWeaponState, damageFalloff, giveWeapon, hasAmmo, weaponTick, WEAP
     `kills=${kills}`);
   check('no bot stays airborne for long', maxAir < 10, `max=${maxAir.toFixed(1)}s`);
   check('bot positions stay finite', bots.bots.every((b) => b.sim.state.pos.toArray().every(Number.isFinite)));
-  check('bots are cheap to simulate', (performance.now() - t0) / 240 < 40, `${((performance.now() - t0) / 240).toFixed(1)} ms per game second`);
+  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / 240 < 60, `${((performance.now() - t0) / 240).toFixed(1)} ms per game second`);
 }
 
 // Slopes: walking up / down a ramp keeps full ground speed and stays grounded (build ramps are ~37°).

@@ -121,6 +121,39 @@ await g(`__game.look(Math.PI / 4, -0.55)`);
 await page.keyboard.press('Digit1');
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/11-apple.png` });
+
+// city NPCs on the home island (red: up = +y). Put the player `dist` m in front of one, facing it.
+const faceNpc = async (pick: string, dist: number, side = 0, pitch = -0.08) => {
+  await g(`(() => {
+  const G = __game, n = G.npcs.npcs.find(${pick});
+  window.__npc = n;
+  const p = n.sim.state.pos, f = new p.constructor(0, 0, -1).applyQuaternion(n.sim.state.frame);
+  f.applyAxisAngle(new p.constructor(0, 1, 0), n.sim.state.yaw);
+  G.sim.state.pos.copy(p).addScaledVector(f, ${dist}).add(new p.constructor(${side}, 0, 0));
+  G.sim.state.vel.set(0, 0, 0);
+  G.sim.mover.place(G.sim.state);
+  G.local.snap();
+})()`);
+  await page.waitForTimeout(150);
+  await g(`(() => { const G = __game, d = __npc.sim.state.pos.clone().sub(G.sim.state.pos); G.look(Math.atan2(-d.x, -d.z), ${pitch}); })()`);
+};
+// a bum having a drink
+await g(`(() => { const G = __game, n = G.npcs.npcs.find((n) => n.kind === 'bum' && n.island === 'red' && n.state !== 'dead');
+  n.state = 'drink'; n.stateT = 0; window.__npc = n; })()`);
+await faceNpc('(n) => n === __npc', 2.6, 0.6, -0.12);
+await page.waitForTimeout(700);
+await g(`__game.look(__game.input.yaw, -0.12)`);
+await page.screenshot({ path: `${out}/12-bum.png` });
+// a gang: stand in their view and let suspicion build (the "?"), then the "!"
+await faceNpc(`(n) => n.kind === 'gang' && n.island === 'red' && n.state !== 'dead'`, 13, 1.5, -0.03);
+await page.waitForTimeout(1400);
+await page.screenshot({ path: `${out}/13-gang-suspicious.png` });
+await page.waitForTimeout(4000);
+await page.screenshot({ path: `${out}/14-gang-alert.png` });
+// drop a bandit: cash on the ground
+await g(`(() => { const t = __npc.target; __game.combat.damage(t, 999, 0, false, t.center); })()`).catch((e) => errors.push(String(e)));
+await page.waitForTimeout(1800);
+await page.screenshot({ path: `${out}/15-cash.png` });
 await browser.close();
 if (errors.length) console.log('page errors:\n' + errors.slice(0, 10).join('\n'));
 console.log('saved to', out);

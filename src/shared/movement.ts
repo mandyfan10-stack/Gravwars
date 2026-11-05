@@ -3,6 +3,9 @@ import { MovementConfig, PLAYER_HALF_SEGMENT, PLAYER_RADIUS } from './constants'
 import { upOf } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
 
+/** Quiet walk speed, share of maxSpeed (Source / CS: ~0.52). */
+export const WALK_SPEED = 0.45;
+
 export interface PlayerState {
   pos: Vector3;
   vel: Vector3;
@@ -24,6 +27,8 @@ export interface MoveInput {
   up: number;
   jump: boolean;
   sprint: boolean;
+  /** Quiet walk (Shift): slower on the ground and silent for NPCs. */
+  walk: boolean;
   yaw: number;
   pitch: number;
 }
@@ -36,7 +41,7 @@ export function createPlayerState(): PlayerState {
 }
 
 export function emptyInput(): MoveInput {
-  return { forward: 0, right: 0, up: 0, jump: false, sprint: false, yaw: 0, pitch: 0 };
+  return { forward: 0, right: 0, up: 0, jump: false, sprint: false, walk: false, yaw: 0, pitch: 0 };
 }
 
 const AY = new Vector3(0, 1, 0);
@@ -143,7 +148,7 @@ export class Mover {
 
     moveBasis(s.frame, s.yaw, _fwd, _right);
     _wish.set(0, 0, 0).addScaledVector(_fwd, input.forward).addScaledVector(_right, input.right);
-    const wishSpeed = Math.min(_wish.length(), 1) * cfg.maxSpeed;
+    const wishSpeed = Math.min(_wish.length(), 1) * cfg.maxSpeed * (input.walk ? WALK_SPEED : 1);
     if (_wish.lengthSq() > 1e-8) _wish.normalize();
 
     // jump (before friction → frame-perfect bhop keeps all speed)

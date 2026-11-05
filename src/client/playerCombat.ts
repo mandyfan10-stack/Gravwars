@@ -1,5 +1,5 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
-import { Combat, CombatEvent, MAX_HP, Target } from '../shared/combat';
+import { Combat, CombatEvent, Faction, MAX_HP, Target } from '../shared/combat';
 import { EYE_OFFSET, TICK_DT } from '../shared/constants';
 import { upOf } from '../shared/math';
 import { viewQuat } from '../shared/movement';
@@ -16,8 +16,11 @@ const _vq = new Quaternion();
 
 const KILL = icon('swords');
 const SELF = icon('skull');
-const teamSpan = (id: TeamId, label?: string) => {
-  const t = getTeam(id);
+/** Coloured name of a team, or a muted NPC name. */
+const teamSpan = (id: Faction, label?: string) => {
+  if (id.startsWith('bum:')) return '<span class="npc">Бродяга</span>';
+  if (id.startsWith('gang:')) return '<span class="npc">Бандит</span>';
+  const t = getTeam(id as TeamId);
   return `<span style="color:${teamHex(t.color)}">${label ?? t.name}</span>`;
 };
 
@@ -128,7 +131,8 @@ export class PlayerCombat {
           this.onKill(tg);
         }
       }
-      if (e.killed && e.owner !== 0 && e.target !== 0) {
+      // street fights between city NPCs are not news: the feed is about players and bots
+      if (e.killed && e.owner !== 0 && e.target !== 0 && !(tg.npc && this.combat.target(e.owner)?.npc)) {
         const killer = this.combat.target(e.owner);
         hud.killfeed(e.owner === e.target || !killer ? `${SELF}${teamSpan(tg.team)} подорвался` : `${teamSpan(killer.team)}${KILL}${teamSpan(tg.team)}`);
       }

@@ -22,10 +22,14 @@ export const EAT_COOLDOWN = 0.8;
 
 // --- pickups on the map ------------------------------------------------------------------------
 
-export type PickupKind = 'apple' | 'bottle';
+export type PickupKind = 'apple' | 'bottle' | 'cash';
 export interface Pickup {
   id: number;
   kind: PickupKind;
+  /** Money in a dropped wad (cash only). */
+  amount: number;
+  /** Dropped by someone: gone for good once taken (or after `life` s). */
+  once: boolean;
   pos: Vector3;
   up: Vector3;
   /** Lying there (false = taken, waiting to come back). */
@@ -39,9 +43,14 @@ export const PICKUPS = {
   /** Reach from the player's centre to an item for E. */
   reach: 2.2,
   appleRespawn: 45,
-  bottleRespawn: 40,
-  /** Bottles lying on the streets of each base island at once. */
-  bottlesPerIsland: 12,
+  /** Street litter is rare; most bottles are dropped by bums (npcs.ts). */
+  bottleRespawn: 90,
+  /** Litter bottles lying on the streets of each base island. */
+  bottlesPerIsland: 4,
+  /** Dropped items disappear after this long. */
+  dropLife: 180,
+  /** No more dropped bottles on an island than this (bums stop littering). */
+  maxBottlesPerIsland: 18,
 };
 
 /**
@@ -52,9 +61,9 @@ export class Pickups {
   readonly items: Pickup[] = [];
   private readonly bottleSpots: { pos: Vector3; up: Vector3 }[] = [];
   private readonly rng = new Rng(9001);
+  private nextId = 1;
 
   constructor(private R: Rapier, private world: PhysicsWorld, map: MapData) {
-    let id = 1;
     for (const t of map.trees) {
       if (t.kind !== 'tree') continue;
       const up = new Vector3(...t.up);
@@ -64,7 +73,7 @@ export class Pickups {
       const p = new Vector3(...t.pos).addScaledVector(side, this.rng.range(0.7, 1.3) * t.scale);
       const ground = this.ground(p, up);
       if (!ground) continue;
-      this.items.push({ id: id++, kind: 'apple', pos: ground, up, alive: true, respawnT: 0, spot: -1 });
+      this.items.push({ id: this.nextId++, kind: 'apple', amount: 0, once: false, pos: ground, up, alive: true, respawnT: 0, spot: -1 });
     }
     // bottles: along the road graph of each base island, a little off the centre line
     for (const team of TEAMS) {
@@ -89,7 +98,7 @@ export class Pickups {
       for (let i = 0; i < PICKUPS.bottlesPerIsland && own.length; i++) {
         const spot = this.bottleSpots.indexOf(own.splice(this.rng.int(0, own.length - 1), 1)[0]);
         const s = this.bottleSpots[spot];
-        this.items.push({ id: id++, kind: 'bottle', pos: s.pos.clone(), up: s.up, alive: true, respawnT: 0, spot });
+        this.items.push({ id: this.nextId++, kind: 'bottle', amount: 0, once: false, pos: s.pos.clone(), up: s.up, alive: true, respawnT: 0, spot });
       }
     }
   }
@@ -104,14 +113,35 @@ export class Pickups {
     return from.addScaledVector(down, hit.timeOfImpact - 0.02);
   }
 
+  /** Something dropped on the ground at `pos` (a bum's empty bottle, a bandit's money). Null if there is no ground. */
+  drop(kind: PickupKind, pos: Vector3, up: Vector3, amount = 0): Pickup | null {
+    if (kind === 'bottle' && this.countOn('bottle', up) >= PICKUPS.maxBottlesPerIsland) return null;
+    const ground = this.ground(pos.clone().addScaledVector(up, -0.5), up);
+    if (!ground) return null;
+    const it: Pickup = { id: this.nextId++, kind, amount, once: true, pos: ground, up: up.clone(), alive: true, respawnT: PICKUPS.dropLife, spot: -1 };
+    this.items.push(it);
+    return it;
+  }
+
+  /** Items of a kind lying on the surface with this up. */
+  countOn(kind: PickupKind, up: Vector3) {
+    return this.items.reduce((n, it) => n + (it.alive && it.kind === kind && it.up.dot(up) > 0.99 ? 1 : 0), 0);
+  }
+
   tick(dt: number) {
-    for (const it of this.items) {
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      const it = this.items[i];
+      if (it.once) {
+        it.respawnT -= dt;
+        if (!it.alive || it.respawnT <= 0) this.items.splice(i, 1);
+        continue;
+      }
       if (it.alive) continue;
       it.respawnT -= dt;
       if (it.respawnT > 0) continue;
       if (it.kind === 'bottle') {
         // a new free spot on the same island
-        const taken = new Set(this.items.filter((o) => o.alive && o.kind === 'bottle').map((o) => o.spot));
+        const taken = new Set(this.items.filter((o) => o.alive && o.kind === 'bottle' && !o.once).map((o) => o.spot));
         const free = this.bottleSpots.map((s, i) => i).filter((i) => !taken.has(i) && this.bottleSpots[i].up.equals(it.up));
         if (free.length) it.spot = this.rng.pick(free);
         it.pos.copy(this.bottleSpots[it.spot].pos);
@@ -134,6 +164,7 @@ export class Pickups {
 
   take(it: Pickup) {
     it.alive = false;
+    if (it.once) return;
     it.respawnT = it.kind === 'apple' ? PICKUPS.appleRespawn : PICKUPS.bottleRespawn;
   }
 }

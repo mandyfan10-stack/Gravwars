@@ -45,6 +45,7 @@ export class LocalPlayer {
     i.up = k.locked ? (k.down('Space') ? 1 : 0) - (k.down('ControlLeft') || k.down('KeyC') ? 1 : 0) : 0;
     i.jump = k.locked && k.jump();
     i.sprint = k.down('ShiftLeft');
+    i.walk = k.locked && (k.down('ShiftLeft') || k.down('ShiftRight'));
     i.yaw = k.yaw;
     i.pitch = k.pitch;
   }

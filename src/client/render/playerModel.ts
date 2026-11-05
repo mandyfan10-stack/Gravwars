@@ -21,8 +21,11 @@ function armsOnly(c: AnimationClip) {
   return new AnimationClip(`${c.name}:arms`, c.duration, c.tracks.filter((t) => ARM_TRACK.test(t.name)));
 }
 
-/** Team uniform: recolours the red palette column with the team colour (keeping its shading) and adds a hit flash. */
-export function teamMaterial(src: MeshStandardMaterial, team: number) {
+/**
+ * Team uniform: recolours the red palette column with the team colour (keeping its shading) and adds a hit flash.
+ * `grime` 0..1 makes the whole outfit dull, brownish and dirty (city bums).
+ */
+export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0) {
   const m = src.clone();
   m.roughness = 0.75;
   m.metalness = 0;
@@ -40,10 +43,17 @@ export function teamMaterial(src: MeshStandardMaterial, team: number) {
           // armour column: a light team tint, readable from afar
           float armour = step(0.5625, vMapUv.x) * step(vMapUv.x, 0.625);
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * mix(vec3(1.0), uTeam * 1.6, 0.45), armour);
+          ${grime > 0 ? `{
+            float g = dot(diffuseColor.rgb, vec3(0.333));
+            vec3 dull = mix(diffuseColor.rgb, vec3(g), 0.55) * vec3(0.78, 0.7, 0.58);
+            // blotches from the model position: stains do not swim with the palette
+            float n = fract(sin(dot(floor(vMapUv * 37.0), vec2(12.9898, 78.233))) * 43758.5453);
+            diffuseColor.rgb = mix(diffuseColor.rgb, dull * (0.8 + 0.25 * n), ${grime.toFixed(2)});
+          }` : ''}
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), uFlash * 0.8);
         }`);
   };
-  m.customProgramCacheKey = () => 'team-uniform';
+  m.customProgramCacheKey = () => `team-uniform-${grime}`;
   m.userData.team = team;
   return m;
 }
@@ -82,7 +92,7 @@ export class PlayerModel {
   /** What the character holds: arm pose + gun model. */
   held: HeldItem = 'rifle';
 
-  constructor(assets: GameAssets, teamColor: number, held: HeldItem = 'rifle') {
+  constructor(assets: GameAssets, teamColor: number, held: HeldItem = 'rifle', grime = 0) {
     const src = assets.character;
     this.body = SkeletonUtils.clone(src.scene);
     this.body.scale.setScalar(SCALE);
@@ -92,7 +102,7 @@ export class PlayerModel {
       const mesh = o as Mesh;
       if (!mesh.isMesh) return;
       const m = mesh.material as MeshStandardMaterial;
-      if (!mats.has(m)) mats.set(m, teamMaterial(m, teamColor));
+      if (!mats.has(m)) mats.set(m, teamMaterial(m, teamColor, grime));
       mesh.material = mats.get(m)!;
     });
     this.materials.push(...mats.values());

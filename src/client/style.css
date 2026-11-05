@@ -65,6 +65,14 @@ body.debug #info, body.debug #speed { display: block; }
 #markers .marker.mine .ic { font-size: 13px; }
 #markers .marker.edge { opacity: .7; }
 #markers .marker.edge span { display: none; }
+/* city NPCs: "?" while they grow suspicious (the bar under it fills), "!" once they come for you */
+#markers .npc-mark { position: absolute; left: 0; top: 0; width: 16px; margin: -20px 0 0 -8px; text-align: center; will-change: transform;
+  font: 800 17px/1 var(--display); color: #f1ece2; text-shadow: 0 1px 2px rgba(0, 0, 0, .85); }
+#markers .npc-mark::after { content: ''; display: block; height: 2px; margin-top: 2px; border-radius: 1px;
+  background: linear-gradient(90deg, #f1ece2 var(--fill), rgba(0, 0, 0, .45) var(--fill)); }
+#markers .npc-mark.hostile { color: #ff6a5c; }
+#markers .npc-mark.hostile::after { display: none; }
+#killfeed .npc { color: #c9bfae; }
 #wind { display: flex; align-items: center; gap: 6px; font: 600 14px var(--display); }
 #wind .wind-ic .ic { font-size: 16px; color: var(--muted); }
 #wind-arrow { width: 16px; height: 16px; color: #fff; transition: transform .3s; }

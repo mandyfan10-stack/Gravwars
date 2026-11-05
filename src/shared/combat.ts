@@ -7,10 +7,26 @@ import type { TeamId } from './teams';
 import { damageFalloff, WeaponId, WEAPONS } from './weapons';
 import { Wind } from './wind';
 
+/**
+ * Faction of a target: a team, or an NPC side. Projectiles and punches never hurt their own faction, so every bum
+ * gets a faction of its own (they fight each other) while a gang shares one.
+ */
+export type Faction = TeamId | `bum:${number}` | `gang:${string}`;
+
 /** Anything that can be shot: a capsule standing along `up`. */
 export interface Target {
   id: number;
-  team: TeamId;
+  team: Faction;
+  /** NPCs (bums, gangs): not part of any team, ignored by team bots unless they attack them. */
+  npc?: 'bum' | 'gang';
+  /** NPC only: id of the target it is fighting right now. */
+  aggro?: number | null;
+  /** Velocity (footstep noise for NPC hearing / sight). */
+  vel?: Vector3;
+  /** Quiet walk (Shift): no footsteps. */
+  quiet?: boolean;
+  /** Took damage from `owner` (NPCs react to being hit). */
+  onHit?: (owner: number, damage: number) => void;
   center: Vector3;
   up: Vector3;
   hp: number;
@@ -25,7 +41,7 @@ export interface Projectile {
   weapon: WeaponId;
   owner: number;
   /** No friendly fire: projectiles ignore the shooter's teammates (but grenades still hurt the shooter). */
-  team: TeamId | null;
+  team: Faction | null;
   pos: Vector3;
   /** Where it was fired from (damage falls off with the distance). */
   origin: Vector3;
@@ -46,6 +62,11 @@ export type CombatEvent =
   | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3 }
   /** A punch: `pos` = what it landed on (null = swung at the air). */
   | { type: 'melee'; owner: number; pos: Vector3 | null; target: number | null };
+
+/** Something loud happened: NPCs within `radius` hear it. */
+export interface Noise { pos: Vector3; radius: number; owner: number }
+/** Hearing radius of actions, m. */
+export const NOISE = { gun: 38, grenade: 45, punch: 9 };
 
 export const MAX_HP = 100;
 const DUMMY_RESPAWN = 3;
@@ -108,6 +129,8 @@ export class Combat {
   readonly projectiles: Projectile[] = [];
   readonly targets: Target[] = [];
   readonly events: CombatEvent[] = [];
+  /** Shots, explosions and punches since the NPC manager last looked (it clears the list). */
+  readonly noises: Noise[] = [];
   time = 0;
   /** Global wind multiplier (0 = calm; debug / tests). */
   windMul = 1;
@@ -152,6 +175,7 @@ export class Combat {
       down: down.clone().normalize(), age: 0, resting: false, alive: true,
     };
     this.projectiles.push(p);
+    if (weapon !== 'grenade') this.noises.push({ pos: origin.clone(), radius: NOISE.gun, owner });
     this.events.push({ type: 'fire', weapon, owner, origin: origin.clone(), dir: dir.clone(), projectile: p.id });
     return p;
   }
@@ -170,6 +194,7 @@ export class Combat {
     const def = WEAPONS[weapon];
     const to = eye.clone().addScaledVector(dir.clone().normalize(), def.reach);
     const fake = { owner, team: this.target(owner)?.team ?? null } as Projectile;
+    this.noises.push({ pos: eye.clone(), radius: NOISE.punch, owner });
     const wh = this.rayWorld(eye, to);
     const th = this.rayTargets(fake, eye, to);
     if (th && (!wh || th.t <= wh.t)) {
@@ -226,6 +251,7 @@ export class Combat {
     if (!tg.alive) return;
     tg.hp = Math.max(0, tg.hp - amount);
     const killed = tg.hp <= 0;
+    tg.onHit?.(owner, amount);
     if (killed) {
       tg.alive = false;
       if (tg.respawnIn >= 0) tg.respawnIn = DUMMY_RESPAWN;
@@ -237,6 +263,7 @@ export class Combat {
     const def = WEAPONS[p.weapon];
     p.alive = false;
     this.events.push({ type: 'explode', pos: p.pos.clone(), radius: def.radius });
+    this.noises.push({ pos: p.pos.clone(), radius: NOISE.grenade, owner: p.owner });
     this.onExplosion(p.pos.clone(), def.radius, def.damage);
     for (const tg of this.targets) {
       if (!tg.alive || (tg.team === p.team && tg.id !== p.owner)) continue;
@@ -331,6 +358,8 @@ export class Combat {
       }
       p.pos.copy(_b);
     }
+    // nobody listening (no NPCs): do not let the list grow
+    if (this.noises.length > 64) this.noises.splice(0, this.noises.length - 64);
     // forget dead projectiles
     for (let i = this.projectiles.length - 1; i >= 0; i--) if (!this.projectiles[i].alive) this.projectiles.splice(i, 1);
   }
