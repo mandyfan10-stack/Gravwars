@@ -68,6 +68,8 @@ export class Pickups {
   private readonly bottleSpots: { pos: Vector3; up: Vector3 }[] = [];
   private readonly rng = new Rng(9001);
   private nextId = 1;
+  /** Colliders the ground ray passes through (people: a body standing over the spot is not the ground). */
+  passThrough: ((c: { handle: number }) => boolean) | undefined;
 
   constructor(private R: Rapier, private world: PhysicsWorld, map: MapData) {
     for (const t of map.trees) {
@@ -114,7 +116,7 @@ export class Pickups {
   private ground(p: Vector3, up: Vector3): Vector3 | null {
     const from = p.clone().addScaledVector(up, 1.5);
     const down = up.clone().negate();
-    const hit = this.world.castRay(new this.R.Ray(from, down), 4, true);
+    const hit = this.world.castRay(new this.R.Ray(from, down), 4, true, undefined, undefined, undefined, undefined, this.passThrough);
     // nothing, or something well above the expected ground (a car roof, a bench): no item here
     if (!hit || hit.timeOfImpact < 0.9 || hit.timeOfImpact > 2.4) return null;
     return from.addScaledVector(down, hit.timeOfImpact - 0.02);

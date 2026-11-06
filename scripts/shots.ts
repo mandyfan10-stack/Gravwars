@@ -159,15 +159,46 @@ await faceNpc('(n) => n === __npc', 2.6, 0.6, -0.12);
 await page.waitForTimeout(700);
 await g(`__game.look(__game.input.yaw, -0.12)`);
 await page.screenshot({ path: `${out}/12-bum.png` });
-// a gang: stand in their view and let suspicion build (the "?"), then the "!"
-await faceNpc(`(n) => n.kind === 'gang' && n.island === 'red' && n.state !== 'dead'`, 5, 0.8, -0.03);
+// a gang: stand in their view and let suspicion build (the "?"), then the "!". By now the shooting above has
+// usually stirred them up, so calm the red gang first; the gangs hold the island's corners, so stand on the
+// island's side of one (towards the centre), not in front of it, where it may be the edge.
+await g(`(() => {
+  const G = __game, gang = G.npcs.npcs.filter((n) => n.kind === 'gang' && n.island === 'red' && n.state !== 'dead');
+  for (const n of gang) { n.state = 'patrol'; n.stateT = 0; n.foe = null; n.suspicion.clear(); n.fire = 'free'; n.windT = 0; n.throwing = false; n.lastSeen = null; n.searchAt = null; }
+  const n = gang[0], p = n.sim.state.pos, V = p.constructor;
+  window.__npc = n;
+  // hold it still: a one-point route, already reached = it stands and looks around (as at a patrol stop)
+  const M = G.npcs, isl = M.islands.find((i) => i.id === 'red'), l = M.toLocal(isl, p);
+  n.route = [[l.x, l.z]]; n.wp = 0;
+  const toCentre = new V(-p.x, 0, -p.z).normalize();
+  G.sim.state.pos.copy(p).addScaledVector(toCentre, 7);
+  G.sim.state.vel.set(0, 0, 0);
+  G.sim.mover.place(G.sim.state);
+  G.local.snap();
+})()`);
+await page.waitForTimeout(150);
+// once alerted it moves for cover: keep turning to it. The gang shoots back: keep the player alive (the HUD still
+// shows the hits) so a respawn does not move the camera away.
+const lookNpc = (pitch = -0.03) => g(`(() => { const G = __game, me = G.combat.targets.find((t) => t.id === 0); me.hp = Math.max(me.hp, 40); const d = __npc.sim.state.pos.clone().sub(G.sim.state.pos); G.look(Math.atan2(-d.x, -d.z), ${pitch}); })()`);
+await lookNpc();
 await page.waitForTimeout(1400);
 await page.screenshot({ path: `${out}/13-gang-suspicious.png` });
-await page.waitForTimeout(4000);
+for (let i = 0; i < 20; i++) { await page.waitForTimeout(200); await lookNpc(); }
+await page.waitForTimeout(100);
 await page.screenshot({ path: `${out}/14-gang-alert.png` });
 // drop a bandit: cash on the ground
-await g(`(() => { const t = __npc.target; __game.combat.damage(t, 999, 0, false, t.center); })()`).catch((e) => errors.push(String(e)));
-await page.waitForTimeout(1800);
+await g(`(() => { const t = __npc.target; window.__deadAt = __npc.sim.state.pos.clone(); __game.combat.damage(t, 999, 0, false, t.center); })()`).catch((e) => errors.push(String(e)));
+// step up to the cash from the island's side (parked cars hide it from further away) and look down at it
+await page.waitForTimeout(1200);
+await g(`(() => { const me = __game.combat.targets.find((t) => t.id === 0); me.hp = Math.max(me.hp, 40); })()`);
+await g(`(() => { const G = __game, V = __deadAt.constructor;
+  const cash = G.pickups.items.filter((i) => i.alive && i.kind === 'cash').sort((x, y) => x.pos.distanceTo(__deadAt) - y.pos.distanceTo(__deadAt))[0];
+  const p = window.__deadAt = cash ? cash.pos.clone() : __deadAt;
+  G.sim.state.pos.copy(p).addScaledVector(new V(-p.x, 0, -p.z).normalize(), 2.5); G.sim.state.vel.set(0, 0, 0);
+  G.sim.mover.place(G.sim.state); G.local.snap(); })()`);
+await page.waitForTimeout(150);
+await g(`(() => { const G = __game, d = __deadAt.clone().sub(G.sim.state.pos); G.look(Math.atan2(-d.x, -d.z), -Math.atan2(1.6, Math.hypot(d.x, d.z))); })()`);
+await page.waitForTimeout(150);
 await page.screenshot({ path: `${out}/15-cash.png` });
 
 // guns: the rifle, a reload in progress, then building materials with damage (cracks)

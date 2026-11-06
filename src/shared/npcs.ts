@@ -228,6 +228,8 @@ export class NpcManager {
 
   constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private combat: Combat, private pickups: Pickups,
     opts: { bums?: number; gang?: number } = {}) {
+    // drops land under a dying body (or a crowd): the ray must not stop on capsules
+    pickups.passThrough ??= combat.notCharacter;
     let id = 500;
     for (const def of map.islands) {
       const nav = map.nav[def.id];
