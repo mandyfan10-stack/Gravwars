@@ -1,7 +1,7 @@
 import {
   BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, DoubleSide,
   Group, IcosahedronGeometry, InstancedMesh, Material, Matrix4, Mesh, MeshBasicMaterial,
-  MeshStandardMaterial, Object3D, OctahedronGeometry, Quaternion, Texture, Vector3,
+  MeshStandardMaterial, Object3D, Quaternion, Texture, Vector3,
 } from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -10,7 +10,9 @@ import { Rng } from '../../shared/math';
 import {
   glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture,
 } from './textures';
+import { crystalCluster, CrystalCluster, crystalGeometry, crystalMaterials } from './crystal';
 import { withRooms } from './rooms';
+import { waterMaterial } from './water';
 import { trackTexture } from './texFilter';
 
 /**
@@ -79,7 +81,7 @@ function makeMaterials(): Record<MatKind, Material> {
     asphalt: triplanar(std({ roughness: 0.95 }), t.asphalt, 3),
     paving: triplanar(std({ roughness: 0.88 }), t.paving, 2),
     grass: triplanar(std({ roughness: 1 }), t.grass, 3),
-    water: triplanar(std({ roughness: 0.08, metalness: 0.25, envMapIntensity: 1.2 }), t.water, 5, 1),
+    water: waterMaterial().material,
     dirt: std({ roughness: 1, flatShading: true }),
     rock: std({ roughness: 1, flatShading: true }),
     metal: std({ roughness: 0.45, metalness: 0.6 }),
@@ -332,37 +334,34 @@ export function buildMapView(map: MapData): MapView {
   group.add(shadowy(blobMesh));
 
   // --- bed crystals (no collider; hidden when the bed is broken) + small floating markers above them
-  const spinners: { mesh: Mesh; up: Vector3; base: Vector3; phase: number }[] = [];
+  const spinners: { mesh: Object3D; up: Vector3; base: Vector3; phase: number }[] = [];
+  const clusters: CrystalCluster[] = [];
   const beds = new Map<string, Object3D[]>();
-  const octa = new OctahedronGeometry(0.7);
-  const unitOcta = new OctahedronGeometry(1, 0);
-  for (const s of map.statues) {
-    // faceted gem: lit facets + a strong team-coloured glow so it reads from afar and still looks solid
-    const crystal = new Mesh(unitOcta, new MeshStandardMaterial({
-      color: s.color, emissive: new Color(s.color).multiplyScalar(0.55), roughness: 0.15, metalness: 0.1, flatShading: true,
-    }));
-    crystal.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(...s.up));
-    crystal.scale.set(0.9, 2.2, 0.9);
-    crystal.position.set(...s.bed);
-    group.add(crystal);
-    const m = new Mesh(octa, new MeshBasicMaterial({ color: new Color(s.color).multiplyScalar(2.5) }));
-    beds.set(s.team, [crystal, m]);
+  map.statues.forEach((s, i) => {
     const up = new Vector3(...s.up);
-    m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), up);
+    const cluster = crystalCluster(s.color, 17 + i * 31);
+    cluster.group.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), up);
+    cluster.group.position.set(...s.bed);
+    group.add(cluster.group);
+    clusters.push(cluster);
+    const mark = new Mesh(crystalGeometry(0.32, 1.1, new Rng(i + 5)), crystalMaterials(s.color).core);
+    beds.set(s.team, [cluster.group, mark]);
+    mark.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), up);
     const base = new Vector3(...s.pos);
-    m.position.copy(base);
-    group.add(m);
-    spinners.push({ mesh: m, up, base, phase: Math.random() * 6 });
-  }
+    mark.position.copy(base);
+    group.add(mark);
+    spinners.push({ mesh: mark, up, base, phase: Math.random() * 6 });
+  });
 
-  const water = mats.water as MeshStandardMaterial;
+  const water = mats.water;
   return {
     group,
     setBedAlive(team, alive) {
       for (const o of beds.get(team) ?? []) o.visible = alive;
     },
     update(time, dt) {
-      water.userData.tri.triTime.value = time * 0.03;
+      water.userData.update(time);
+      for (const c of clusters) if (c.group.visible) c.update(time, dt);
       for (const s of spinners) {
         s.mesh.rotateOnWorldAxis(s.up, dt * 1.2);
         s.mesh.position.copy(s.base).addScaledVector(s.up, Math.sin(time * 1.6 + s.phase) * 0.25);

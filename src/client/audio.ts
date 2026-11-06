@@ -6,12 +6,30 @@ export class GameAudio {
     this.ctx ??= new AudioContext();
     if (this.ctx.state !== 'running') void this.ctx.resume();
   }
-  private tone(type: OscillatorType, from: number, to: number, duration: number, volume: number, delay = 0) {
+  tone(type: OscillatorType, from: number, to: number, duration: number, volume: number, delay = 0) {
     const c = this.ctx; if (!c || !this.volume) return;
     const t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
     o.type = type; o.frequency.setValueAtTime(from,t); o.frequency.exponentialRampToValueAtTime(Math.max(1,to),t+duration);
     g.gain.setValueAtTime(Math.max(0.0001,volume*this.volume),t); g.gain.exponentialRampToValueAtTime(0.0001,t+duration);
-    o.connect(g).connect(c.destination); o.start(t); o.stop(t+duration+.01);
+    o.connect(g).connect(this.dest ?? c.destination); o.start(t); o.stop(t+duration+.01);
+  }
+  /** Where tone() / noise() connect to; set only while at() runs. */
+  private dest: AudioNode | null = null;
+  /**
+   * Play whatever `fn` schedules as one sound out in the world: panned (-1 left .. 1 right, optionally sweeping to
+   * `panTo` over `sweep` s), quieter and duller with distance (m).
+   */
+  at(pan: number, dist: number, fn: () => void, panTo?: number, sweep = 1) {
+    const c = this.ctx; if (!c || !this.volume || c.state !== 'running') return;
+    const p = c.createStereoPanner(), f = c.createBiquadFilter(), g = c.createGain(), t = c.currentTime;
+    p.pan.setValueAtTime(pan, t);
+    if (panTo !== undefined) p.pan.linearRampToValueAtTime(panTo, t + sweep);
+    f.type = 'lowpass'; f.frequency.value = 16000 / (1 + dist / 12); f.Q.value = 0.5;
+    g.gain.value = 1 / (1 + dist / 9);
+    p.connect(f).connect(g).connect(c.destination);
+    this.dest = p;
+    try { fn(); } finally { this.dest = null; }
+    // the chain is freed by the browser once its sources have stopped
   }
   private noiseBuf: AudioBuffer | null = null;
   /** Shared 2 s white-noise buffer used by bursts and ambient loops. */
@@ -24,13 +42,13 @@ export class GameAudio {
     return this.noiseBuf;
   }
   /** Filtered white noise burst; `delay` s from now; `type` of the sweeping filter. */
-  private noise(duration: number, volume: number, from: number, to: number, delay = 0, type: BiquadFilterType = 'lowpass', q = 0.7) {
+  noise(duration: number, volume: number, from: number, to: number, delay = 0, type: BiquadFilterType = 'lowpass', q = 0.7) {
     const c = this.ctx; if (!c || !this.volume || volume <= 0.0005) return;
     this.ensureNoiseBuf(c);
     const src=c.createBufferSource(), f=c.createBiquadFilter(), g=c.createGain(), t=c.currentTime+delay;
     src.buffer=this.noiseBuf; f.type=type; f.Q.value=q; f.frequency.setValueAtTime(from,t);f.frequency.exponentialRampToValueAtTime(Math.max(20,to),t+duration);
     g.gain.setValueAtTime(volume*this.volume,t);g.gain.exponentialRampToValueAtTime(.0001,t+duration);
-    src.connect(f).connect(g).connect(c.destination);src.start(t, Math.random()*1.5);src.stop(t+duration+.01);
+    src.connect(f).connect(g).connect(this.dest ?? c.destination);src.start(t, Math.random()*1.5);src.stop(t+duration+.01);
   }
   /** A short metallic click: a band-passed tick plus a tiny ring. */
   private click(volume: number, pitch: number, delay = 0) {
@@ -139,46 +157,6 @@ export class GameAudio {
     const v = Math.min(1, speed / 14);
     this.noise(.12, .14 * v + .03, 700, 120);
     this.tone('sine', 70, 38, .12, .14 * v);
-  }
-
-  private amb: { gains: Record<'wind' | 'city' | 'water', GainNode>; windF: BiquadFilterNode } | null = null;
-  private birdT = 2;
-  /**
-   * Ambient loops, faded by where the player is (0..1 each): wind (open air, speed), the city's low rumble, water by
-   * the pond; birds chirp now and then near trees.
-   */
-  ambience(o: { wind: number; city: number; water: number; birds: number }, dt: number) {
-    const c = this.ctx;
-    if (!c || c.state !== 'running') return;
-    if (!this.amb) {
-      this.ensureNoiseBuf(c);
-      const loop = (type: BiquadFilterType, freq: number, q: number) => {
-        const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
-        src.buffer = this.noiseBuf; src.loop = true;
-        f.type = type; f.frequency.value = freq; f.Q.value = q;
-        g.gain.value = 0;
-        src.connect(f).connect(g).connect(c.destination);
-        src.start(0, Math.random() * 1.5);
-        return { f, g };
-      };
-      const wind = loop('bandpass', 420, 0.8), city = loop('lowpass', 160, 0.5), water = loop('bandpass', 1300, 0.6);
-      this.amb = { gains: { wind: wind.g, city: city.g, water: water.g }, windF: wind.f };
-    }
-    const t = c.currentTime;
-    const set = (g: GainNode, v: number) => g.gain.setTargetAtTime(Math.max(0, v) * this.volume, t, 0.6);
-    set(this.amb.gains.wind, 0.035 * o.wind);
-    set(this.amb.gains.city, 0.09 * o.city);
-    set(this.amb.gains.water, 0.022 * o.water);
-    // gusts: the wind's colour drifts
-    this.amb.windF.frequency.setTargetAtTime(300 + 250 * o.wind + Math.sin(t * 0.37) * 120 + Math.sin(t * 1.3) * 40, t, 0.4);
-    this.birdT -= dt;
-    if (this.birdT <= 0) {
-      this.birdT = 1.5 + Math.random() * 5;
-      if (o.birds > 0.05) {
-        const f = 2600 + Math.random() * 2200, n = 2 + Math.floor(Math.random() * 4), v = 0.018 * o.birds;
-        for (let i = 0; i < n; i++) this.tone('sine', f * (1 + Math.random() * 0.15), f * (0.75 + Math.random() * 0.4), .06, v, i * (0.08 + Math.random() * 0.05));
-      }
-    }
   }
 
   explosion() { this.noise(.55,.23,1600,100);this.tone('sine',100,34,.4,.20); }

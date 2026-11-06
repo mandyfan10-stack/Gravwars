@@ -1,5 +1,4 @@
-import { Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, Scene, Vector3 } from 'three';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { Group, PerspectiveCamera, Quaternion, Scene, Vector3 } from 'three';
 import { upOf } from '../../shared/math';
 import { NPC, Npc, NpcManager } from '../../shared/npcs';
 import type { GameAssets } from './assets';
@@ -12,24 +11,10 @@ const CORPSE_TIME = 1.4;
 /** Indicators (? / !) only for NPCs this close. */
 const MARK_RANGE = 40;
 /** Marker height over the character's centre, m. */
-const MARK_HEIGHT = 0.8;
-/** Height of the eyes on the head bone; tuned by screenshot. */
-const EYE_Y = 0.155;
+const MARK_HEIGHT = 1.15;
 const _p = new Vector3();
 const _up = new Vector3();
 const _d = new Vector3();
-
-/** Blank white eyes over the face (head bone space, model units). */
-function whiteEyes() {
-  const g = new Group();
-  const m = new MeshBasicMaterial({ color: 0xf4f1e8 });
-  for (const s of [-1, 1]) {
-    const e = new Mesh(new RoundedBoxGeometry(0.075, 0.05, 0.012, 1, 0.008), m);
-    e.position.set(s * 0.07, EYE_Y, 0.195);
-    g.add(e);
-  }
-  return g;
-}
 
 interface View {
   npc: Npc;
@@ -48,7 +33,7 @@ interface View {
 }
 
 /**
- * City NPCs: the soldier model in street clothes (bums: dirty, white eyes, a bottle while drinking; gang: dark, a
+ * City NPCs in street clothes (bums: a worn coat, beanie and beard, a bottle while drinking; gang: hoodie, jeans, a
  * pistol). Over their heads: "?" while they are getting suspicious of you, "!" once they come for you.
  */
 export class NpcView {
@@ -58,17 +43,16 @@ export class NpcView {
     const layer = document.getElementById('markers')!;
     this.views = npcs.npcs.map((npc) => {
       const look = LOOK[npc.kind];
-      const model = new PlayerModel(assets, look.color, npc.kind === 'gang' ? 'pistol' : 'fists', look.grime);
+      const model = new PlayerModel(assets, look.color, npc.kind === 'gang' ? 'pistol' : 'fists', look.grime, npc.kind);
       let bottle: Group | null = null;
       if (npc.kind === 'bum') {
-        model.bone('head').add(whiteEyes());
         bottle = bottleMeshes();
-        // held up in front of the chest, neck tilted toward the mouth
-        bottle.rotation.set(-0.5, 0, -Math.PI / 2, 'XYZ');
-        bottle.scale.setScalar(1 / 2.05 * 1.2);
-        bottle.position.set(-0.1, 0.14, 0.2);
+        // in the right hand, neck up
+        bottle.scale.setScalar(1.2);
+        bottle.rotation.z = -Math.PI / 2;
+        bottle.position.set(0, -0.12, 0.03);
         bottle.visible = false;
-        model.bone('torso').add(bottle);
+        model.bone('handR').add(bottle);
       }
       scene.add(model.group);
       const mark = document.createElement('div');

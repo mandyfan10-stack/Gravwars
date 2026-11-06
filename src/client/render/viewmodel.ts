@@ -98,16 +98,18 @@ export class ViewModel {
 
   constructor(teamColor: number, assets: GameAssets) {
     void assets;
-    const skinM = new MeshStandardMaterial({ color: 0xd9a27e, roughness: 0.8, flatShading: true });
-    const sleeveM = new MeshStandardMaterial({ color: 0x3a3e47, roughness: 0.9, flatShading: true });
-    const cuffM = new MeshStandardMaterial({ color: teamColor, roughness: 0.5, flatShading: true });
-    /** A hand closed around something, its forearm going back (+Z) and down out of the screen. */
+    // the soldier's outfit (see human.ts): dark tactical gloves, softshell sleeves in the team colour
+    const skinM = new MeshStandardMaterial({ color: 0x232527, roughness: 0.75 });
+    const sleeveM = new MeshStandardMaterial({ color: new Color(teamColor).multiplyScalar(0.72), roughness: 0.8 });
+    const cuffM = new MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.7 });
+    const sleeveGeo = new CylinderGeometry(0.046, 0.054, 0.34, 14).rotateX(Math.PI / 2);
+    /** A gloved hand closed around something, its forearm going back (+Z) and down out of the screen. */
     const hand = (x: number, y: number, z: number, rx: number, ry: number, rz: number) => {
       const h = new Group();
-      const palm = new Mesh(new RoundedBoxGeometry(0.06, 0.075, 0.07, 2, 0.018), skinM);
-      const cuff = new Mesh(new RoundedBoxGeometry(0.075, 0.08, 0.03, 1, 0.01), cuffM);
-      cuff.position.set(0, -0.01, 0.06);
-      const sleeve = new Mesh(new RoundedBoxGeometry(0.08, 0.08, 0.32, 2, 0.025), sleeveM);
+      const palm = new Mesh(new RoundedBoxGeometry(0.062, 0.072, 0.075, 3, 0.024), skinM);
+      const cuff = new Mesh(new CylinderGeometry(0.04, 0.042, 0.04, 12).rotateX(Math.PI / 2), cuffM);
+      cuff.position.set(0, -0.008, 0.055);
+      const sleeve = new Mesh(sleeveGeo, sleeveM);
       sleeve.position.set(0, -0.012, 0.23);
       h.add(palm, cuff, sleeve);
       h.position.set(x, y, z);
@@ -197,20 +199,20 @@ export class ViewModel {
     this.shovel.position.set(0.1, -0.08, 0.05);
     this.shovel.scale.setScalar(0.8);
 
-    // fists: wrapped knuckles, team-coloured sleeves, both hands low in the corners
-    const wrapM = flat(0xe8e2d6, 0.9);
+    // fists: gloved, the same sleeves as on the gun
     for (const side of [-1, 1]) {
       const hand = new Group();
-      const fist = new Mesh(new RoundedBoxGeometry(0.085, 0.075, 0.1, 2, 0.022), skinM);
-      const wrap = new Mesh(new RoundedBoxGeometry(0.09, 0.05, 0.06, 1, 0.012), wrapM);
-      wrap.position.set(0, -0.005, 0.045);
-      const thumb = new Mesh(new RoundedBoxGeometry(0.03, 0.028, 0.06, 1, 0.01), skinM);
-      thumb.position.set(-side * 0.04, -0.025, -0.01);
-      const sleeve = new Mesh(new RoundedBoxGeometry(0.095, 0.09, 0.3, 2, 0.03), flat(0x3a3e47, 0.9));
-      sleeve.position.set(0, -0.01, 0.24);
-      const cuff = new Mesh(new RoundedBoxGeometry(0.1, 0.095, 0.03, 1, 0.01), teamM);
-      cuff.position.set(0, -0.01, 0.1);
-      hand.add(fist, wrap, thumb, sleeve, cuff);
+      const fist = new Mesh(new RoundedBoxGeometry(0.082, 0.07, 0.09, 3, 0.026), skinM);
+      // curled fingers: a rounded roll under the knuckles
+      const fingers = new Mesh(new CylinderGeometry(0.022, 0.022, 0.08, 10).rotateZ(Math.PI / 2), skinM);
+      fingers.position.set(0, -0.03, -0.035);
+      const thumb = new Mesh(new RoundedBoxGeometry(0.028, 0.026, 0.06, 2, 0.011), skinM);
+      thumb.position.set(-side * 0.04, -0.022, -0.01);
+      const cuff = new Mesh(new CylinderGeometry(0.046, 0.048, 0.045, 12).rotateX(Math.PI / 2), cuffM);
+      cuff.position.set(0, -0.006, 0.065);
+      const sleeve = new Mesh(sleeveGeo, sleeveM);
+      sleeve.position.set(0, -0.01, 0.25);
+      hand.add(fist, fingers, thumb, cuff, sleeve);
       // guard: fists up in the lower corners, forearms going down and back out of the screen
       hand.position.set(side * 0.24 - 0.25, 0.06, -0.02);
       hand.rotation.set(0.6, -side * 0.2, side * 0.35);

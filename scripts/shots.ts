@@ -31,7 +31,7 @@ await g(`(() => {
   G.sim.setGravity(up.clone().negate());
   G.sim.state.frame.copy(b.sim.state.frame);
   const side = new b.sim.state.pos.constructor(1, 0, 0).applyQuaternion(b.sim.state.frame);
-  G.sim.state.pos.copy(b.sim.state.pos).addScaledVector(side, 3.2);
+  G.sim.state.pos.copy(b.sim.state.pos).addScaledVector(side, 2.4);
   G.sim.state.vel.set(0, 0, 0);
   G.sim.mover.place(G.sim.state);
   G.local.snap();
@@ -152,7 +152,7 @@ await page.waitForTimeout(700);
 await g(`__game.look(__game.input.yaw, -0.12)`);
 await page.screenshot({ path: `${out}/12-bum.png` });
 // a gang: stand in their view and let suspicion build (the "?"), then the "!"
-await faceNpc(`(n) => n.kind === 'gang' && n.island === 'red' && n.state !== 'dead'`, 13, 1.5, -0.03);
+await faceNpc(`(n) => n.kind === 'gang' && n.island === 'red' && n.state !== 'dead'`, 5, 0.8, -0.03);
 await page.waitForTimeout(1400);
 await page.screenshot({ path: `${out}/13-gang-suspicious.png` });
 await page.waitForTimeout(4000);

@@ -1,18 +1,15 @@
 import {
-  AdditiveBlending, AnimationAction, AnimationClip, AnimationMixer, CanvasTexture, Color, CylinderGeometry, Group, LatheGeometry, LoopOnce, Mesh,
-  MeshStandardMaterial, Object3D, Quaternion, Sprite, SpriteMaterial, Vector2, Vector3,
+  AdditiveBlending, CanvasTexture, Color, CylinderGeometry, Group, LatheGeometry, Mesh, MeshStandardMaterial, Object3D, Quaternion,
+  Sprite, SpriteMaterial, Vector2, Vector3,
 } from 'three';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { GameAssets } from './assets';
 import { pistolModel, rifleModel } from './guns';
+import { buildHuman, HumanRig, Outfit, solveArm } from './human';
 
-/** Model units → metres: the Kenney character is 0.84 tall, the player capsule 1.83. */
-const SCALE = 2.05;
+/** Palette column (u range) of the red shades in the Kenney prop textures (flags, banners): they take the team colour. */
+const TEAM_U: [number, number] = [0.6875, 0.75];
 const FEET = -1.83 / 2;
 const AY = new Vector3(0, 1, 0);
-/** Palette column (u range) of the uniform's red shades (helmet crest, skirt): they take the team colour. */
-const TEAM_U: [number, number] = [0.6875, 0.75];
-const ARM_TRACK = /^arm-(left|right)\./;
 
 /** A hard little star of light: the glint of a raised gun barrel (shared by every model). */
 let glintTex: CanvasTexture | null = null;
@@ -45,14 +42,6 @@ function grenadeMesh() {
   const cap = new Mesh(new CylinderGeometry(0.014, 0.016, 0.022, 6).translate(0, 0.058, 0), new MeshStandardMaterial({ color: 0x55575c, roughness: 0.4, metalness: 0.6 }));
   g.add(body, cap);
   return g;
-}
-
-/** Clip without the arm tracks (legs + body follow locomotion, arms hold the gun). */
-function withoutArms(c: AnimationClip) {
-  return new AnimationClip(`${c.name}:body`, c.duration, c.tracks.filter((t) => !ARM_TRACK.test(t.name)));
-}
-function armsOnly(c: AnimationClip) {
-  return new AnimationClip(`${c.name}:arms`, c.duration, c.tracks.filter((t) => ARM_TRACK.test(t.name)));
 }
 
 /**
@@ -94,6 +83,7 @@ export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0)
 
 /** fists / none: empty hands (punching / standing behind a counter); grenade: the right arm up, about to throw. */
 export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none' | 'grenade';
+export type { Outfit } from './human';
 
 export interface ModelState {
   /** Planar speed, m/s. */
@@ -105,90 +95,72 @@ export interface ModelState {
   fired: boolean;
 }
 
+const _t = new Vector3();
+const _t2 = new Vector3();
+const _p = new Vector3();
+const _gq = new Quaternion();
+const LEFT = 0, RIGHT = 1;
+/** Elbow directions (chest space): out to the side and down. */
+const POLE_R = new Vector3(-1, -0.7, -0.3).normalize();
+const POLE_L = new Vector3(1, -0.9, -0.2).normalize();
+/** Where the guns sit (chest space, metres): rifle butt in the right shoulder, pistol out in both hands. */
+const RIFLE_AT = new Vector3(-0.1, 0.22, 0.3);
+const PISTOL_AT = new Vector3(-0.03, 0.27, 0.46);
+const smooth = (x: number) => x * x * (3 - 2 * x);
+
 /**
- * Animated team character (Kenney "Mini Arena" soldier) holding a blaster. The group sits at the capsule centre
- * and is oriented by the player's gravity frame; the body turns with yaw.
+ * A person (see human.ts) animated procedurally: walk / run cycle from the speed, jump and fall poses, arms on the
+ * gun by IK (both hands on the rifle or the pistol), a punch, an overhand grenade throw, recoil, a fall when killed.
+ * The group sits at the capsule centre and is oriented by the player's gravity frame; the body turns with yaw.
  */
 export class PlayerModel {
   readonly group = new Group();
-  private readonly body: Object3D;
-  private readonly mixer: AnimationMixer;
-  private readonly clips = new Map<string, AnimationAction>();
-  private readonly materials: MeshStandardMaterial[] = [];
-  private current: AnimationAction | null = null;
-  private arms!: AnimationAction;
-  private armsShoot!: AnimationAction;
-  private shootT = 0;
-  private flash = 0;
-  private dying = false;
+  private readonly rig: HumanRig;
+  private readonly body = new Group();
   private readonly guns: Record<'rifle' | 'pistol', Object3D>;
-  private readonly armClips: Record<'both' | 'free' | 'throw', [AnimationAction, AnimationAction]>;
   private readonly grenade: Group;
   private readonly glint: Sprite;
+  private phase = Math.random() * 6;
+  /** Smoothed planar speed and air state (poses blend instead of snapping). */
+  private speed = 0;
+  private air = 0;
+  private vUp = 0;
+  private recoil = 0;
+  private punchT = 0;
+  private throwT = 0;
+  private flash = 0;
+  private dying = false;
+  private dieT = 0;
+  private breath = Math.random() * 6;
   /** What the character holds: arm pose + gun model. */
   held: HeldItem = 'rifle';
 
-  constructor(assets: GameAssets, teamColor: number, held: HeldItem = 'rifle', grime = 0) {
-    const src = assets.character;
-    this.body = SkeletonUtils.clone(src.scene);
-    this.body.scale.setScalar(SCALE);
+  constructor(_assets: GameAssets | null, color: number, held: HeldItem = 'rifle', grime = 0, outfit: Outfit = 'soldier') {
+    this.rig = buildHuman(outfit, color, grime);
     this.body.position.y = FEET;
-    const mats = new Map<MeshStandardMaterial, MeshStandardMaterial>();
-    this.body.traverse((o) => {
-      const mesh = o as Mesh;
-      if (!mesh.isMesh) return;
-      const m = mesh.material as MeshStandardMaterial;
-      if (!mats.has(m)) mats.set(m, teamMaterial(m, teamColor, grime));
-      mesh.material = mats.get(m)!;
-    });
-    this.materials.push(...mats.values());
+    this.body.add(this.rig.root);
     this.group.add(this.body);
-
-    // the gun sits in both hands, barrel forward (the character faces +Z, gun models point along -Z); the figure is
-    // stylised (big head, short body), so the guns are scaled down to ~80 % to match its proportions
-    const torso = this.body.getObjectByName('torso')!;
+    const chest = this.rig.chest;
     const rifle = rifleModel().root;
-    rifle.scale.setScalar(0.8 / SCALE);
     rifle.rotation.y = Math.PI;
-    rifle.position.set(-0.06, 0.02, 0.12);
+    rifle.position.copy(RIFLE_AT);
     const pistol = pistolModel().root;
-    pistol.scale.setScalar(0.9 / SCALE);
     pistol.rotation.y = Math.PI;
-    pistol.position.set(-0.04, 0.06, 0.26);
-    torso.add(rifle, pistol);
+    pistol.position.copy(PISTOL_AT);
+    chest.add(rifle, pistol);
     this.guns = { rifle, pistol };
+    for (const g of [rifle, pistol]) g.traverse((o) => { o.castShadow = true; });
     // glint at the pistol muzzle (telegraphs an aimed burst)
     this.glint = new Sprite(new SpriteMaterial({ map: glintTexture(), color: new Color(2.2, 1.9, 1.5), blending: AdditiveBlending,
       depthWrite: false, transparent: true, toneMapped: false }));
     this.glint.position.copy(pistolModel().muzzle).add(new Vector3(0, 0, -0.03));
     this.glint.visible = false;
     pistol.add(this.glint);
-    // a grenade in the right fist (wind-up before a throw)
+    // a grenade in the right hand (wind-up before a throw)
     this.grenade = grenadeMesh();
-    // (on the torso like the guns: the arm bone does not point where the skinned hand is in the "holding" pose)
-    this.grenade.scale.setScalar(1.5 / SCALE);
-    this.grenade.position.set(-0.14, 0.17, 0.27);
+    this.grenade.position.set(0, -0.09, 0.03);
     this.grenade.visible = false;
-    torso.add(this.grenade);
-
-    this.mixer = new AnimationMixer(this.body);
-    const find = (n: string) => AnimationClip.findByName(src.animations, n)!;
-    for (const n of ['idle', 'walk', 'sprint', 'jump', 'fall']) this.clips.set(n, this.mixer.clipAction(withoutArms(find(n))));
-    const die = this.mixer.clipAction(find('die'));
-    die.setLoop(LoopOnce, 1);
-    die.clampWhenFinished = true;
-    this.clips.set('die', die);
-    const once = (a: AnimationAction) => { a.setLoop(LoopOnce, 1); return a; };
-    this.armClips = {
-      both: [this.mixer.clipAction(armsOnly(find('holding-both'))), once(this.mixer.clipAction(armsOnly(find('holding-both-shoot'))))],
-      // bare hands: natural arm swing, a right hook to punch
-      free: [this.mixer.clipAction(armsOnly(find('idle'))), once(this.mixer.clipAction(armsOnly(find('attack-melee-right'))))],
-      // the grenade: held up in the right hand, thrown with the overhand swing
-      throw: [this.mixer.clipAction(armsOnly(find('holding-right'))), once(this.mixer.clipAction(armsOnly(find('attack-melee-right'))))],
-    };
-    [this.arms, this.armsShoot] = this.armClips.both;
-    this.arms.play();
-    this.play('idle', 0);
+    this.rig.hand[RIGHT].add(this.grenade);
     this.setHeld(held);
   }
 
@@ -197,14 +169,7 @@ export class PlayerModel {
     this.guns.rifle.visible = held === 'rifle';
     this.guns.pistol.visible = held === 'pistol';
     this.grenade.visible = held === 'grenade';
-    const [arms, shoot] = this.armClips[held === 'rifle' || held === 'pistol' ? 'both' : held === 'grenade' ? 'throw' : 'free'];
-    if (arms !== this.arms) {
-      this.arms.stop();
-      this.armsShoot.stop();
-      this.arms = arms;
-      this.armsShoot = shoot;
-      if (!this.dying) this.arms.reset().play();
-    }
+    if (held !== this.held) { this.punchT = 0; this.throwT = 0; }
     this.held = held;
   }
 
@@ -220,17 +185,13 @@ export class PlayerModel {
     this.grenade.visible = false;
   }
 
-  /** Bone to hang accessories on (sunglasses on the head). */
-  bone(name: string) {
-    return this.body.getObjectByName(name)!;
-  }
-
-  private play(name: string, fade = 0.15) {
-    const next = this.clips.get(name)!;
-    if (next === this.current) return;
-    next.reset().play();
-    if (this.current) next.crossFadeFrom(this.current, fade, false);
-    this.current = next;
+  /** Attachment points, metres: head (origin at the top of the neck, face +Z), chest, handL / handR (wrist). */
+  bone(name: 'head' | 'torso' | 'chest' | 'handL' | 'handR' | string): Object3D {
+    const r = this.rig;
+    if (name === 'head') return r.head;
+    if (name === 'handL') return r.hand[LEFT];
+    if (name === 'handR') return r.hand[RIGHT];
+    return r.chest;
   }
 
   setPose(pos: Vector3, frame: Quaternion, yaw: number) {
@@ -244,41 +205,135 @@ export class PlayerModel {
     this.flash = 1;
   }
 
-  /** Death animation; `revive()` puts the model back to normal. */
+  /** Falls over backwards; `revive()` stands it up again. */
   die() {
     if (this.dying) return;
     this.dying = true;
-    this.arms.stop();
-    this.armsShoot.stop();
-    this.play('die', 0.08);
+    this.dieT = 0;
   }
 
   revive() {
     if (!this.dying) return;
     this.dying = false;
-    this.arms.reset().play();
-    this.current?.stop();
-    this.current = null;
-    this.play('idle', 0);
+    this.rig.fall.rotation.set(0, 0, 0);
+    this.rig.fall.position.set(0, 0, 0);
   }
 
   update(dt: number, s: ModelState | null) {
+    const r = this.rig;
     if (s && !this.dying) {
-      if (!s.grounded) this.play(s.vUp > 1 ? 'jump' : 'fall');
-      else if (s.speed > 5.5) this.play('sprint');
-      else if (s.speed > 0.6) this.play('walk');
-      else this.play('idle');
-      const loco = this.clips.get('walk')!;
-      loco.timeScale = Math.max(0.6, s.speed / 3.2);
+      this.speed += (s.speed - this.speed) * Math.min(1, dt * 10);
+      this.air += ((s.grounded ? 0 : 1) - this.air) * Math.min(1, dt * 12);
+      this.vUp = s.vUp;
       if (s.fired) {
-        this.armsShoot.reset().play();
-        this.shootT = this.held === 'fists' || this.held === 'grenade' ? 0.45 : 0.2;
+        if (this.held === 'fists') this.punchT = 0.32;
+        else if (this.held === 'grenade') this.throwT = 0.5;
+        else this.recoil = 1;
       }
     }
-    this.shootT = Math.max(0, this.shootT - dt);
-    this.arms.weight = this.shootT > 0 ? 0 : 1;
+    this.recoil = Math.max(0, this.recoil - dt * 9);
+    this.punchT = Math.max(0, this.punchT - dt);
+    this.throwT = Math.max(0, this.throwT - dt);
+    this.breath += dt;
+
+    // --- legs and body: gait cycle (one cycle = two steps, ~1.5 m walking, longer strides running)
+    const v = this.speed;
+    const run = smooth(Math.min(1, Math.max(0, (v - 3.5) / 3)));
+    const move = Math.min(1, v / 1.2) * (1 - this.air);
+    const stride = 1.45 + run * 1.1;
+    this.phase += (v / stride) * Math.PI * 2 * dt;
+    const ph = this.phase;
+    const swing = (0.42 + run * 0.35) * move;
+    for (const i of [LEFT, RIGHT]) {
+      const p = ph + (i === LEFT ? 0 : Math.PI);
+      const fwd = Math.sin(p); // +1: this leg forward
+      // knee bends while the leg swings through (moving forward) and a little on landing
+      const lift = Math.max(0, Math.cos(p)) * (0.75 + run * 0.7) * move + 0.08 * move;
+      let th = -fwd * swing - run * 0.12 * move;
+      let kn = lift;
+      // airborne: tuck going up, legs loose coming down
+      const up = this.vUp > 1 ? 1 : 0;
+      th = th * (1 - this.air) + this.air * (up ? (i === LEFT ? -0.75 : -0.25) : (i === LEFT ? -0.35 : 0.15));
+      kn = kn * (1 - this.air) + this.air * (up ? (i === LEFT ? 1.1 : 0.6) : 0.35);
+      r.thigh[i].rotation.set(th, 0, (i === LEFT ? 1 : -1) * 0.03);
+      r.shin[i].rotation.x = kn;
+      r.foot[i].rotation.x = -(th + kn) * 0.6 * move + this.air * 0.25;
+    }
+    // pelvis: bob (lowest when the feet pass each other), sway, run crouch
+    const bob = (Math.abs(Math.cos(ph)) - 0.6) * (0.035 + run * 0.03) * move;
+    r.pelvis.position.y = 0.975 + bob - run * 0.04 * move + Math.sin(this.breath * 1.7) * 0.003;
+    r.pelvis.rotation.set(0, Math.sin(ph) * 0.12 * move, Math.sin(ph) * 0.03 * move);
+    // chest: counter-twist, lean into a run, breathing
+    const aim = this.held === 'rifle' || this.held === 'pistol';
+    r.chest.rotation.set(0.06 + run * 0.2 * move + Math.sin(this.breath * 1.7) * 0.012, -Math.sin(ph) * (aim ? 0.04 : 0.16) * move, 0);
+    r.head.rotation.x = -r.chest.rotation.x * 0.7;
+
+    // --- arms
+    const [uL, uR] = r.upper, [fL, fR] = r.fore;
+    // free swing (opposite to the legs), elbows bent more when running
+    const armSwing = (0.35 + run * 0.6) * move;
+    const freeArm = (i: number) => {
+      const p = ph + (i === LEFT ? Math.PI : 0);
+      const side = i === LEFT ? 1 : -1;
+      const flail = this.air * (this.vUp > 1 ? 0.5 : 0.9);
+      r.upper[i].rotation.set(-Math.sin(p) * armSwing - this.air * 0.2, 0, side * (0.08 + flail));
+      r.fore[i].rotation.set(-(0.15 + run * 1.1 * move + Math.max(0, Math.sin(p)) * 0.25 * move), 0, 0);
+    };
+    freeArm(LEFT);
+    freeArm(RIGHT);
+    const gunPose = (at: Vector3, rifle: boolean) => {
+      // recoil: the gun kicks back and up, the hands follow
+      const g = rifle ? this.guns.rifle : this.guns.pistol;
+      g.position.copy(at).add(_p.set(0, this.recoil * 0.015, -this.recoil * (rifle ? 0.04 : 0.05)));
+      g.rotation.set(-this.recoil * (rifle ? 0.08 : 0.25), Math.PI, 0);
+      _gq.copy(g.quaternion);
+      // right hand on the grip, left on the handguard / cupping the right
+      _t.set(0, -0.035, rifle ? 0.07 : 0.015).applyQuaternion(_gq).add(g.position);
+      solveArm(uR, fR, _t, POLE_R);
+      _t2.set(rifle ? 0 : 0.03, rifle ? 0.0 : -0.05, rifle ? -0.2 : 0.03).applyQuaternion(_gq).add(g.position);
+      solveArm(uL, fL, _t2, POLE_L);
+    };
+    if (this.held === 'rifle') gunPose(RIFLE_AT, true);
+    else if (this.held === 'pistol') gunPose(PISTOL_AT, false);
+    else if (this.held === 'fists' && this.punchT > 0) {
+      // a straight right: out fast, back slower; the left stays up in guard
+      const k = this.punchT > 0.22 ? (0.32 - this.punchT) / 0.1 : this.punchT / 0.22;
+      solveArm(uR, fR, _t.set(-0.13, 0.33, 0.12).lerp(_p.set(-0.04, 0.36, 0.62), smooth(k)), POLE_R);
+      solveArm(uL, fL, _t2.set(0.11, 0.36, 0.2), POLE_L, 0.8);
+      r.chest.rotation.y -= 0.25 * k;
+    } else if (this.held === 'grenade') {
+      // wound up: right hand back over the shoulder, left arm out toward the target; the throw swings it over
+      const k = this.throwT > 0 ? smooth(Math.min(1, (0.5 - this.throwT) / 0.25)) : 0;
+      _t.set(-0.26, 0.5, -0.14).lerp(_p.set(-0.08, 0.32, 0.55), k);
+      solveArm(uR, fR, _t, POLE_R);
+      solveArm(uL, fL, _t2.set(0.2, 0.32, 0.42).lerp(_p.set(0.22, 0.05, 0.05), k), POLE_L);
+      r.chest.rotation.y += 0.35 - 0.7 * k;
+    } else if (this.held === 'none') {
+      // standing at ease: arms hang a bit forward, hands loosely together in front
+      if (move < 0.2) {
+        solveArm(uR, fR, _t.set(-0.06, -0.08, 0.17), POLE_R, 0.85);
+        solveArm(uL, fL, _t2.set(0.06, -0.08, 0.17), POLE_L, 0.85);
+      }
+    }
+    // the hands follow the forearms; on a gun they turn palm-in
+    for (const i of [LEFT, RIGHT]) r.hand[i].rotation.set(0, aim ? (i === LEFT ? 0.6 : -1.2) : 0, 0);
+
+    // --- death: falls backwards about the heels, knees give way first
+    if (this.dying) {
+      this.dieT += dt;
+      const k = Math.min(1, this.dieT / 0.75);
+      const fallK = k * k;
+      r.fall.rotation.x = -Math.PI / 2 * fallK;
+      r.fall.position.set(0, 0.13 * fallK, -0.1 * fallK);
+      for (const i of [LEFT, RIGHT]) {
+        r.thigh[i].rotation.x = -0.5 * Math.sin(k * Math.PI);
+        r.shin[i].rotation.x = 0.9 * Math.sin(k * Math.PI);
+        r.upper[i].rotation.set(-0.3 - 1.6 * fallK, 0, (i === LEFT ? 1 : -1) * (0.2 + 0.9 * fallK));
+        r.fore[i].rotation.set(-0.3, 0, 0);
+      }
+    }
+
     this.flash = Math.max(0, this.flash - dt * 6);
-    for (const m of this.materials) (m.userData.flash as { value: number }).value = this.flash;
-    this.mixer.update(dt);
+    for (const m of r.materials) m.emissive.setScalar(this.flash * 0.7);
   }
 }

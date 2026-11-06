@@ -8,7 +8,7 @@ import { getTeam, TeamId } from '../../shared/teams';
 import type { GameAssets } from './assets';
 import { PlayerModel } from './playerModel';
 
-/** Suit colour: the uniform's team column takes this instead of the team colour. */
+/** Suit colour. */
 const SUIT = 0x24262c;
 
 /** Vertical gradient for the aura: bright at the floor, gone at head height; soft at the sides. */
@@ -48,7 +48,7 @@ function sunglasses() {
 interface Keeper { team: TeamId; model: PlayerModel; aura: Mesh; ring: Mesh; light: PointLight; phase: number }
 
 /**
- * Shopkeepers behind the counters: the soldier model in a dark suit, sunglasses, empty hands, standing idle and
+ * Shopkeepers behind the counters: a man in a dark suit, sunglasses, empty hands, standing idle and
  * glancing around, with a quiet aura in the team colour.
  */
 export class KeeperView {
@@ -57,11 +57,12 @@ export class KeeperView {
   constructor(scene: Scene, map: MapData, assets: GameAssets) {
     const tex = auraTexture();
     for (const b of map.bases) {
-      const model = new PlayerModel(assets, SUIT, 'none');
+      const model = new PlayerModel(assets, SUIT, 'none', 0, 'suit');
       const head = model.bone('head');
       const glasses = sunglasses();
-      // head bone origin is at the neck; eyes sit ~0.2 model units up, the face at +Z
-      glasses.position.set(0, 0.2, 0.19);
+      // head bone origin is at the top of the neck (metres); the glasses were drawn for the old cartoon head
+      glasses.scale.setScalar(0.62);
+      glasses.position.set(0, 0.13, 0.1);
       head.add(glasses);
       model.setPose(new Vector3(...b.keeper.pos), new Quaternion(...b.keeper.quat), Math.PI);
       scene.add(model.group);

@@ -20,6 +20,7 @@ import { PlayerSim } from '../shared/sim';
 import { teamByDown } from '../shared/teams';
 import { Throws } from '../shared/throwables';
 import type { WeaponId } from '../shared/weapons';
+import { Ambience, Area } from './ambience';
 import { GameAudio } from './audio';
 import { BlockController } from './blockController';
 import { Cursor } from './cursor';
@@ -189,8 +190,10 @@ async function main() {
   });
 
   // test / debug hook
+  const ambient: Area = { base: 0, forest: 0, park: 0, city: 0, water: 0 };
+  const ambience = new Ambience(audio);
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ready: true,
+    sim, local, input, camera, renderer, scene, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -206,7 +209,8 @@ async function main() {
   };
 
   // ambience: where the player is, sampled twice a second
-  const ambient = { wind: 0.3, city: 0, water: 0, birds: 0 };
+  const cityPts = [...map.houses, ...map.buildings];
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
   let ambientT = 0;
   const nearest = (pts: ArrayLike<number>[] | { pos: ArrayLike<number> }[], p: Vector3) => {
     let best = Infinity;
@@ -242,13 +246,22 @@ async function main() {
     if (ambientT <= 0) {
       ambientT = 0.5;
       const pos = sim.state.pos;
-      const city = Math.max(0, Math.min(1, 1 - (nearest(map.houses, pos) - 15) / 60));
-      ambient.city = city;
-      ambient.birds = Math.max(0, Math.min(1, 1 - nearest(map.trees, pos) / 22));
-      ambient.water = Math.max(0, Math.min(1, 1 - nearest(map.ponds, pos) / 16));
-      ambient.wind = Math.min(1, 0.3 + (1 - city) * 0.35 + sim.state.vel.length() / 40);
+      const base = clamp01(1 - (nearest(map.statues.map((t) => t.bed), pos) - 14) / 8);
+      let trees = 0;
+      for (const t of map.trees) if (t.kind === 'tree' && (t.pos[0] - pos.x) ** 2 + (t.pos[1] - pos.y) ** 2 + (t.pos[2] - pos.z) ** 2 < 25 * 25) trees++;
+      ambient.base = base;
+      ambient.forest = clamp01((trees - 6) / 8) * (1 - base);
+      ambient.park = clamp01(1 - nearest(map.trees, pos) / 22) * (1 - ambient.forest) * (1 - base);
+      // the central island is the city all over (its plaza is far from the towers but it is still downtown)
+      let isl = map.islands[0], bestD = Infinity;
+      for (const i of map.islands) {
+        const d = (i.origin[0] - pos.x) ** 2 + (i.origin[1] - pos.y) ** 2 + (i.origin[2] - pos.z) ** 2;
+        if (d < bestD) { bestD = d; isl = i; }
+      }
+      ambient.city = Math.max(isl.id === 'center' ? 0.7 : 0, clamp01(1 - (nearest(cityPts, pos) - 15) / 60)) * (1 - base * 0.7);
+      ambient.water = clamp01(1 - nearest(map.ponds, pos) / 16);
     }
-    audio.ambience(ambient, dt);
+    if (input.locked) ambience.update(ambient, dt);
     local.applyCamera(camera);
     // windows (shop, inventory) take the mouse: the click goes to them, not to the hands
     const click = cursor.update();
