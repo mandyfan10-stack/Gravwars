@@ -4,6 +4,7 @@ import {
 } from 'three';
 import type { GameAssets } from './assets';
 import { pistolModel, rifleModel } from './guns';
+import { bakeMeshes } from './bake';
 import { buildHuman, HumanRig, Outfit, solveArm } from './human';
 
 /** Palette column (u range) of the red shades in the Kenney prop textures (flags, banners): they take the team colour. */
@@ -95,6 +96,12 @@ export interface ModelState {
   fired: boolean;
 }
 
+/**
+ * Level of detail for every character, set by the game each frame: `eye` = camera position. Beyond `far` a person
+ * is not drawn and not animated; beyond `shadow` it casts no shadow.
+ */
+export const CHAR_LOD = { eye: new Vector3(), far: 180, shadow: 45 };
+
 const _t = new Vector3();
 const _t2 = new Vector3();
 const _p = new Vector3();
@@ -107,6 +114,9 @@ const POLE_L = new Vector3(1, -0.9, -0.2).normalize();
 const RIFLE_AT = new Vector3(-0.1, 0.22, 0.3);
 const PISTOL_AT = new Vector3(-0.03, 0.27, 0.46);
 const smooth = (x: number) => x * x * (3 - 2 * x);
+/** Shared by every third-person gun and grenade (vertex colours carry the parts' colours). */
+let gunMat: MeshStandardMaterial | null = null;
+const gunMaterial = () => (gunMat ??= new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.45 }));
 
 /**
  * A person (see human.ts) animated procedurally: walk / run cycle from the speed, jump and fall poses, arms on the
@@ -132,6 +142,7 @@ export class PlayerModel {
   private dying = false;
   private dieT = 0;
   private breath = Math.random() * 6;
+  private shadows = true;
   /** What the character holds: arm pose + gun model. */
   held: HeldItem = 'rifle';
 
@@ -149,7 +160,8 @@ export class PlayerModel {
     pistol.position.copy(PISTOL_AT);
     chest.add(rifle, pistol);
     this.guns = { rifle, pistol };
-    for (const g of [rifle, pistol]) g.traverse((o) => { o.castShadow = true; });
+    // third person: no moving parts, so each gun is one draw call
+    for (const g of [rifle, pistol]) bakeMeshes(g, gunMaterial());
     // glint at the pistol muzzle (telegraphs an aimed burst)
     this.glint = new Sprite(new SpriteMaterial({ map: glintTexture(), color: new Color(2.2, 1.9, 1.5), blending: AdditiveBlending,
       depthWrite: false, transparent: true, toneMapped: false }));
@@ -158,6 +170,7 @@ export class PlayerModel {
     pistol.add(this.glint);
     // a grenade in the right hand (wind-up before a throw)
     this.grenade = grenadeMesh();
+    bakeMeshes(this.grenade, gunMaterial());
     this.grenade.position.set(0, -0.09, 0.03);
     this.grenade.visible = false;
     this.rig.hand[RIGHT].add(this.grenade);
@@ -219,8 +232,25 @@ export class PlayerModel {
     this.rig.fall.position.set(0, 0, 0);
   }
 
+  /** Distance LOD (see CHAR_LOD); false = too far, skip the animation. */
+  private lod() {
+    const d = this.group.position.distanceTo(CHAR_LOD.eye);
+    this.body.visible = d < CHAR_LOD.far;
+    const sh = d < CHAR_LOD.shadow;
+    if (sh !== this.shadows) {
+      this.shadows = sh;
+      this.body.traverse((o) => { if ((o as Mesh).isMesh) o.castShadow = sh; });
+    }
+    return this.body.visible;
+  }
+
   update(dt: number, s: ModelState | null) {
     const r = this.rig;
+    if (!this.lod()) {
+      // far away: keep the timers going, skip the pose
+      if (this.dying) this.dieT += dt;
+      return;
+    }
     if (s && !this.dying) {
       this.speed += (s.speed - this.speed) * Math.min(1, dt * 10);
       this.air += ((s.grounded ? 0 : 1) - this.air) * Math.min(1, dt * 12);

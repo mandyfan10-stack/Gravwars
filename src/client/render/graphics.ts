@@ -73,6 +73,25 @@ export class Graphics {
     this.composer.addPass(new OutputPass());
   }
 
+  /** Pixel ratio multiplier (render scale); the cap keeps 4k / retina screens affordable. */
+  setRenderScale(scale: number) {
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5) * scale);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.resize();
+  }
+
+  /** Sun shadows: off, a 1024 map or a 2048 one. Materials recompile on their own when the count changes. */
+  setShadows(q: 'off' | 'low' | 'high') {
+    const sun = this.sun;
+    sun.castShadow = q !== 'off';
+    const size = q === 'low' ? 1024 : 2048;
+    if (sun.shadow.mapSize.x !== size) {
+      sun.shadow.mapSize.set(size, size);
+      sun.shadow.map?.dispose();
+      sun.shadow.map = null;
+    }
+  }
+
   resize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();

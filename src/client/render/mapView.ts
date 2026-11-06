@@ -1,5 +1,5 @@
 import {
-  BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, DoubleSide,
+  Box3, BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, DoubleSide,
   Group, IcosahedronGeometry, InstancedMesh, Material, Matrix4, Mesh, MeshBasicMaterial,
   MeshStandardMaterial, Object3D, Quaternion, Texture, Vector3,
 } from 'three';
@@ -186,6 +186,8 @@ function buildHouses(houses: HouseDef[]): { walls: BufferGeometry; roofs: Buffer
 export interface MapView {
   group: Group;
   update(time: number, dt: number): void;
+  /** Draw distance: map regions farther than `far` m from `eye` are not drawn (nor cast shadows). */
+  cull(eye: Vector3, far: number): void;
   /** Show / hide a team's bed crystal. */
   setBedAlive(team: string, alive: boolean): void;
 }
@@ -193,6 +195,26 @@ export interface MapView {
 export function buildMapView(map: MapData): MapView {
   const group = new Group();
   const mats = makeMaterials();
+  // regions: every base island, the central city in four quarters. Each has its own batches, so whole regions drop
+  // out of view (frustum, shadow pass, draw distance) instead of one map-sized batch being drawn always.
+  const regions = new Map<string, { group: Group; box: Box3 }>();
+  const regionOf = (x: number, y: number, z: number) => {
+    let best = map.islands[0], bd = Infinity;
+    for (const i of map.islands) {
+      const d = (i.origin[0] - x) ** 2 + (i.origin[1] - y) ** 2 + (i.origin[2] - z) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best.id === 'center' ? `center${x < 0 ? '-' : '+'}${y < 0 ? '-' : '+'}` : best.id;
+  };
+  /** The region holding a point; `r` = how far the thing reaches around it (for the region's bounds). */
+  const region = (pos: ArrayLike<number>, r = 1) => {
+    const key = regionOf(pos[0], pos[1], pos[2]);
+    let g = regions.get(key);
+    if (!g) { g = { group: new Group(), box: new Box3() }; g.group.name = `region:${key}`; group.add(g.group); regions.set(key, g); }
+    g.box.expandByPoint(new Vector3(pos[0] - r, pos[1] - r, pos[2] - r)).expandByPoint(new Vector3(pos[0] + r, pos[1] + r, pos[2] + r));
+    return g;
+  };
+  const keyOf = (pos: ArrayLike<number>) => regionOf(pos[0], pos[1], pos[2]);
   const unit = new BoxGeometry(1, 1, 1);
   const m4 = new Matrix4();
   const p = new Vector3();
@@ -206,13 +228,16 @@ export function buildMapView(map: MapData): MapView {
   };
 
   // --- instanced boxes (one draw call per material)
-  const byMat = new Map<MatKind, typeof map.boxes>();
+  const byMat = new Map<string, typeof map.boxes>();
   for (const b of map.boxes) {
     if (b.hidden) continue;
-    if (!byMat.has(b.mat)) byMat.set(b.mat, []);
-    byMat.get(b.mat)!.push(b);
+    const k = `${keyOf(b.pos)}|${b.mat}`;
+    if (!byMat.has(k)) byMat.set(k, []);
+    byMat.get(k)!.push(b);
+    region(b.pos, Math.max(...b.half));
   }
-  for (const [mat, list] of byMat) {
+  for (const [k, list] of byMat) {
+    const mat = k.split('|')[1] as MatKind;
     const im = new InstancedMesh(unit, mats[mat], list.length);
     list.forEach((b, i) => {
       m4.compose(p.set(...b.pos), q.set(...b.quat), sc.set(b.half[0] * 2, b.half[1] * 2, b.half[2] * 2));
@@ -220,11 +245,11 @@ export function buildMapView(map: MapData): MapView {
       im.setColorAt(i, col.setHex(b.color));
     });
     im.computeBoundingSphere();
-    group.add(shadowy(im, mat !== 'glow' && mat !== 'water'));
+    region(list[0].pos).group.add(shadowy(im, mat !== 'glow' && mat !== 'water'));
   }
 
   // --- convex hulls, merged per material with vertex colors
-  const hullGeo = new Map<MatKind, BufferGeometry[]>();
+  const hullGeo = new Map<string, BufferGeometry[]>();
   for (const h of map.hulls) {
     const pts: Vector3[] = [];
     for (let i = 0; i < h.points.length; i += 3) pts.push(new Vector3(h.points[i], h.points[i + 1], h.points[i + 2]));
@@ -234,10 +259,14 @@ export function buildMapView(map: MapData): MapView {
     col.setHex(h.color);
     for (let i = 0; i < n; i++) colors.set([col.r, col.g, col.b], i * 3);
     g.setAttribute('color', new BufferAttribute(colors, 3));
-    if (!hullGeo.has(h.mat)) hullGeo.set(h.mat, []);
-    hullGeo.get(h.mat)!.push(g);
+    const at = [h.points[0], h.points[1], h.points[2]];
+    region(at, 12);
+    const k = `${keyOf(at)}|${h.mat}`;
+    if (!hullGeo.has(k)) hullGeo.set(k, []);
+    hullGeo.get(k)!.push(g);
   }
-  for (const [mat, geos] of hullGeo) {
+  for (const [k, geos] of hullGeo) {
+    const [rk, mat] = k.split('|') as [string, MatKind];
     const base = mats[mat];
     const m = base.clone();
     if (base.onBeforeCompile) {
@@ -245,17 +274,26 @@ export function buildMapView(map: MapData): MapView {
       m.customProgramCacheKey = base.customProgramCacheKey;
     }
     (m as MeshStandardMaterial).vertexColors = true;
-    group.add(shadowy(new Mesh(mergeGeometries(geos), m)));
+    regions.get(rk)!.group.add(shadowy(new Mesh(mergeGeometries(geos), m)));
   }
 
   // --- old-town houses
   const [fA, fMask, fGlass] = houseFacadeTextures();
-  const houses = buildHouses(map.houses);
+  const housesBy = new Map<string, HouseDef[]>();
+  for (const h of map.houses) {
+    region(h.pos, Math.max(...h.size));
+    const k = keyOf(h.pos);
+    if (!housesBy.has(k)) housesBy.set(k, []);
+    housesBy.get(k)!.push(h);
+  }
   // rooms behind the windows: one 3 × 3 m bay per room
   const wallMat = withRooms(tintMasked(new MeshStandardMaterial({ map: fA, vertexColors: true, roughness: 0.9 }), fMask),
     { mask: fGlass, cells: [4, 4], metres: 12, depth: 3.5, seed: 1 });
   const roofMat = new MeshStandardMaterial({ map: roofTexture(), vertexColors: true, roughness: 0.8, side: DoubleSide });
-  group.add(shadowy(new Mesh(houses.walls, wallMat)), shadowy(new Mesh(houses.roofs, roofMat)));
+  for (const [k, list] of housesBy) {
+    const houses = buildHouses(list);
+    regions.get(k)!.group.add(shadowy(new Mesh(houses.walls, wallMat)), shadowy(new Mesh(houses.roofs, roofMat)));
+  }
 
   // --- skyscrapers and office blocks
   const [glassA, glassMask] = glassFacadeTexture();
@@ -284,54 +322,62 @@ export function buildMapView(map: MapData): MapView {
     const mesh = new Mesh(g, [wm, wm, roofTop, roofTop, wm, wm]);
     mesh.position.set(...b.pos);
     mesh.quaternion.set(...b.quat);
-    group.add(shadowy(mesh));
+    region(b.pos, Math.max(hx, hy, hz)).group.add(shadowy(mesh));
   }
 
-  // --- trees and bushes (instanced trunks + low-poly canopy blobs)
-  const trunks = map.trees.filter((t) => t.kind === 'tree');
-  const blobs: { pos: Vector3; r: number; color: number }[] = [];
-  const trunkMesh = new InstancedMesh(new CylinderGeometry(0.11, 0.17, 1, 6).translate(0, 0.5, 0),
-    new MeshStandardMaterial({ color: 0x6b4f37, roughness: 1 }), Math.max(1, trunks.length));
+  // --- trees and bushes (instanced trunks + low-poly canopy blobs), batched per region
+  const trunkGeo = new CylinderGeometry(0.11, 0.17, 1, 6).translate(0, 0.5, 0);
+  const trunkMat = new MeshStandardMaterial({ color: 0x6b4f37, roughness: 1 });
+  const blobGeo = new IcosahedronGeometry(1, 1);
+  const blobMat = new MeshStandardMaterial({ roughness: 0.95, flatShading: true });
+  const forest = new Map<string, { trunks: Matrix4[]; blobs: { pos: Vector3; r: number; color: number }[] }>();
   const trng = new Rng(77);
   const Y = new Vector3(0, 1, 0);
-  let ti = 0;
+  const greens = [0x4f7f35, 0x5e8d3b, 0x6d9a41, 0x47722f, 0x7aa34a];
   for (const t of map.trees) {
+    region(t.pos, 4 * t.scale);
+    const k = keyOf(t.pos);
+    if (!forest.has(k)) forest.set(k, { trunks: [], blobs: [] });
+    const f = forest.get(k)!;
     const up = new Vector3(...t.up);
     q.setFromUnitVectors(Y, up);
     const base = new Vector3(...t.pos);
-    const greens = [0x4f7f35, 0x5e8d3b, 0x6d9a41, 0x47722f, 0x7aa34a];
     if (t.kind === 'tree') {
       const th = 1.9 * t.scale;
-      m4.compose(base, q, sc.set(t.scale, th, t.scale));
-      trunkMesh.setMatrixAt(ti++, m4);
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(t.scale, th, t.scale)));
       const c = base.clone().addScaledVector(up, th + 0.9 * t.scale);
-      const g = trng.pick(greens);
-      blobs.push({ pos: c, r: 1.45 * t.scale, color: g });
-      for (let k = 0; k < 3; k++) {
+      f.blobs.push({ pos: c, r: 1.45 * t.scale, color: trng.pick(greens) });
+      for (let k2 = 0; k2 < 3; k2++) {
         const off = new Vector3(trng.range(-1, 1), trng.range(-0.4, 0.6), trng.range(-1, 1)).applyQuaternion(q).multiplyScalar(0.8 * t.scale);
-        blobs.push({ pos: c.clone().add(off), r: trng.range(0.8, 1.1) * t.scale, color: trng.pick(greens) });
+        f.blobs.push({ pos: c.clone().add(off), r: trng.range(0.8, 1.1) * t.scale, color: trng.pick(greens) });
       }
     } else {
       const c = base.clone().addScaledVector(up, 0.45 * t.scale);
-      for (let k = 0; k < 2; k++) {
+      for (let k2 = 0; k2 < 2; k2++) {
         const off = new Vector3(trng.range(-0.5, 0.5), 0, trng.range(-0.5, 0.5)).applyQuaternion(q).multiplyScalar(t.scale);
-        blobs.push({ pos: c.clone().add(off), r: trng.range(0.55, 0.8) * t.scale, color: trng.pick(greens) });
+        f.blobs.push({ pos: c.clone().add(off), r: trng.range(0.55, 0.8) * t.scale, color: trng.pick(greens) });
       }
     }
   }
-  trunkMesh.count = ti;
-  group.add(shadowy(trunkMesh));
-  const blobMesh = new InstancedMesh(new IcosahedronGeometry(1, 1),
-    new MeshStandardMaterial({ roughness: 0.95, flatShading: true }), Math.max(1, blobs.length));
-  blobs.forEach((b, i) => {
-    q.setFromAxisAngle(new Vector3(trng.range(-1, 1), 1, trng.range(-1, 1)).normalize(), trng.range(0, 6));
-    m4.compose(b.pos, q, sc.setScalar(b.r));
-    blobMesh.setMatrixAt(i, m4);
-    blobMesh.setColorAt(i, col.setHex(b.color));
-  });
-  blobMesh.count = blobs.length;
-  blobMesh.computeBoundingSphere();
-  group.add(shadowy(blobMesh));
+  for (const [k, f] of forest) {
+    const g = regions.get(k)!.group;
+    if (f.trunks.length) {
+      const trunkMesh = new InstancedMesh(trunkGeo, trunkMat, f.trunks.length);
+      f.trunks.forEach((m, i) => trunkMesh.setMatrixAt(i, m));
+      trunkMesh.computeBoundingSphere();
+      g.add(shadowy(trunkMesh));
+    }
+    const blobMesh = new InstancedMesh(blobGeo, blobMat, Math.max(1, f.blobs.length));
+    f.blobs.forEach((b, i) => {
+      q.setFromAxisAngle(new Vector3(trng.range(-1, 1), 1, trng.range(-1, 1)).normalize(), trng.range(0, 6));
+      m4.compose(b.pos, q, sc.setScalar(b.r));
+      blobMesh.setMatrixAt(i, m4);
+      blobMesh.setColorAt(i, col.setHex(b.color));
+    });
+    blobMesh.count = f.blobs.length;
+    blobMesh.computeBoundingSphere();
+    g.add(shadowy(blobMesh));
+  }
 
   // --- bed crystals (no collider; hidden when the bed is broken) + small floating markers above them
   const spinners: { mesh: Object3D; up: Vector3; base: Vector3; phase: number }[] = [];
@@ -358,6 +404,9 @@ export function buildMapView(map: MapData): MapView {
     group,
     setBedAlive(team, alive) {
       for (const o of beds.get(team) ?? []) o.visible = alive;
+    },
+    cull(eye, far) {
+      for (const r of regions.values()) r.group.visible = r.box.distanceToPoint(eye) < far;
     },
     update(time, dt) {
       water.userData.update(time);

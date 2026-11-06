@@ -1,6 +1,6 @@
 import {
   AdditiveBlending, BackSide, CanvasTexture, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial,
-  PointLight, Quaternion, Scene, Vector3,
+  Quaternion, Scene, Vector3,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { MapData } from '../../shared/map';
@@ -45,7 +45,7 @@ function sunglasses() {
   return g;
 }
 
-interface Keeper { team: TeamId; model: PlayerModel; aura: Mesh; ring: Mesh; light: PointLight; phase: number }
+interface Keeper { team: TeamId; model: PlayerModel; aura: Mesh; ring: Mesh; phase: number }
 
 /**
  * Shopkeepers behind the counters: a man in a dark suit, sunglasses, empty hands, standing idle and
@@ -80,11 +80,7 @@ export class KeeperView {
         new MeshBasicMaterial({ color: color.clone().multiplyScalar(1.6), transparent: true, opacity: 0.55, blending: AdditiveBlending, depthWrite: false }));
       ring.position.y = -1.83 / 2 + 0.02;
       model.group.add(ring);
-      // light at the feet: tints the floor and the counter, not the face
-      const light = new PointLight(color.getHex(), 1.4, 3, 2);
-      light.position.y = -0.75;
-      model.group.add(light);
-      this.keepers.push({ team: b.team as TeamId, model, aura, ring, light, phase: this.keepers.length * 1.7 });
+      this.keepers.push({ team: b.team as TeamId, model, aura, ring, phase: this.keepers.length * 1.7 });
     }
   }
 
@@ -97,7 +93,6 @@ export class KeeperView {
       const pulse = 0.85 + Math.sin(t * 1.6) * 0.15;
       (k.aura.material as MeshBasicMaterial).opacity = pulse;
       k.aura.rotation.y = t * 0.2;
-      k.light.intensity = 1.1 + pulse * 0.4;
     }
   }
 }

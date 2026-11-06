@@ -49,6 +49,7 @@ import { loadAssets } from './render/assets';
 import { BotView } from './render/botView';
 import { KeeperView } from './render/keeperView';
 import { NpcView } from './render/npcView';
+import { CHAR_LOD } from './render/playerModel';
 import { FishingView, PickupView, ThrownView } from './render/pickupView';
 import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
@@ -73,7 +74,7 @@ async function main() {
   const input = new Input(canvas, overlay);
   const audio = new GameAudio();
   audio.volume = settings.volume;
-  const toggles: DebugToggles = { bloom: true, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
+  const toggles: DebugToggles = { bloom: settings.bloom, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
   let viewModel: ViewModel | null = null;
   const applyToggles = () => {
     gfx.bloom.enabled = toggles.bloom;
@@ -81,7 +82,13 @@ async function main() {
     camera.fov = toggles.fov;
     camera.updateProjectionMatrix();
     setPixelTextures(toggles.pixel, viewModel ? [scene, viewModel.scene] : [scene]);
+    gfx.setShadows(settings.shadows);
+    if (renderScale !== settings.renderScale) gfx.setRenderScale((renderScale = settings.renderScale));
+    // people fade out well before the map does: they are small and the most expensive to draw
+    CHAR_LOD.far = Math.min(220, Math.max(90, settings.drawDistance * 0.3));
+    CHAR_LOD.shadow = settings.shadows === 'off' ? 0 : settings.shadows === 'low' ? 30 : 45;
   };
+  let renderScale = 1;
   let statsHtml = () => '';
   const menu = setupMenu(input, audio, camera, toggles, settings, { onToggles: applyToggles, statsHtml: () => statsHtml() });
   const lobby = new Lobby(settings.difficulty);
@@ -284,6 +291,8 @@ async function main() {
   const introFrame = (dt: number, t: number) => {
     if (input.take('Space') || input.take('Enter') || input.take('Mouse0')) { intro.skip(); music?.stop(1.5); }
     intro.update(dt, camera);
+    CHAR_LOD.eye.copy(camera.position);
+    mapView.cull(camera.position, intro.active ? Infinity : settings.drawDistance);
     // the far shots need a clearer air
     const d = camera.position.distanceTo(eye.pos);
     fog.density = intro.active ? FOG * Math.min(1, Math.max(0.22, 1 - (d - 40) / 500)) : FOG;
@@ -337,6 +346,8 @@ async function main() {
     }
     if (input.locked) ambience.update(ambient, dt);
     local.applyCamera(camera);
+    CHAR_LOD.eye.copy(camera.position);
+    mapView.cull(camera.position, settings.drawDistance);
     // windows (shop, inventory) take the mouse: the click goes to them, not to the hands
     const click = cursor.update();
     hands.update(dt, camera, input.locked && !cursor.active && input.down('Mouse0'), click);

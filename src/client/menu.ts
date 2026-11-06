@@ -97,6 +97,41 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     save();
   });
 
+  const dist = $<HTMLInputElement>('draw-distance');
+  const showDist = () => { $('draw-distance-value').textContent = `${settings.drawDistance} м`; };
+  dist.value = String(settings.drawDistance);
+  showDist();
+  dist.addEventListener('input', () => {
+    settings.drawDistance = Number(dist.value);
+    showDist();
+    hooks.onToggles();
+    save();
+  });
+
+  const shadows = $<HTMLSelectElement>('shadows');
+  shadows.value = settings.shadows;
+  shadows.addEventListener('change', () => {
+    settings.shadows = shadows.value as Settings['shadows'];
+    hooks.onToggles();
+    save();
+  });
+
+  const bloom = $<HTMLSelectElement>('bloom');
+  bloom.value = settings.bloom ? 'on' : 'off';
+  bloom.addEventListener('change', () => {
+    toggles.bloom = settings.bloom = bloom.value === 'on';
+    hooks.onToggles();
+    save();
+  });
+
+  const scale = $<HTMLInputElement>('render-scale');
+  const showScale = () => { $('render-scale-value').textContent = `${Math.round(settings.renderScale * 100)}%`; };
+  scale.value = String(settings.renderScale);
+  showScale();
+  // the slider moves often: re-allocate the buffers only once it is let go
+  scale.addEventListener('input', () => { settings.renderScale = Number(scale.value); showScale(); });
+  scale.addEventListener('change', () => { hooks.onToggles(); save(); });
+
   return {
     /** Match over: summary in the menu, "New match" becomes the main button. */
     showResult(title: string) {

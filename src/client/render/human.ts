@@ -3,6 +3,7 @@ import {
   SphereGeometry, TorusGeometry, Vector2, Vector3,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { bakeMeshes } from './bake';
 
 /**
  * A plain modern human, procedurally built and rigged, real proportions (1.8 m): no textures, smooth shapes, muted
@@ -223,6 +224,13 @@ export function buildHuman(outfit: Outfit, color: number, grime = 0, seed = Math
     if (outfit === 'gang') add(f, rbox('sole', 0.104, 0.025, 0.274, 0.01), mat(0xf2f0ea, 0.8), 0, -0.078, 0.05);
     thigh.push(t); shin.push(k); foot.push(f);
   }
+
+  // one draw call per bone: every part of a bone baked into one vertex-coloured mesh (~15 per person instead of ~85)
+  const body = new MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0 });
+  for (const b of [pelvis, chest, head, ...upper, ...fore, ...hand, ...thigh, ...shin, ...foot]) bakeMeshes(b, body, (m) => m.parent === b);
+  for (const m of materials) m.dispose();
+  materials.length = 0;
+  materials.push(body);
 
   return {
     root, fall, pelvis, chest, head, materials,
