@@ -12,7 +12,7 @@ import { upOf } from '../src/shared/math';
 import { moveBasis } from '../src/shared/movement';
 import { HU, TICK_DT, WORLD } from '../src/shared/constants';
 import { generateMap, PLAYGROUND } from '../src/shared/map';
-import { CROUCH_SPEED, emptyInput, MoveInput } from '../src/shared/movement';
+import { CROUCH_SPEED, emptyInput, MoveInput, SPRINT_SPEED, STAMINA } from '../src/shared/movement';
 import { buildPhysicsWorld, initRapier } from '../src/shared/physics';
 import { PlayerSim } from '../src/shared/sim';
 
@@ -63,6 +63,22 @@ run(128, { forward: 1, crouch: true });
 check('crouch: slow walk', Math.abs(planarSpeed() - 300 * HU * CROUCH_SPEED) < 0.05 && s.crouched, `${(planarSpeed() / HU).toFixed(0)} u/s`);
 run(10, {});
 check('stand up again', !s.crouched);
+// sprint: faster, runs dry after STAMINA.max seconds, refills after a rest
+{
+  place(16, G + 1, 40, Math.PI); // the road x = 16, running towards +z (long and clear)
+  run(30, {});
+  s.stamina = STAMINA.max; s.exhausted = false;
+  run(64, { forward: 1, sprint: true });
+  const fast = planarSpeed();
+  check('sprint is faster', Math.abs(fast - 300 * HU * SPRINT_SPEED) < 0.1 && s.sprinting, `${(fast / HU).toFixed(0)} u/s`);
+  s.stamina = 0.5; // nearly dry (the road is not 60 m long)
+  run(40, { forward: 1, sprint: true });
+  const dry = planarSpeed();
+  check('sprint stops when stamina runs out', s.exhausted && !s.sprinting && Math.abs(dry - 300 * HU) < 0.1, `${(dry / HU).toFixed(0)} u/s`);
+  run(64 * 2, {});
+  check('stamina refills after a rest, sprint allowed again', s.stamina > STAMINA.restart && !s.exhausted, `st=${s.stamina.toFixed(2)}`);
+  check('8 seconds of sprint when full', STAMINA.max === 8);
+}
 // coyote time: a jump right after running off an edge still works, a late one does not
 const airJump = (airT: number) => {
   place(300, 300, 300, 0);
@@ -235,7 +251,7 @@ sim.respawn();
 }
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
-import { Combat, MAX_HP, Target } from '../src/shared/combat';
+import { Combat, MAX_HP, SPAWN_GUARD, Target } from '../src/shared/combat';
 import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
 {
   sim.team = TEAMS[0];
@@ -350,6 +366,25 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const near = punchAt(1.2);
   const far = punchAt(3.5);
   check('punch hits up close for small damage', near === WEAPONS.fists.damage && far === 0, `near=${near} far=${far}`);
+  // spawn protection: no damage until 3 s pass, the target walks away or fires
+  {
+    const g: Target = { id: 7, team: 'green', center: new Vector3(16, G + 1.065, -30), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1 };
+    combat.targets.push(g);
+    combat.guard(g);
+    combat.damage(g, 50, 0, false, g.center);
+    check('spawn protection blocks damage', g.hp === MAX_HP && combat.events.some((e) => e.type === 'guarded'));
+    for (let k = 0; k < 64 * 3.1; k++) combat.tick(TICK_DT);
+    check('spawn protection ends after 3 s', !g.guard);
+    combat.guard(g);
+    g.center.z += SPAWN_GUARD.radius + 0.5;
+    combat.tick(TICK_DT);
+    check('spawn protection ends when walking away', !g.guard);
+    combat.guard(g);
+    combat.use('fists', 7, g.center.clone(), new Vector3(0, 0, 1), new Vector3(), new Vector3(0, -1, 0));
+    check('spawn protection ends when attacking', !g.guard);
+    g.alive = false;
+    combat.events.length = 0;
+  }
   punchDummy.alive = false;
   combat.events.length = 0;
   place(16, G + 1, 6, 0);
@@ -769,7 +804,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 60, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
 }
 
-// Slopes: walking up / down a ramp keeps full ground speed and stays grounded (build ramps are ~37°).
+// Slopes: walking up / down a ramp is as fast along the surface as on flat ground, and stays grounded (build ramps ~37°).
 for (const deg of [20, 37, 45]) {
   const w = new R.World({ x: 0, y: 0, z: 0 });
   w.createCollider(R.ColliderDesc.cuboid(60, 1, 60).setTranslation(0, -1, 0));
@@ -785,15 +820,16 @@ for (const deg of [20, 37, 45]) {
     for (let k = 0; k < 20; k++) ps.tick(emptyInput(), TICK_DT);
     let dist = 0, air = 0;
     for (let k = 0; k < 90; k++) {
-      const z0 = ps.state.pos.z;
+      const p0 = ps.state.pos.clone();
       ps.tick({ ...emptyInput(), forward: 1, yaw }, TICK_DT);
-      if (k >= 30) { dist += Math.abs(ps.state.pos.z - z0); if (!ps.state.onGround) air++; }
+      if (k >= 30) { dist += ps.state.pos.distanceTo(p0); if (!ps.state.onGround) air++; }
     }
     return { speed: dist / (60 * TICK_DT) / HU, air };
   };
   const upR = walk(4, 1, 0);
   const downR = walk(-Math.cos(a) * L + 2, Math.sin(a) * L + 1, Math.PI);
-  check(`${deg}° ramp: full speed up and down, grounded`, upR.speed > 290 && downR.speed > 290 && upR.air + downR.air <= 2,
+  check(`${deg}° ramp: same speed as on flat ground up and down, grounded`,
+    Math.abs(upR.speed - 300) < 10 && Math.abs(downR.speed - 300) < 10 && upR.air + downR.air <= 2,
     `up ${upR.speed.toFixed(0)} u/s, down ${downR.speed.toFixed(0)} u/s, airborne ticks ${upR.air + downR.air}`);
 }
 

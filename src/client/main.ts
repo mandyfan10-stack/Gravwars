@@ -144,9 +144,9 @@ async function main() {
 
   const local = new LocalPlayer(sim, input);
   local.onTick = () => {
-    // NPCs judge the player by how they move: speed, and whether they sneak (Shift)
+    // NPCs judge the player by how they move: speed, and whether they sneak (crouch)
     player.me.vel = sim.state.vel;
-    player.me.quiet = local.input.walk || local.input.crouch;
+    player.me.quiet = local.input.crouch;
     player.me.crouched = local.input.crouch;
     if (!match.result) { bots.tick(TICK_DT); npcs.tick(TICK_DT); }
     player.tick(!build.active && !pockets.rod && !ui.shopOpen && input.locked && input.down('Mouse0'));
@@ -222,7 +222,7 @@ async function main() {
     if (local.landed) { audio.land(local.landed); local.landed = 0; local.stride = 0; }
     if (local.stride > STEP_LEN) {
       local.stride = 0;
-      if (!local.input.crouch) audio.step(local.input.walk);
+      if (!local.input.crouch) audio.step(false);
     }
     ambientT -= dt;
     if (ambientT <= 0) {
@@ -302,6 +302,7 @@ async function main() {
     const gDown = sim.gravityDown();
     gizmo.render(renderer, viewQ, Math.abs(gDown.z) > 0.9 ? '' : teamByDown(gDown).id);
     hud.setSpread(build.active || pockets.rod ? null : player.nextSpread, camera.fov);
+    hud.setGuard(player.me.guard && player.me.alive ? player.me.guard.t : null);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
     stats.trackCash(match.wallet.cash);
     // scoreboard: hold Tab (in the shop Tab switches the tab)

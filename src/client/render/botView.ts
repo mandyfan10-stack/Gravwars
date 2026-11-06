@@ -1,4 +1,4 @@
-import { Quaternion, Scene, Vector3 } from 'three';
+import { AdditiveBlending, Color, Mesh, MeshBasicMaterial, Quaternion, Scene, SphereGeometry, Vector3 } from 'three';
 import type { BotManager } from '../../shared/bots';
 import { upOf } from '../../shared/math';
 import { getTeam } from '../../shared/teams';
@@ -19,7 +19,11 @@ interface View {
   lastPos: Vector3;
   lastFrame: Quaternion;
   lastYaw: number;
+  /** Spawn protection shell (visible while the bot is protected). */
+  shell: Mesh;
 }
+
+const shellGeo = new SphereGeometry(1, 24, 16);
 
 /** Draws bots with the animated character, interpolated between simulation ticks. */
 export class BotView {
@@ -29,7 +33,13 @@ export class BotView {
     this.views = bots.bots.map((b) => {
       const model = new PlayerModel(assets, getTeam(b.team).color, 'fists');
       scene.add(model.group);
-      return { model, hp: b.target.hp, shots: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0 };
+      const shell = new Mesh(shellGeo, new MeshBasicMaterial({
+        color: new Color(getTeam(b.team).color).multiplyScalar(0.9), transparent: true, opacity: 0.18, blending: AdditiveBlending, depthWrite: false,
+      }));
+      shell.scale.set(0.7, 1.12, 0.7);
+      shell.visible = false;
+      model.group.add(shell);
+      return { model, hp: b.target.hp, shots: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, shell };
     });
   }
 
@@ -55,6 +65,8 @@ export class BotView {
         }
         return;
       }
+      v.shell.visible = !!b.target.guard;
+      if (b.target.guard) (v.shell.material as MeshBasicMaterial).opacity = 0.12 + 0.08 * Math.sin(performance.now() / 160);
       if (v.hp === 0) m.revive();
       if (b.target.hp < v.hp) m.hit();
       v.hp = b.target.hp;

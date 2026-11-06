@@ -79,7 +79,7 @@ export const NPC = {
   /** NPCs nobody is near are simulated this many times slower (bums still drink, bottles still drop). */
   idleStep: 8,
   /** "Near": a player or bot within this many metres. */
-  liveRange: 60,
+  liveRange: 40,
 };
 
 export type NpcState = 'wander' | 'drink' | 'fight' | 'patrol' | 'search' | 'combat' | 'dead';

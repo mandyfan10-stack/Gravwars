@@ -7,6 +7,10 @@ import type { PhysicsWorld, Rapier } from './physics';
 export const WALK_SPEED = 0.45;
 /** Crouched speed, share of maxSpeed (CS: 0.34). */
 export const CROUCH_SPEED = 0.34;
+/** Sprint (Shift) speed, share of maxSpeed. */
+export const SPRINT_SPEED = 1.3;
+/** Sprint stamina: seconds of sprinting when full; refills at REGEN per second after REGEN_DELAY s of rest. */
+export const STAMINA = { max: 8, regen: 1.6, regenDelay: 1, /** an empty bar lets you sprint again from this much */ restart: 1.5 };
 /** A jump still works this long after running off an edge, s. */
 export const COYOTE_TIME = 0.1;
 
@@ -26,6 +30,14 @@ export interface PlayerState {
   airT: number;
   /** Crouching this tick (slower, quieter, steadier aim, lower eye). */
   crouched: boolean;
+  /** Sprinting this tick (Shift, forward, on the ground or mid-jump). */
+  sprinting: boolean;
+  /** Sprint stamina left, s (STAMINA.max when full). */
+  stamina: number;
+  /** Ran dry: no sprint until the bar refills to STAMINA.restart. */
+  exhausted: boolean;
+  /** Time since the last sprint, s (regen starts after STAMINA.regenDelay). */
+  restT: number;
 }
 
 export interface MoveInput {
@@ -34,8 +46,9 @@ export interface MoveInput {
   /** noclip only: +1 up, -1 down */
   up: number;
   jump: boolean;
+  /** Sprint (Shift): faster forward running while there is stamina. */
   sprint: boolean;
-  /** Quiet walk (Shift): slower on the ground and silent for NPCs. */
+  /** Quiet walk: slower on the ground and silent for NPCs (not bound for players at the moment). */
   walk: boolean;
   /** Crouch (Ctrl / C): slower still, silent, lower eye. */
   crouch: boolean;
@@ -47,6 +60,7 @@ export function createPlayerState(): PlayerState {
   return {
     pos: new Vector3(), vel: new Vector3(), frame: new Quaternion(), yaw: 0, pitch: 0,
     onGround: false, groundNormal: new Vector3(0, 1, 0), jumpReleased: true, noclip: false, airT: -1, crouched: false,
+    sprinting: false, stamina: STAMINA.max, exhausted: false, restT: 0,
   };
 }
 
@@ -159,7 +173,18 @@ export class Mover {
     moveBasis(s.frame, s.yaw, _fwd, _right);
     _wish.set(0, 0, 0).addScaledVector(_fwd, input.forward).addScaledVector(_right, input.right);
     s.crouched = input.crouch;
-    const slow = input.crouch ? CROUCH_SPEED : input.walk ? WALK_SPEED : 1;
+    // sprint: forward only, not crouched; drains stamina while moving, refills after a short rest
+    if (s.exhausted && s.stamina >= STAMINA.restart) s.exhausted = false;
+    s.sprinting = input.sprint && input.forward > 0 && !input.crouch && !s.exhausted && s.stamina > 0;
+    if (s.sprinting) {
+      s.stamina = Math.max(0, s.stamina - dt);
+      if (s.stamina === 0) s.exhausted = true;
+      s.restT = 0;
+    } else {
+      s.restT += dt;
+      if (s.restT >= STAMINA.regenDelay) s.stamina = Math.min(STAMINA.max, s.stamina + STAMINA.regen * dt);
+    }
+    const slow = input.crouch ? CROUCH_SPEED : input.walk ? WALK_SPEED : s.sprinting ? SPRINT_SPEED : 1;
     const wishSpeed = Math.min(_wish.length(), 1) * cfg.maxSpeed * slow;
     if (_wish.lengthSq() > 1e-8) _wish.normalize();
 
@@ -192,10 +217,14 @@ export class Mover {
     else this.kcc.disableSnapToGround();
     _delta.copy(s.vel).multiplyScalar(dt);
     if (onGround) {
-      // walk along the ground plane: lift / lower the planar step so it lies on the slope, keeping planar speed
-      // (otherwise every tick the move bumps into the ramp and the clip below eats the speed)
+      // walk along the ground plane: lift / lower the step so it lies on the slope (otherwise every tick the move
+      // bumps into the ramp and the clip below eats the speed), at the same speed as on flat ground: a ramp is
+      // neither faster nor slower to walk
       const nUp = s.groundNormal.dot(up);
-      if (nUp > 0.05 && nUp < 0.9999) _delta.addScaledVector(up, -_delta.dot(s.groundNormal) / nUp);
+      if (nUp > 0.05 && nUp < 0.9999) {
+        const len = _delta.length();
+        _delta.addScaledVector(up, -_delta.dot(s.groundNormal) / nUp).setLength(len);
+      }
     }
     this.kcc.computeColliderMovement(this.collider, _delta);
     const mv = this.kcc.computedMovement();

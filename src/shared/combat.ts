@@ -35,6 +35,8 @@ export interface Target {
   /** Seconds until an auto-respawn (dummies). < 0 = handled by the owner (players). */
   respawnIn: number;
   onImpulse?: (v: Vector3) => void;
+  /** Spawn protection: no damage until it runs out, the owner fires or walks `SPAWN_GUARD.radius` away. */
+  guard?: { from: Vector3; t: number } | null;
 }
 
 export interface Projectile {
@@ -66,7 +68,9 @@ export type CombatEvent =
   | { type: 'explode'; pos: Vector3; radius: number }
   | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3 }
   /** A punch: `pos` = what it landed on (null = swung at the air). */
-  | { type: 'melee'; owner: number; pos: Vector3 | null; target: number | null };
+  | { type: 'melee'; owner: number; pos: Vector3 | null; target: number | null }
+  /** A hit on a target under spawn protection: no damage. */
+  | { type: 'guarded'; target: number; pos: Vector3 };
 
 /** Something loud happened: NPCs within `radius` hear it. */
 export interface Noise { pos: Vector3; radius: number; owner: number }
@@ -83,6 +87,8 @@ const PIERCE_MIN_SPEED = 120;
 const PIERCE_PROBE = 1.2;
 
 export const MAX_HP = 100;
+/** Spawn protection: seconds, and how far from the spawn point it holds. */
+export const SPAWN_GUARD = { time: 3, radius: 6 };
 const DUMMY_RESPAWN = 3;
 
 const _a = new Vector3();
@@ -185,7 +191,19 @@ export class Combat {
     return this.targets.find((t) => t.id === id);
   }
 
+  /** Give a freshly spawned target its spawn protection. */
+  guard(tg: Target) {
+    tg.guard = { from: tg.center.clone(), t: SPAWN_GUARD.time };
+  }
+
+  /** Shooting / punching / throwing ends your own spawn protection. */
+  private unguard(owner: number) {
+    const t = this.target(owner);
+    if (t) t.guard = null;
+  }
+
   fire(weapon: WeaponId, owner: number, origin: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3) {
+    this.unguard(owner);
     const def = WEAPONS[weapon];
     const p: Projectile = {
       id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(), origin: origin.clone(),
@@ -209,6 +227,7 @@ export class Combat {
 
   /** Instant short-range hit along the view: the first capsule or world surface within reach. Walls stop it. */
   melee(weapon: WeaponId, owner: number, eye: Vector3, dir: Vector3) {
+    this.unguard(owner);
     const def = WEAPONS[weapon];
     const to = eye.clone().addScaledVector(dir.clone().normalize(), def.reach);
     const fake = { owner, team: this.target(owner)?.team ?? null } as Projectile;
@@ -267,6 +286,10 @@ export class Combat {
 
   damage(tg: Target, amount: number, owner: number, head: boolean, pos: Vector3) {
     if (!tg.alive) return;
+    if (tg.guard) {
+      this.events.push({ type: 'guarded', target: tg.id, pos: pos.clone() });
+      return;
+    }
     tg.hp = Math.max(0, tg.hp - amount);
     const killed = tg.hp <= 0;
     tg.onHit?.(owner, amount);
@@ -284,7 +307,7 @@ export class Combat {
     this.noises.push({ pos: p.pos.clone(), radius: NOISE.grenade, owner: p.owner });
     this.onExplosion(p.pos.clone(), def.radius, def.blockDamage);
     for (const tg of this.targets) {
-      if (!tg.alive || (tg.team === p.team && tg.id !== p.owner)) continue;
+      if (!tg.alive || tg.guard || (tg.team === p.team && tg.id !== p.owner)) continue;
       const d = tg.center.distanceTo(p.pos);
       if (d > def.radius + PLAYER_RADIUS) continue;
       // line of sight: walls protect
@@ -352,6 +375,7 @@ export class Combat {
   tick(dt: number) {
     this.time += dt;
     for (const tg of this.targets) {
+      if (tg.guard && ((tg.guard.t -= dt) <= 0 || !tg.alive || tg.center.distanceTo(tg.guard.from) > SPAWN_GUARD.radius)) tg.guard = null;
       if (!tg.alive && tg.respawnIn > 0) {
         tg.respawnIn -= dt;
         if (tg.respawnIn <= 0) {

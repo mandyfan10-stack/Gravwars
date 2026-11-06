@@ -53,8 +53,8 @@ export class LocalPlayer {
     i.right = k.locked ? k.axis('KeyD', 'KeyA') : 0;
     i.up = k.locked ? (k.down('Space') ? 1 : 0) - (k.down('ControlLeft') || k.down('KeyC') ? 1 : 0) : 0;
     i.jump = k.locked && k.jump();
-    i.sprint = k.down('ShiftLeft');
-    i.walk = k.locked && (k.down('ShiftLeft') || k.down('ShiftRight'));
+    i.sprint = k.locked && (k.down('ShiftLeft') || k.down('ShiftRight'));
+    i.walk = false;
     i.crouch = k.locked && !this.sim.state.noclip && (k.down('ControlLeft') || k.down('KeyC'));
     i.yaw = k.yaw;
     i.pitch = k.pitch;

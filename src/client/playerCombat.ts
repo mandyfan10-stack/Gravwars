@@ -61,12 +61,14 @@ export class PlayerCombat {
       onImpulse: (v) => sim.applyImpulse(v),
     };
     combat.targets.push(this.me);
+    combat.guard(this.me);
   }
 
   /** Restore HP after death / respawn. Bought weapons and ammo are kept. */
   reset() {
     this.me.hp = MAX_HP;
     this.me.alive = true;
+    this.combat.guard(this.me);
     this.weapons.reloadT = 0;
     this.weapons.cooldown = 0;
     this.hud.setHp(this.me.hp);

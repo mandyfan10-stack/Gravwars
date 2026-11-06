@@ -210,6 +210,7 @@ export class BotManager {
     bot.prevPos.copy(sim.state.pos);
     bot.target.hp = MAX_HP;
     bot.target.alive = true;
+    this.combat.guard(bot.target);
     Object.assign(bot.weapons, createWeaponState());
     bot.routeKey = '';
     bot.enemy = null;
@@ -371,7 +372,7 @@ export class BotManager {
     let bestD = BOT.sightRange;
     const home = this.heading(bot) === bot.team ? this.match.bed(bot.team).pos : null;
     for (const t of this.combat.targets) {
-      if (!t.alive || t.team === bot.team) continue;
+      if (!t.alive || t.guard || t.team === bot.team) continue; // spawn protection: no point shooting
       if (home && t.center.distanceTo(home) > BOT.defendRadius) continue;
       const d = eye.distanceTo(t.center);
       // city NPCs: only those who go for this bot or get in its face

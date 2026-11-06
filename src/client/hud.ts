@@ -1,5 +1,6 @@
 import { Vector3 } from 'three';
 import { HU } from '../shared/constants';
+import { STAMINA } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
 import { isGun, WeaponId, WEAPONS, WeaponState } from '../shared/weapons';
 import { teamByDown } from '../shared/teams';
@@ -37,6 +38,9 @@ export class Hud {
 
   private hpVal = $('hp-val');
   private hpBar = $('hp-bar');
+  private stEl = $('st');
+  private stBar = $('st-bar');
+  private guardEl = $('guard');
   private wName = $('weapon-name');
   private ammo = $('ammo');
   private windArrow = $('wind-arrow');
@@ -46,6 +50,12 @@ export class Hud {
   private feed = $('feed');
   private hitT = 0;
   private hurtT = 0;
+
+  /** Spawn protection indicator (seconds left, or null = none). */
+  setGuard(t: number | null) {
+    this.guardEl.hidden = t === null;
+    if (t !== null) this.guardEl.textContent = `Защита после спавна · ${Math.ceil(t)}`;
+  }
 
   setHp(hp: number) {
     this.hpVal.textContent = String(Math.ceil(hp));
@@ -149,6 +159,11 @@ export class Hud {
       this.gravDot.style.color = team ? '#' + team.color.toString(16).padStart(6, '0') : '#e8e2d0';
       this.gravName.textContent = `Гравитация: ${team ? team.name : 'центр'}`;
     }
+    // sprint stamina: hidden while full
+    const st = s.stamina / STAMINA.max;
+    this.stBar.style.width = `${(st * 100).toFixed(1)}%`;
+    this.stBar.classList.toggle('dry', s.exhausted);
+    this.stEl.classList.toggle('full', st >= 0.999);
     this.info.textContent =
       `${Math.round(this.fps)} fps\n` +
       `${s.noclip ? 'NOCLIP' : s.onGround ? 'на земле' : 'в воздухе'}\n` +
