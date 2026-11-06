@@ -81,6 +81,15 @@ body.debug #info, body.debug #speed { display: block; }
   background: linear-gradient(90deg, #f1ece2 var(--fill), rgba(0, 0, 0, .45) var(--fill)); }
 #markers .npc-mark.hostile { color: #ff6a5c; }
 #markers .npc-mark.hostile::after { display: none; }
+/* dazed: two bright dots orbiting over the head (an ellipse, approximated by keyframes) */
+#markers .npc-mark.stun { width: 0; height: 0; margin: -14px 0 0 0; }
+#markers .npc-mark.stun::before, #markers .npc-mark.stun::after { content: ''; position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; margin: 0;
+  border-radius: 50%; background: #ffe9a6; box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 0 6px rgba(255, 220, 140, .7); animation: daze .8s linear infinite; }
+#markers .npc-mark.stun::after { animation-delay: -.4s; }
+@keyframes daze {
+  0% { transform: translate(12px, 0); } 12.5% { transform: translate(8.5px, 3.5px); } 25% { transform: translate(0, 5px); }
+  37.5% { transform: translate(-8.5px, 3.5px); } 50% { transform: translate(-12px, 0); } 62.5% { transform: translate(-8.5px, -3.5px); }
+  75% { transform: translate(0, -5px); } 87.5% { transform: translate(8.5px, -3.5px); } 100% { transform: translate(12px, 0); } }
 #killfeed .npc { color: #c9bfae; }
 #wind { display: flex; align-items: center; gap: 6px; font: 600 14px var(--display); }
 #wind .wind-ic .ic { font-size: 16px; color: var(--muted); }
@@ -103,9 +112,9 @@ body.debug #info, body.debug #speed { display: block; }
 #hp-bar { height: 100%; width: 100%; background: var(--hp); transition: width .15s, background .2s; }
 
 #hotbar { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; gap: 4px; align-items: flex-end; }
-#hotbar .slot { position: relative; display: grid; place-items: center; width: 54px; height: 46px; border-radius: 3px; background: var(--ink);
+#hotbar .slot { position: relative; display: grid; place-items: center; width: 50px; height: 46px; border-radius: 3px; background: var(--ink);
   border: 1px solid transparent; color: rgba(255, 255, 255, .5); font-size: 26px; text-shadow: none; transition: color .12s, border-color .12s; }
-#hotbar .slot kbd { position: absolute; left: 4px; top: 3px; min-width: 0; height: auto; padding: 0; border: 0; background: none; font-size: 9px; color: var(--muted); }
+#hotbar .slot.empty { opacity: .45; }
 #hotbar .slot.on { border-color: rgba(255, 255, 255, .85); color: #fff; }
 #hud #hotbar .slot .ic { filter: none; }
 
@@ -120,17 +129,6 @@ body.debug #info, body.debug #speed { display: block; }
 #ammo .reload { font-size: 13px; color: #fff; }
 #ammo .empty { color: #ff8e83; }
 
-/* pockets: items and spare ammo, small and quiet above the HP */
-#pockets { position: absolute; left: 172px; bottom: 78px; display: flex; align-items: center; gap: 14px; font: 600 14px var(--display); }
-#pockets span { display: flex; align-items: center; gap: 5px; }
-#pockets .ic { font-size: 16px; color: rgba(255, 255, 255, .85); }
-#pockets .zero { color: rgba(255, 255, 255, .38); }
-#pockets .zero .ic { color: rgba(255, 255, 255, .38); }
-#pockets .sep { width: 1px; height: 14px; background: var(--line); }
-#pockets .ammo-ic { font-size: 14px; color: var(--muted); margin-right: -6px; }
-#pockets i { font-style: normal; }
-#pockets .hint { font: 500 11px 'Inter', sans-serif; color: var(--muted); gap: 4px; margin-left: -6px; }
-#pockets .hint kbd { min-width: 16px; height: 16px; font-size: 10px; }
 
 /* fishing strike bar: a marker sweeps once, press in the zone */
 #fish-bar { position: absolute; left: 50%; top: 63%; width: 240px; height: 8px; margin-left: -120px; background: rgba(255, 255, 255, .18);
@@ -157,27 +155,63 @@ body.debug #info, body.debug #speed { display: block; }
 #bed-break { position: absolute; left: 50%; top: 63%; width: 220px; height: 4px; margin-left: -110px; background: rgba(255, 255, 255, .2); overflow: hidden; opacity: 0; }
 #bed-break i { display: block; height: 100%; width: 0; background: #fff; }
 
-#shop { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 400px; padding: 16px; border-radius: 6px; background: rgba(14, 16, 22, .85);
-  pointer-events: none; text-shadow: none; }
-#hud #shop .ic { filter: none; }
-#shop h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font: 700 16px var(--display); }
-#shop h3 .ic { font-size: 20px; color: #fff; }
-#shop h3 nav { display: flex; gap: 14px; margin-left: auto; font: 600 13px 'Inter', sans-serif; color: var(--muted); }
-#shop h3 nav span { padding-bottom: 3px; border-bottom: 2px solid transparent; }
-#shop h3 nav span.on { color: #fff; border-color: #fff; }
-#shop .label { display: flex; flex-direction: column; gap: 1px; }
-#shop .item.locked { opacity: .45; }
-#shop .item.locked kbd.lock { border-style: dashed; }
-#shop .item.total { font-weight: 700; }
-#shop footer { display: flex; align-items: center; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
-#shop footer kbd { margin-left: 8px; } #shop footer kbd:first-child { margin-left: 0; }
-#shop .item { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 0 4px; border-top: 1px solid var(--line); font-size: 14px; font-weight: 600; }
-#shop .item > .ic { font-size: 20px; color: var(--c, #fff); }
-#shop .item.poor { opacity: .4; }
-#shop .item em { font-style: normal; font-size: 11px; color: var(--muted); font-weight: 500; }
-#shop .price { margin-left: auto; display: flex; align-items: center; gap: 5px; font: 600 14px var(--display); }
-#shop .price .ic { font-size: 14px; }
+/* shop + inventory: windows driven by the in-game cursor (#cursor), clickable parts carry data-act */
+#shop, #inv { position: absolute; left: 50%; top: 47%; transform: translate(-50%, -50%); padding: 14px 16px 12px; border-radius: 6px;
+  background: rgba(14, 16, 22, .9); border: 1px solid var(--line); pointer-events: auto; text-shadow: none; }
+#shop { width: min(880px, 94vw); }
+#shop.sell { width: 420px; }
+#hud #shop .ic, #hud #inv .ic { filter: none; }
+#shop h3, #inv h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font: 700 16px var(--display); }
+#shop h3 > .ic { font-size: 20px; color: #fff; }
+#shop nav { display: flex; gap: 4px; margin-left: 12px; }
+#shop nav button { padding: 4px 10px; border: 0; border-radius: 3px; background: none; color: var(--muted); font: 600 13px 'Inter', sans-serif; }
+#shop nav button.on { background: rgba(255, 255, 255, .12); color: #fff; }
+#shop nav button.hover:not(.on) { color: #fff; }
+#shop .money { display: flex; gap: 14px; margin-left: auto; font: 600 14px var(--display); }
+#shop .money span { display: flex; align-items: center; gap: 5px; }
+#shop .money .cash .ic { color: var(--cash); } #shop .money .crystal .ic { color: var(--crystal); }
+button.x { width: 26px; height: 26px; margin-left: 6px; border: 0; border-radius: 3px; background: none; color: var(--muted); font: 400 20px/1 'Inter', sans-serif; }
+#inv button.x { margin-left: auto; }
+button.x.hover { background: rgba(255, 255, 255, .12); color: #fff; }
+#shop .groups { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+#shop h5, #inv h5 { margin: 0 0 6px; font: 600 10px 'Inter', sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+#shop section { display: flex; flex-direction: column; gap: 6px; }
+#shop .card { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px;
+  background: rgba(255, 255, 255, .03); font-size: 13px; font-weight: 600; transition: background .08s, border-color .08s; }
+#shop .card > .ic { font-size: 22px; color: var(--c, #fff); }
+#shop .card.hover { background: rgba(255, 255, 255, .1); border-color: rgba(255, 255, 255, .5); }
+#shop .card.poor { opacity: .45; }
+#shop .card.poor .price { color: #ff9a8f; }
+#shop .label { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.2; }
+#shop .card em { font-style: normal; font-size: 11px; font-weight: 500; color: var(--muted); }
+#shop .price { margin-left: auto; display: flex; align-items: center; gap: 4px; font: 700 14px var(--display); white-space: nowrap; }
+#shop .price .ic { font-size: 13px; }
 #shop .price.cash .ic { color: var(--cash); } #shop .price.crystal .ic { color: var(--crystal); }
+#shop .sell { display: flex; flex-direction: column; gap: 6px; }
+#shop .card.total { font-weight: 700; min-height: 44px; }
+#shop footer, #inv footer { display: flex; align-items: center; gap: 5px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+#shop footer kbd { margin-left: 10px; }
+
+#inv { width: 640px; }
+#inv .cols { display: grid; grid-template-columns: auto 1fr; gap: 18px; }
+#inv .grid { display: grid; grid-template-columns: repeat(9, 44px); gap: 4px; margin-bottom: 12px; }
+#inv .cell { position: relative; display: grid; place-items: center; height: 44px; border: 1px solid var(--line); border-radius: 3px;
+  background: rgba(255, 255, 255, .04); font-size: 22px; }
+#inv .grid.bar .cell { background: rgba(255, 255, 255, .08); }
+#inv .cell.empty { color: transparent; }
+#inv .cell.hover { border-color: rgba(255, 255, 255, .6); background: rgba(255, 255, 255, .12); }
+#inv .cell.carry { border-color: #fff; border-style: dashed; opacity: .55; }
+#inv .cell kbd, #hotbar .slot kbd { position: absolute; left: 3px; top: 2px; min-width: 0; height: auto; padding: 0; border: 0; background: none; font-size: 9px; color: var(--muted); }
+#inv .cell b, #hotbar .slot b { position: absolute; right: 3px; bottom: 1px; font: 700 11px var(--display); color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .9); }
+#inv aside { padding-left: 16px; border-left: 1px solid var(--line); font-size: 12px; line-height: 1.45; }
+#inv aside h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font: 700 14px var(--display); }
+#inv aside h4 .ic { font-size: 18px; }
+#inv aside p { margin: 0 0 6px; }
+#inv .dim { color: var(--muted); }
+#inv footer kbd { min-width: 16px; height: 16px; font-size: 10px; }
+
+#cursor { position: absolute; left: 0; top: 0; width: 15px; height: 21px; will-change: transform; z-index: 10; pointer-events: none; }
+#cursor svg { display: block; width: 100%; height: 100%; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .5)); }
 
 #result { position: absolute; left: 50%; top: 36%; transform: translate(-50%, -50%) scale(.96); display: flex; flex-direction: column; align-items: center; gap: 8px;
   font: 800 48px var(--display); letter-spacing: -.02em; text-align: center; opacity: 0; transition: opacity .4s, transform .4s; }

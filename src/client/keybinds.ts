@@ -1,11 +1,11 @@
-import { Vector3 } from 'three';
+import { PerspectiveCamera, Vector3 } from 'three';
 import { PLAYER_HEIGHT } from '../shared/constants';
-import type { Economy } from '../shared/economy';
-import type { WeaponId } from '../shared/weapons';
+import { HOTBAR_SIZE } from '../shared/inventory';
 import type { PlayerSim } from '../shared/sim';
 import { TEAMS } from '../shared/teams';
 import type { BlockController } from './blockController';
 import type { createDebugGui, DebugToggles } from './debugGui';
+import type { Hands } from './hands';
 import type { Hud } from './hud';
 import type { Input } from './input';
 import type { LocalPlayer } from './localPlayer';
@@ -20,53 +20,59 @@ export interface KeyContext {
   build: BlockController;
   player: PlayerCombat;
   ui: MatchUi;
-  eco: Economy;
+  hands: Hands;
   pockets: Pockets;
   /** Is the player standing at their shop? */
   nearShop: () => boolean;
+  camera: PerspectiveCamera;
   hud: Hud;
   toggles: DebugToggles;
   applyToggles: () => void;
   gui: ReturnType<typeof createDebugGui>;
 }
 
-/** Edge-triggered keyboard shortcuts (weapons, blocks, shop, debug). Call once per frame. */
+/** Edge-triggered keyboard shortcuts (hotbar, items, shop, inventory, debug). Call once per frame. */
 export function createKeyHandler(ctx: KeyContext): () => void {
-  const { input, sim, local, build, player, ui, hud, toggles, gui, eco, pockets } = ctx;
-  /** Hold one thing at a time: a weapon, the build tool or the rod. */
-  const hold = (what: WeaponId | 'build' | 'rod') => {
-    if (what === 'build' && !eco.has('builder')) return;
-    if (what === 'rod' && !eco.has('rod')) return;
-    if (what !== 'build' && what !== 'rod' && !player.weapons.owned[what]) return;
-    build.active = what === 'build';
-    pockets.setRod(what === 'rod');
-    if (what !== 'build' && what !== 'rod') player.pendingSelect = what;
-  };
-  const slots: (WeaponId | 'build' | 'rod')[] = ['fists', 'pistol', 'rifle', 'grenade', 'build', 'rod'];
+  const { input, sim, local, build, player, ui, hud, toggles, gui, hands, pockets } = ctx;
   let guiVisible = false;
+  // debug panel on ` — a plain listener, so that it also closes once the panel has taken the mouse (no pointer lock)
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Backquote') return;
+    guiVisible = !guiVisible;
+    document.body.classList.toggle('debug', guiVisible);
+    if (guiVisible) {
+      gui.show();
+      document.exitPointerLock();
+    } else gui.hide();
+  });
 
   return () => {
     if (!input.locked) return;
     const shift = input.down('ShiftLeft') || input.down('ShiftRight');
-    TEAMS.forEach((t, i) => {
-      if (shift && input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...t.down));
-    });
+    // debug: Shift+1–4 = that team's gravity (Shift is also the sprint, so only while standing still)
+    if (shift && local.input.forward === 0 && local.input.right === 0) {
+      TEAMS.forEach((t, i) => { if (input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...t.down)); });
+    }
     // E: shop when standing at it, otherwise pick up the item in reach (holding E at an enemy crystal: per frame)
     if (input.take('KeyE')) {
-      if (ui.shopOpen || ctx.nearShop()) ui.toggleShop();
+      if (hands.invOpen) hands.toggleInventory();
+      else if (ui.shopOpen || ctx.nearShop()) ui.toggleShop();
       else pockets.interact();
     }
+    if (input.take('KeyI') && !ui.shopOpen) hands.toggleInventory();
     if (ui.shopOpen) {
-      for (let i = 1; i <= 9; i++) if (input.take(`Digit${i}`)) ui.choose(i);
       if (input.take('KeyQ') || input.take('Tab')) ui.switchTab();
+    } else if (hands.invOpen) {
+      // over a cell: the number puts it into that hotbar slot
+      for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.assign(i - 1);
     } else {
-      slots.forEach((w, i) => { if (input.take(`Digit${i + 1}`)) hold(w); });
+      for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.select(i - 1);
       if (input.take('KeyQ')) {
         if (build.active) build.cycleMaterial(1);
-        else { hold('fists'); player.toggleWeapon(); }
+        else hands.cycle(1);
       }
+      if (input.take('KeyG')) hands.throwHeld(ctx.camera);
     }
-    if (input.take('KeyB')) hold(build.active ? player.weapons.current : 'build');
     if (input.take('KeyF')) pockets.eat();
     if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
     if (input.take('KeyR')) player.pendingReload = true;
@@ -83,14 +89,6 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       sim.state.vel.set(0, 0, 0);
       sim.mover.place(sim.state);
       local.snap();
-    }
-    if (input.take('KeyG')) {
-      guiVisible = !guiVisible;
-      document.body.classList.toggle('debug', guiVisible);
-      if (guiVisible) {
-        gui.show();
-        document.exitPointerLock();
-      } else gui.hide();
     }
     local.drainEvents();
   };

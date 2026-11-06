@@ -2,20 +2,11 @@ import { Vector3 } from 'three';
 import { HU } from '../shared/constants';
 import { STAMINA } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
-import { isGun, WeaponId, WEAPONS, WeaponState } from '../shared/weapons';
+import { ITEMS } from '../shared/economy';
+import { isGun, WEAPONS, WeaponState } from '../shared/weapons';
 import { teamByDown } from '../shared/teams';
 import { icon, IconName } from './icons';
 import type { ViewTool } from './render/viewmodel';
-
-/** Hotbar: fixed keys, only what you own is shown. */
-export const SLOTS: { id: WeaponId | 'build' | 'rod'; name: string; icon: IconName }[] = [
-  { id: 'fists', name: 'Кулаки', icon: 'fist' },
-  { id: 'pistol', name: 'Пистолет', icon: 'pistol' },
-  { id: 'rifle', name: 'Автомат', icon: 'rifle' },
-  { id: 'grenade', name: 'Гранаты', icon: 'grenade' },
-  { id: 'build', name: 'Строительство', icon: 'shovel' },
-  { id: 'rod', name: 'Удочка', icon: 'rod' },
-];
 
 const $ = (id: string) => document.getElementById(id)!;
 const _down = new Vector3();
@@ -63,21 +54,25 @@ export class Hud {
     this.hpBar.style.background = hp > 50 ? 'var(--hp)' : hp > 25 ? '#ffc94a' : '#ff5a5a';
   }
 
-  private readonly hotbar = document.getElementById('hotbar')!;
   private readonly weaponIc = document.getElementById('weapon-ic')!;
-  private hotbarKey = '';
+  private iconKey = '';
 
-  /** Weapon / ammo panel and the hotbar. `owns` tells which tools (build, rod) are bought. */
-  setWeapon(ws: WeaponState, tool: ViewTool, owns: { build: boolean; rod: boolean }) {
+  /** Weapon / ammo panel: what is in the hands. `items`: pocket counts (for an item in hand). */
+  setWeapon(ws: WeaponState, tool: ViewTool, items: Record<string, number>) {
     const active = tool ?? ws.current;
-    const slots = SLOTS.map((s, i) => ({ ...s, key: i + 1 }))
-      .filter((s) => s.id === 'build' ? owns.build : s.id === 'rod' ? owns.rod : ws.owned[s.id]);
-    const key = active + slots.map((s) => s.id).join();
-    if (key !== this.hotbarKey) {
-      this.hotbarKey = key;
-      this.hotbar.innerHTML = slots
-        .map((s) => `<div class="slot${s.id === active ? ' on' : ''}" title="${s.name}"><kbd>${s.key}</kbd>${icon(s.icon)}</div>`).join('');
-      this.weaponIc.innerHTML = icon(SLOTS.find((s) => s.id === active)!.icon);
+    if (active !== this.iconKey) {
+      this.iconKey = active;
+      const ic: Record<string, IconName> = {
+        fists: 'fist', pistol: 'pistol', rifle: 'rifle', grenade: 'grenade', build: 'shovel', rod: 'rod', apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
+      };
+      this.weaponIc.innerHTML = icon(ic[active]);
+    }
+    if (tool && tool in ITEMS) {
+      const it = ITEMS[tool as keyof typeof ITEMS];
+      this.wName.textContent = it.name;
+      const hint = tool === 'medkit' ? 'ЛКМ — вылечиться' : it.heal ? 'ЛКМ — съесть' : 'ЛКМ — бросить';
+      this.ammo.innerHTML = `${items[tool] ?? 0}<small> ${hint}</small>`;
+      return;
     }
     if (tool === 'build') {
       this.wName.textContent = 'Строительство';

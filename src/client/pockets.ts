@@ -1,33 +1,30 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { MAX_HP } from '../shared/combat';
-import { APPLE_HEAL, EAT_COOLDOWN, Economy, ITEM_ORDER, ITEMS, Pickup, Pickups } from '../shared/economy';
+import { EAT_COOLDOWN, Economy, ItemId, ITEMS, Pickup, PickupKind, Pickups } from '../shared/economy';
 import { Fishing, FISHING } from '../shared/fishing';
 import type { PlayerSim } from '../shared/sim';
-import { isGun } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import type { Hud } from './hud';
-import { icon, IconName } from './icons';
 import type { PlayerCombat } from './playerCombat';
 
 const $ = (id: string) => document.getElementById(id)!;
-const ITEM_ICON: Record<string, IconName> = { bottle: 'bottle', apple: 'apple', fish: 'fish' };
-const PICK_NAME = { apple: 'яблоко', bottle: 'бутылку', cash: 'деньги' } as const;
+const PICK_NAME: Record<PickupKind, string> = { apple: 'яблоко', bottle: 'бутылку', cash: 'деньги', fish: 'рыбу', medkit: 'аптечку' };
 const _dir = new Vector3();
+const _side = new Vector3();
+const _fwd = new Vector3();
 
 /**
- * Everything the player carries besides weapons: picking up apples / bottles (E), eating (F), the fishing rod
- * (LMB: cast, strike) and the pockets panel with item and ammo counts.
+ * Everything the player carries besides weapons: picking up items (E), eating and healing, spilling the pockets on
+ * death, the fishing rod (LMB: cast, strike).
  */
 export class Pockets {
   /** The rod is in hand (slot 6). */
   rod = false;
   readonly fishing: Fishing;
-  private readonly el = $('pockets');
   private readonly bar = $('fish-bar');
   private readonly zone = this.bar.querySelector('.zone') as HTMLElement;
   private readonly mark = this.bar.querySelector('.mark') as HTMLElement;
   private eatT = 0;
-  private key = '';
   /** Item in reach (for the prompt and E). */
   near: Pickup | null = null;
 
@@ -46,9 +43,10 @@ export class Pockets {
       this.audio.coins();
       this.hud.toast(`+${it.amount} денег`, '#e2c27a', 0.9);
     } else {
-      this.eco.items[it.kind]++;
+      const n = Math.max(1, it.amount);
+      this.eco.items[it.kind] += n;
       this.audio.pickup();
-      this.hud.toast(`+1 ${ITEMS[it.kind].name.toLowerCase()}`, '#e8e2d6', 0.8);
+      this.hud.toast(`+${n} ${(n > 1 ? ITEMS[it.kind].plural : ITEMS[it.kind].name).toLowerCase()}`, '#e8e2d6', 0.8);
     }
     this.near = null;
     return true;
@@ -56,13 +54,39 @@ export class Pockets {
 
   /** F: eat an apple. */
   eat() {
-    if (this.eatT > 0) return;
     if (this.eco.items.apple <= 0) { this.audio.reject(); this.hud.toast('Нет яблок', '#ffb49e', 0.8); return; }
-    if (this.player.me.hp >= MAX_HP) { this.audio.reject(); this.hud.toast('Здоровье и так полное', '#ffb49e', 0.8); return; }
-    this.eco.eat();
-    this.player.heal(APPLE_HEAL);
-    this.audio.eat();
+    this.consume('apple');
+  }
+
+  /** Eat / apply one item that heals (apple, fish, medkit). False if it did nothing. */
+  consume(id: ItemId): boolean {
+    if (this.eatT > 0 || !ITEMS[id].heal || this.eco.items[id] <= 0) return false;
+    if (this.player.me.hp >= MAX_HP) { this.audio.reject(); this.hud.toast('Здоровье и так полное', '#ffb49e', 0.8); return false; }
+    this.eco.take(id);
+    this.player.heal(ITEMS[id].heal);
+    if (id === 'medkit') this.audio.patch();
+    else this.audio.eat();
     this.eatT = EAT_COOLDOWN;
+    return true;
+  }
+
+  /**
+   * Died at `pos`: the pockets spill out around the body (items and half of the cash). `lost`: fell into the void,
+   * everything is gone with you.
+   */
+  spill(pos: Vector3, up: Vector3, lost: boolean) {
+    const piles = this.eco.spill();
+    if (lost) return;
+    // a small ring around the body, so that the piles do not sit inside each other
+    _side.set(1, 0, 0);
+    if (Math.abs(_side.dot(up)) > 0.9) _side.set(0, 0, 1);
+    _side.addScaledVector(up, -_side.dot(up)).normalize();
+    _fwd.crossVectors(up, _side);
+    piles.forEach((p, i) => {
+      const a = (i / Math.max(1, piles.length)) * Math.PI * 2;
+      const at = pos.clone().addScaledVector(_side, Math.cos(a) * 0.9).addScaledVector(_fwd, Math.sin(a) * 0.9);
+      if (!this.pickups.drop(p.kind, at, up, p.amount)) this.pickups.drop(p.kind, pos, up, p.amount);
+    });
   }
 
   /** Take the rod / put it away. */
@@ -112,30 +136,16 @@ export class Pockets {
       this.mark.style.left = `${f.marker * 100}%`;
     }
 
-    this.renderPockets();
-
     let prompt = '';
-    if (this.near) prompt = `<b>E</b> подобрать ${PICK_NAME[this.near.kind]}`;
+    if (this.near) {
+      const n = this.near.kind !== 'cash' && this.near.amount > 1 ? ` ×${this.near.amount}` : '';
+      prompt = `<b>E</b> подобрать ${PICK_NAME[this.near.kind]}${n}`;
+    }
     if (this.rod) {
       if (f.phase === 'idle' && !this.near) prompt = f.aimWater(camera.position, camera.getWorldDirection(_dir)) ? '<b>ЛКМ</b> забросить' : '';
       else if (f.phase === 'wait' || f.phase === 'cast') prompt = 'Ждём поклёвку…';
       else if (biting) prompt = '<b>ЛКМ</b> подсечь, когда метка в зелёной зоне';
     }
     return prompt;
-  }
-
-  /** Items + spare ammo; only rows that matter (owned guns), counts dim at zero. */
-  private renderPockets() {
-    const eco = this.eco;
-    const ws = eco.weapons;
-    const guns = (['pistol', 'rifle'] as const).filter((w) => isGun(w) && ws.owned[w]);
-    const key = [...ITEM_ORDER.map((i) => eco.items[i]), ...guns.map((w) => ws.reserve[w] + ws.ammo[w]), this.eatT > 0].join();
-    if (key === this.key) return;
-    this.key = key;
-    const items = ITEM_ORDER.map((id) => `<span class="${eco.items[id] ? '' : 'zero'}" title="${ITEMS[id].plural}">${icon(ITEM_ICON[id])}${eco.items[id]}</span>`).join('');
-    const ammo = guns.map((w) => `<span title="Патроны: ${w === 'pistol' ? 'пистолет' : 'автомат'}">${icon(w === 'pistol' ? 'pistol' : 'rifle')}`
-      + `<i>${ws.ammo[w] + ws.reserve[w]}</i></span>`).join('');
-    const hint = eco.items.apple > 0 ? '<span class="hint"><kbd>F</kbd> съесть</span>' : '';
-    this.el.innerHTML = items + hint + (ammo ? `<span class="sep"></span>${icon('ammo', 'ammo-ic')}${ammo}` : '');
   }
 }

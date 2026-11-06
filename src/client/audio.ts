@@ -97,6 +97,19 @@ export class GameAudio {
   pickup() { this.tone('triangle',660,880,.05,.04);this.tone('triangle',880,990,.05,.03,.05); }
   eat() { this.noise(.06,.08,2600,900);this.noise(.06,.07,2200,800); }
   coins() { this.tone('square',1250,1250,.05,.02);this.tone('square',1660,1660,.09,.02,.06); }
+  /** Underarm throw: a short swish. */
+  toss() { this.noise(.14,.06,900,2600,0,'bandpass',1.2); }
+  /** A bottle breaking: a bright crash and a few glass tinkles after it. */
+  shatter(dist = 0) {
+    const near = 1 / (1 + dist / 8);
+    this.noise(.16, .2 * near, 7000, 2500, 0, 'highpass');
+    this.noise(.05, .12 * near, 2600, 900);
+    for (let i = 0; i < 4; i++) { const f = 3200 + Math.random() * 2600; this.tone('sine', f, f * .97, .07, .025 * near, .04 + i * .035 + Math.random() * .02); }
+  }
+  /** A soft thing landing on the ground. */
+  thud(dist = 0) { const near = 1 / (1 + dist / 6); this.noise(.07, .08 * near, 700, 150); }
+  /** Medkit: the case snaps open, a bandage tears. */
+  patch() { this.click(.07, 1800); this.noise(.22, .06, 2800, 1400, .08, 'bandpass', 1.5); }
   splash() { this.noise(.35,.12,1600,200); }
   cast() { this.noise(.18,.05,4200,1200);this.tone('sine',900,300,.18,.02); }
   bite() { this.tone('sine',520,420,.08,.06);this.tone('sine',520,420,.08,.06,.12); }

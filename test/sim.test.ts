@@ -5,7 +5,9 @@ import {
 } from '../src/shared/blocks';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
 import { GENERATORS, Match } from '../src/shared/match';
-import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, LADDER, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
+import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
+import { holdables, Hotbar } from '../src/shared/inventory';
+import { THROW, Throws } from '../src/shared/throwables';
 import { Fishing, FISHING } from '../src/shared/fishing';
 import { NPC, NpcManager } from '../src/shared/npcs';
 import { upOf } from '../src/shared/math';
@@ -566,7 +568,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   check('no bed = eliminated on death', m2.onDeath() === false && m2.result === 'lose');
 }
 
-// Economy: start broke, sell junk, the purchase ladder, ammo per gun.
+// Economy: start broke, sell junk, everything on the shelf from the start, ammo per gun, pockets spill on death.
 {
   const w = buildPhysicsWorld(R, map);
   const bs = new BlockSystem(R, w);
@@ -576,31 +578,96 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const item = (id: string) => SHOP.find((i) => i.id === id)!;
   const shelf = () => eco.offers().map((o) => `${o.item.id}:${o.state}`).join(' ');
   check('start with no money and no tools', eco.wallet.cash === 0 && !eco.has('rod') && ws.current === 'fists');
-  check('only the rod is open at first', eco.buy(item('pistol')) === 'locked' && eco.buy(item('rod')) === 'money'
-    && eco.offers().filter((o) => o.state !== 'locked').every((o) => o.item.id === 'rod' || o.item.id === 'heal'), shelf());
+  check('everything is on the shelf from the start', eco.offers().length === SHOP.length && eco.buy(item('rifle')) === 'money', shelf());
+  check('prices are 25 % lower (rounded)', item('rod').price === 5 && item('builder').price === 11 && item('pistol').price === 19
+    && item('rifle').price === 41 && item('stone').price === 12 && item('metal').price === 2);
   eco.items.bottle = 4; eco.items.apple = 1; eco.items.fish = 1;
   const value = eco.sellValue;
   check('selling pays per item, cheaply', eco.sellAll() === value && value === 4 * ITEMS.bottle.sell + ITEMS.apple.sell + ITEMS.fish.sell
     && eco.wallet.cash === value && eco.items.bottle === 0, `got ${value}`);
   eco.wallet.cash = 1000;
-  const order: string[] = [];
-  for (let guard = 0; guard < 10; guard++) {
-    const next = eco.offers().find((o) => o.state === 'ok' && o.item.step && !eco.has(o.item.step));
-    if (!next) break;
-    order.push(next.item.step!);
-    eco.buy(next.item);
-  }
-  check('purchase ladder: rod → build tool → pistol → rifle → grenades → blocks', order.join(',') === LADDER.join(','), order.join(','));
+  eco.buy(item('rifle'));
+  check('a rifle can be the first purchase', ws.owned.rifle && ws.ammo.rifle === WEAPONS.rifle.mag && !ws.owned.pistol);
+  for (const id of ['rod', 'builder', 'pistol', 'grenade']) eco.buy(item(id));
   check('build tool comes with some wood', bs.inventory.wood === BUILDER_WOOD);
+  const wood = item('wood') as Extract<typeof SHOP[number], { kind: 'blocks' }>;
+  const woodPacks = Math.ceil(Math.max(0, 75 - BUILDER_WOOD) / wood.count);
+  check('a bridge to the centre (~75 plates) costs under 25 money', item('builder').price + woodPacks * item('wood').price < 25,
+    `${item('builder').price} + ${woodPacks}×${item('wood').price}`);
   check('weapons from the shop come loaded, no spare ammo', ws.owned.pistol && ws.ammo.pistol === WEAPONS.pistol.mag && ws.reserve.pistol === 0
     && ws.owned.rifle && ws.ammo.grenade === 2);
-  check('bought tools leave the shelf', !eco.offers().some((o) => ['rod', 'builder', 'pistol', 'rifle'].includes(o.item.id)), shelf());
+  check('bought tools and guns leave the shelf', !eco.offers().some((o) => ['rod', 'builder', 'pistol', 'rifle'].includes(o.item.id)), shelf());
   eco.buy(item('ammo-pistol'));
   check('ammo is bought per gun: a magazine of pistol rounds', ws.reserve.pistol === WEAPONS.pistol.mag && ws.reserve.rifle === 0);
   eco.buy(item('grenade'));
   check('grenades are capped', eco.buy(item('grenade')) === 'full' && ws.ammo.grenade === WEAPONS.grenade.mag);
+  for (let k = 0; k < MAX_MEDKITS; k++) eco.buy(item('medkit'));
+  check('medkits go to the pockets, capped', eco.items.medkit === MAX_MEDKITS && eco.buy(item('medkit')) === 'full');
+  check('a medkit is not sold back', eco.sell('medkit') === 0 && eco.items.medkit === MAX_MEDKITS);
   eco.items.apple = 1;
   check('eating takes an apple', eco.eat() && eco.items.apple === 0 && !eco.eat() && APPLE_HEAL > 0);
+  eco.items.apple = 3; eco.items.bottle = 2; eco.wallet.cash = 11;
+  const piles = eco.spill();
+  const pile = (k: string) => piles.find((p) => p.kind === k)?.amount ?? 0;
+  check('death spills the items and half of the cash', pile('apple') === 3 && pile('bottle') === 2 && pile('medkit') === MAX_MEDKITS
+    && pile('cash') === 5 && eco.wallet.cash === 6 && eco.items.apple === 0 && eco.items.medkit === 0, JSON.stringify(piles));
+  check('guns and tools stay after death', ws.owned.rifle && eco.has('builder'));
+
+  // hotbar: new things fill free slots in order, keep their slot when they run out and come back
+  const bar = new Hotbar();
+  bar.sync(holdables(eco));
+  check('hotbar: guns, grenades, tools in order', bar.bar.slice(0, 5).join() === 'pistol,rifle,grenade,build,rod', bar.bar.join());
+  bar.swap({ where: 'bar', i: 0 }, { where: 'bar', i: 8 });
+  eco.items.apple = 2;
+  bar.sync(holdables(eco));
+  const appleAt = bar.slotOf('apple');
+  eco.items.apple = 0;
+  bar.sync(holdables(eco));
+  bar.sel = 0; // an empty slot in hand: a new item must not jump into it
+  eco.items.apple = 1;
+  bar.sync(holdables(eco));
+  check('hotbar: a stack that ran out comes back to its slot', bar.slotOf('apple') === appleAt && bar.bar[8] === 'pistol' && !bar.bar[0],
+    bar.bar.join());
+}
+
+// Thrown items: a bottle breaks on an NPC and dazes it for 2 s, an apple lands and can be picked up again.
+{
+  const w = buildPhysicsWorld(R, map);
+  const combat = new Combat(R, w, map);
+  combat.windMul = 0;
+  const pk = new Pickups(R, w, map);
+  const npcs = new NpcManager(R, w, map, combat, pk);
+  const throws = new Throws(combat, pk);
+  const bum = npcs.npcs.find((n) => n.island === 'red' && n.kind === 'bum')!;
+  const me: Target = { id: 0, team: 'red', center: bum.sim.state.pos.clone().add(new Vector3(3, 0, 0)), up: new Vector3(0, 1, 0), hp: MAX_HP,
+    alive: true, respawnIn: -1, vel: new Vector3(), quiet: true };
+  combat.targets.push(me);
+  const step = (sec: number) => {
+    for (let k = 0; k < 64 * sec; k++) { npcs.tick(TICK_DT); throws.tick(TICK_DT); combat.tick(TICK_DT); }
+  };
+  step(0.5);
+  me.center.copy(bum.sim.state.pos).add(new Vector3(3, 0, 0));
+  const eye = me.center.clone().add(new Vector3(0, 0.6, 0));
+  throws.throw('bottle', 0, eye, bum.sim.state.pos.clone().sub(eye).normalize(), new Vector3(), new Vector3(0, -1, 0));
+  for (let k = 0; k < 64 && !throws.events.some((e) => e.type === 'shatter'); k++) { throws.tick(TICK_DT); combat.tick(TICK_DT); }
+  const hit = throws.events.find((e) => e.type === 'shatter');
+  check('a thrown bottle breaks on the NPC and dazes it', !!hit && hit.type === 'shatter' && hit.target === bum.id && hit.stunned
+    && Math.abs((bum.target.stun ?? 0) - THROW.stun) < 0.1 && bum.target.hp === NPC.bum.hp - THROW.bottleDamage, JSON.stringify(hit));
+  step(0.3); // it was walking: slides to a stop
+  const at = bum.sim.state.pos.clone();
+  step(1.2);
+  check('a dazed NPC stands still', bum.sim.state.pos.distanceTo(at) < 0.15 && bum.status === 'оглушён', `moved ${bum.sim.state.pos.distanceTo(at).toFixed(2)}`);
+  step(0.6);
+  check('the daze wears off after 2 s and it goes for the thrower', !bum.target.stun && bum.foe === me);
+
+  throws.events.length = 0;
+  const before = pk.items.length;
+  const fwd = new Vector3(0, -0.4, -1).normalize();
+  throws.throw('apple', 0, eye, fwd, new Vector3(), new Vector3(0, -1, 0));
+  for (let k = 0; k < 64 * 3 && !throws.events.some((e) => e.type === 'land'); k++) throws.tick(TICK_DT);
+  const landed = pk.items.slice(before).find((i) => i.kind === 'apple');
+  check('a thrown apple lands on the street as a pickup', !!landed && landed.once && Math.abs(landed.pos.y - G) < 0.3,
+    landed ? `y=${(landed.pos.y - G).toFixed(2)}` : 'none');
 }
 
 // Pickups: apples under trees, bottles on the streets of every base island; taken items come back later.

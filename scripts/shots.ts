@@ -17,6 +17,9 @@ await page.waitForTimeout(2500);
 await page.screenshot({ path: `${out}/1-menu.png` });
 
 const g = (fn: string) => page.evaluate(fn);
+/** Take something into the hands by what it is (hotbar slots depend on what was bought first); null = fists. */
+const hold = (what: string | null) => g(`(() => { const H = __game.hands; ${what === null ? 'H.bare = true;'
+  : `H.bare = false; const i = H.bar.slotOf('${what}'); if (i >= 0) H.bar.sel = i;`} })()`);
 await g('__game.play()');
 await page.waitForTimeout(2500);
 await page.screenshot({ path: `${out}/2-hud.png` });
@@ -43,7 +46,7 @@ await g(`(() => {
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/3-bot.png` });
 
-// back home; give the ladder up to the build tool and some pockets
+// back home; buy the rod, the build tool and a pistol, fill the pockets
 const home = async (dx: number, dz: number, yaw: number, pitch = 0) => {
   await g(`(() => {
   const G = __game;
@@ -70,7 +73,7 @@ await g(`(() => {
   G.hud.killfeed('<span style="color:#3b6bff">Синие</span>' + G.icon('swords') + '<span style="color:#3bff6b">Зелёные</span>');
 })()`);
 // shopkeeper close-up, pistol in hand
-await page.keyboard.press('Digit2');
+await hold('pistol');
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/4-keeper.png` });
 // shop: opens on the sell tab when there is something to sell; then the buy tab
@@ -83,15 +86,15 @@ await page.screenshot({ path: `${out}/6-shop-buy.png` });
 await page.keyboard.press('KeyE');
 
 // fists, build tool
-await page.keyboard.press('Digit1');
+await hold(null);
 await page.waitForTimeout(700);
 await page.screenshot({ path: `${out}/7-fists.png` });
-await page.keyboard.press('Digit5');
+await hold('build');
 await page.waitForTimeout(700);
 await page.screenshot({ path: `${out}/8-build.png` });
 
 // park: stand at the pond with the rod, cast, force a bite
-await page.keyboard.press('Digit6');
+await hold('rod');
 await g(`(() => {
   const G = __game, p = G.map.ponds.find((q) => q.team === 'red');
   G.sim.state.pos.set(p.pos[0] - p.half[0] - 0.8, p.pos[1] + 0.25 + 0.1 + 0.95, p.pos[2]);
@@ -122,7 +125,7 @@ await g(`(() => {
 })()`);
 await page.waitForTimeout(150);
 await g(`__game.look(Math.PI / 4, -0.55)`);
-await page.keyboard.press('Digit1');
+await hold(null);
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/11-apple.png` });
 
@@ -162,14 +165,14 @@ await page.screenshot({ path: `${out}/15-cash.png` });
 // guns: the rifle, a reload in progress, then building materials with damage (cracks)
 await home(2.4, 0.5, -Math.PI / 2, 0.02);
 await g(`(() => { const G = __game, ws = G.weapons; ws.owned.rifle = true; ws.ammo.rifle = 17; ws.reserve.rifle = 60; ws.ammo.pistol = 15; })()`);
-await page.keyboard.press('Digit3');
+await hold('rifle');
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/16-rifle.png` });
 await page.keyboard.press('KeyR');
 await page.waitForTimeout(650);
 await page.screenshot({ path: `${out}/17-reload.png` });
 await page.waitForTimeout(1800);
-await page.keyboard.press('Digit2');
+await hold('pistol');
 await g(`__game.weapons.ammo.pistol = 0`);
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/18-pistol-empty.png` });
@@ -189,7 +192,7 @@ await g(`(() => {
   });
   G.blocks.version++;
 })()`);
-await page.keyboard.press('Digit1');
+await hold(null);
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/19-materials.png` });
 
@@ -218,9 +221,12 @@ await g(`(() => {
   window.__tower = towers.find((b) => Math.hypot(b.pos[0] - p.x, b.pos[2] - p.z) > 25) ?? towers[0];
 })()`);
 await page.waitForTimeout(200);
-await g(`(() => { const G = __game, t = __tower, p = G.sim.state.pos; G.look(Math.atan2(-(t.pos[0] - p.x), -(t.pos[2] - p.z)), 0.3); })()`);
-await page.waitForTimeout(700);
-await page.screenshot({ path: `${out}/21-towers.png` });
+// towers stand on some islands only
+if (await g('!!window.__tower')) {
+  await g(`(() => { const G = __game, t = __tower, p = G.sim.state.pos; G.look(Math.atan2(-(t.pos[0] - p.x), -(t.pos[2] - p.z)), 0.3); })()`);
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: `${out}/21-towers.png` });
+}
 await browser.close();
 if (errors.length) console.log('page errors:\n' + errors.slice(0, 10).join('\n'));
 console.log('saved to', out);

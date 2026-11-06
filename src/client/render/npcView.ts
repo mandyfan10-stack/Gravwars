@@ -106,16 +106,17 @@ export class NpcView {
       if (v.bottle) v.bottle.visible = n.state === 'drink';
       m.update(dt, { speed: Math.sqrt(Math.max(0, s.vel.lengthSq() - vUp * vUp)), grounded: s.onGround, vUp, fired });
 
-      // suspicion marker over the head
+      // suspicion marker over the head; dazed (bottle): a spinning ring of dots instead
       const a = this.npcs.awareness(n, this.playerId);
+      const stun = (n.target.stun ?? 0) > 0;
       const dist = _d.copy(_p).sub(camera.position).length();
       _d.copy(_p).addScaledVector(_up, MARK_HEIGHT).project(camera);
-      if (a < 0.08 || dist > MARK_RANGE || _d.z > 1) { v.mark.style.display = 'none'; continue; }
+      if ((a < 0.08 && !stun) || dist > MARK_RANGE || _d.z > 1) { v.mark.style.display = 'none'; continue; }
       const hostile = n.foe?.id === this.playerId;
       v.mark.style.display = '';
-      v.mark.textContent = hostile ? '!' : '?';
-      v.mark.className = `npc-mark${hostile ? ' hostile' : ''}`;
-      v.mark.style.opacity = hostile ? '1' : String(0.35 + a * 0.65);
+      v.mark.textContent = stun ? '' : hostile ? '!' : '?';
+      v.mark.className = `npc-mark${stun ? ' stun' : hostile ? ' hostile' : ''}`;
+      v.mark.style.opacity = hostile || stun ? '1' : String(0.35 + a * 0.65);
       v.mark.style.setProperty('--fill', `${Math.round(a * 100)}%`);
       v.mark.style.transform = `translate(${((_d.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-_d.y * 0.5 + 0.5) * h).toFixed(1)}px)`;
     }

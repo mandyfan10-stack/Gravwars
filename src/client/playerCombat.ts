@@ -49,6 +49,8 @@ export class PlayerCombat {
   onRecoil: (pitch: number, yaw: number) => void = () => {};
   /** Asked when the local player dies: false = no respawn (bed lost). */
   canRespawn: () => boolean = () => true;
+  /** The local player was killed (before the respawn): where the body fell and its up. */
+  onDeath: (pos: Vector3, up: Vector3) => void = () => {};
   /** The local player killed someone. */
   onKill: (target: Target) => void = () => {};
   /** Any kill (players, bots, NPCs): killer is undefined for falls and unknown sources. */
@@ -197,6 +199,7 @@ export class PlayerCombat {
         hud.hurt(e.damage);
         hud.setHp(me.hp);
         if (e.killed) {
+          this.onDeath(this.sim.state.pos.clone(), me.up.clone());
           hud.killfeed(e.owner === 0 ? `${SELF}${teamSpan(me.team, 'Ты')} подорвался` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')}${KILL}${teamSpan(me.team, 'Ты')}`);
           if (this.canRespawn()) {
             this.sim.respawn('killed');

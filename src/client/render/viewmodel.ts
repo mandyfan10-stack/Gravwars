@@ -4,9 +4,11 @@ import {
   TorusGeometry, Vector2, Vector3, WebGLRenderer,
 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { ITEM_ORDER, ItemId } from '../../shared/economy';
 import type { WeaponId } from '../../shared/weapons';
 import type { GameAssets } from './assets';
 import { GunModel, pistolModel, rifleModel } from './guns';
+import { itemMeshes } from './pickupView';
 
 /**
  * Gun placement in the weapon group (guns are real size, barrel along -Z, origin at the grip): the rifle shouldered
@@ -21,8 +23,8 @@ const PISTOL_OFFSET = new Vector3(-0.13, 0.1, 0.02);
 /** How far the slide / bolt travels back, m. */
 const SLIDE_TRAVEL = { pistol: 0.035, rifle: 0.075 };
 
-/** What the hands hold besides weapons. */
-export type ViewTool = 'build' | 'rod' | null;
+/** What the hands hold besides weapons: tools and pocket items. */
+export type ViewTool = 'build' | 'rod' | ItemId | null;
 
 /** Muzzle flash sprite: a hot core with four soft spikes, fading to transparent. */
 function flashTexture() {
@@ -74,6 +76,10 @@ export class ViewModel {
   private shovel = new Group();
   private tool: ViewTool = null;
   private swing = 0;
+  /** A pocket item in the right hand (one mesh group per kind), and the throw / use swing 1 → 0. */
+  private held = new Group();
+  private heldItems = {} as Record<ItemId, Group>;
+  private tossT = 0;
   private flash: Group;
   /** Barrel tip in the rifle group's space. */
   private muzzle = new Vector3();
@@ -236,7 +242,21 @@ export class ViewModel {
     this.rodTip.set(0, 0, -0.04 - rodLen).applyMatrix4(rodGroup.matrix);
     this.rod.add(rodGroup);
 
-    this.root.add(this.rifle, this.pistol, this.fists, this.rod, this.grenade, this.shovel);
+    // pocket items: on the open right hand, low in the corner
+    const palm = hand(0.0, -0.05, 0.03, 0.5, 0, 0.15);
+    this.held.add(palm);
+    for (const id of ITEM_ORDER) {
+      const g = itemMeshes(id);
+      // the meshes lie on the ground along X: a bottle stands up in the fist, the rest sit on the palm
+      if (id === 'bottle') g.rotation.set(0.25, 0, -Math.PI / 2 + 0.15);
+      else g.rotation.set(0.35, id === 'fish' ? 1.1 : 0.5, 0);
+      g.position.set(id === 'bottle' ? 0.03 : 0, id === 'bottle' ? -0.06 : -0.02, 0);
+      g.scale.setScalar(0.62);
+      this.heldItems[id] = g;
+      this.held.add(g);
+    }
+
+    this.root.add(this.rifle, this.pistol, this.fists, this.rod, this.grenade, this.shovel, this.held);
     this.scene.add(this.root, this.sun, this.sun.target, this.hemi);
     this.setWeapon('fists');
   }
@@ -260,6 +280,11 @@ export class ViewModel {
   /** Rod cast swing. */
   cast() {
     this.castT = 1;
+  }
+
+  /** Threw / used the held item: the hand flicks forward. */
+  toss() {
+    this.tossT = 1;
   }
 
   /** Shovel swing when a piece is placed. */
@@ -346,6 +371,15 @@ export class ViewModel {
     this.grenade.visible = weapon && this.current === 'grenade';
     this.shovel.visible = this.tool === 'build';
     this.rod.visible = this.tool === 'rod';
+    const item = this.tool && this.tool in this.heldItems ? this.tool as ItemId : null;
+    this.held.visible = !!item;
+    for (const id of ITEM_ORDER) this.heldItems[id].visible = id === item;
+    // throw: wind up a little, flick forward; the item is gone from the hand at the peak and comes back after
+    this.tossT = Math.max(0, this.tossT - dt * 3.2);
+    const fling = Math.sin(this.tossT * Math.PI);
+    this.held.position.set(0.0, 0.03 + fling * 0.08, -0.08 - fling * 0.22);
+    this.held.rotation.set(-fling * 0.7, 0, 0);
+    if (item) this.heldItems[item].visible = this.tossT < 0.35 || this.tossT > 0.75;
     // punch: the active fist jabs forward and a bit inward, then comes back
     this.punchT = Math.max(0, this.punchT - dt * 4.5);
     const jab = Math.sin(Math.min(1, (1 - this.punchT) * 1.6) * Math.PI) * (this.punchT > 0 ? 1 : 0);

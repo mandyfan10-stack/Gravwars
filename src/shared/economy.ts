@@ -7,25 +7,32 @@ import { giveWeapon, isGun, WeaponId, WeaponState, WEAPONS } from './weapons';
 
 // --- items -------------------------------------------------------------------------------------
 
-export type ItemId = 'bottle' | 'apple' | 'fish';
-export const ITEM_ORDER: ItemId[] = ['bottle', 'apple', 'fish'];
-/** Sell prices are deliberately low: a bottle is pocket change, a fish is worth the wait. */
-export const ITEMS: Record<ItemId, { name: string; plural: string; sell: number }> = {
-  bottle: { name: 'Бутылка', plural: 'Бутылки', sell: 1 },
-  apple: { name: 'Яблоко', plural: 'Яблоки', sell: 2 },
-  fish: { name: 'Рыба', plural: 'Рыба', sell: 5 },
+export type ItemId = 'bottle' | 'apple' | 'fish' | 'medkit';
+export const ITEM_ORDER: ItemId[] = ['bottle', 'apple', 'fish', 'medkit'];
+/**
+ * Sell prices are deliberately low: a bottle is pocket change, a fish is worth the wait (0 = the shop does not
+ * take it back). `heal`: HP restored when used from the hand (0 = not food; a bottle is thrown instead).
+ */
+export const ITEMS: Record<ItemId, { name: string; plural: string; sell: number; heal: number }> = {
+  bottle: { name: 'Бутылка', plural: 'Бутылки', sell: 1, heal: 0 },
+  apple: { name: 'Яблоко', plural: 'Яблоки', sell: 2, heal: 25 },
+  fish: { name: 'Рыба', plural: 'Рыба', sell: 5, heal: 15 },
+  medkit: { name: 'Аптечка', plural: 'Аптечки', sell: 0, heal: 100 },
 };
-export const APPLE_HEAL = 25;
+export const SELLABLE = ITEM_ORDER.filter((i) => ITEMS[i].sell > 0);
+export const APPLE_HEAL = ITEMS.apple.heal;
+/** Medkits carried at most. */
+export const MAX_MEDKITS = 3;
 /** Seconds between two apples eaten. */
 export const EAT_COOLDOWN = 0.8;
 
 // --- pickups on the map ------------------------------------------------------------------------
 
-export type PickupKind = 'apple' | 'bottle' | 'cash';
+export type PickupKind = ItemId | 'cash';
 export interface Pickup {
   id: number;
   kind: PickupKind;
-  /** Money in a dropped wad (cash only). */
+  /** Money in a dropped wad; items: how many in the pile (0 = one). */
   amount: number;
   /** Dropped by someone: gone for good once taken (or after `life` s). */
   once: boolean;
@@ -39,8 +46,8 @@ export interface Pickup {
 }
 
 export const PICKUPS = {
-  /** Reach from the player's centre to an item for E. */
-  reach: 2.2,
+  /** Reach from the player's centre to an item for E (items are drawn ×2.5, so they are easy to spot). */
+  reach: 2.6,
   appleRespawn: 45,
   /** Street litter is rare; most bottles are dropped by bums (npcs.ts). */
   bottleRespawn: 90,
@@ -175,15 +182,11 @@ export class Pickups {
 export type Currency = 'cash' | 'crystal';
 export const CURRENCY_LABEL: Record<Currency, string> = { cash: 'деньги', crystal: 'кристаллы' };
 
-/** Purchase ladder: each step opens after the previous one is bought. */
-export type Step = 'rod' | 'builder' | 'pistol' | 'rifle' | 'grenade' | 'blocks';
-export const LADDER: Step[] = ['rod', 'builder', 'pistol', 'rifle', 'grenade', 'blocks'];
-export const STEP_LABEL: Record<Step, string> = {
-  rod: 'Удочка', builder: 'Инструмент строителя', pistol: 'Пистолет', rifle: 'Автомат', grenade: 'Гранаты', blocks: 'Камень и металл',
-};
+/** One-off tools: bought once, kept for the match. */
+export type Step = 'rod' | 'builder';
 
-/** Wood that comes with the build tool, so that it is usable right away. */
-export const BUILDER_WOOD = 12;
+/** Wood that comes with the build tool, so that it is usable right away (a bridge to the centre is ~75 plates). */
+export const BUILDER_WOOD = 32;
 
 export type ShopItem = {
   id: string;
@@ -192,42 +195,50 @@ export type ShopItem = {
   note?: string;
   price: number;
   currency: Currency;
-  /** Ladder step this purchase completes (first purchase only). */
+  /** Tool this purchase gives (one-off). */
   step?: Step;
-  /** Ladder step that must be done before this item shows up. */
-  needs?: Step;
 } & (
   | { kind: 'tool' }
   | { kind: 'weapon'; weapon: WeaponId; count: number }
   | { kind: 'ammo'; weapon: WeaponId; count: number }
   | { kind: 'blocks'; material: BlockMaterial; count: number }
-  | { kind: 'heal' }
+  | { kind: 'item'; item: ItemId; count: number }
 );
 
+/** Shop group (the columns of the shop window). */
+export type ShopGroup = 'tools' | 'weapons' | 'blocks' | 'supplies';
+export const SHOP_GROUPS: { id: ShopGroup; label: string }[] = [
+  { id: 'tools', label: 'Инструменты' }, { id: 'weapons', label: 'Оружие' }, { id: 'blocks', label: 'Блоки' }, { id: 'supplies', label: 'Припасы' },
+];
+export function shopGroup(item: ShopItem): ShopGroup {
+  return item.kind === 'tool' ? 'tools' : item.kind === 'blocks' ? 'blocks' : item.kind === 'weapon' ? 'weapons' : 'supplies';
+}
+
+/** Everything is on the shelf from the start; prices are 25 % below the first version (rounded). */
 export const SHOP: ShopItem[] = [
-  { id: 'rod', label: 'Удочка', note: 'ловить рыбу в пруду парка', price: 6, currency: 'cash', step: 'rod', kind: 'tool' },
-  { id: 'builder', label: 'Инструмент строителя', note: `+${BUILDER_WOOD} дерева`, price: 15, currency: 'cash', step: 'builder', needs: 'rod', kind: 'tool' },
-  { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 25, currency: 'cash', step: 'pistol', needs: 'builder', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
-  { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 55, currency: 'cash', step: 'rifle', needs: 'pistol', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
-  { id: 'grenade', label: 'Гранаты ×2', price: 18, currency: 'cash', step: 'grenade', needs: 'rifle', kind: 'weapon', weapon: 'grenade', count: 2 },
-  { id: 'stone', label: 'Камень ×12', price: 16, currency: 'cash', step: 'blocks', needs: 'grenade', kind: 'blocks', material: 'stone', count: 12 },
-  { id: 'metal', label: 'Металл ×6', price: 3, currency: 'crystal', needs: 'blocks', kind: 'blocks', material: 'metal', count: 6 },
-  { id: 'ammo-pistol', label: 'Патроны: пистолет ×15', price: 4, currency: 'cash', needs: 'pistol', kind: 'ammo', weapon: 'pistol', count: 15 },
-  { id: 'ammo-rifle', label: 'Патроны: автомат ×30', price: 8, currency: 'cash', needs: 'rifle', kind: 'ammo', weapon: 'rifle', count: 30 },
-  { id: 'wood', label: 'Дерево ×16', price: 6, currency: 'cash', needs: 'builder', kind: 'blocks', material: 'wood', count: 16 },
-  { id: 'heal', label: 'Аптечка', price: 10, currency: 'cash', kind: 'heal' },
+  { id: 'rod', label: 'Удочка', note: 'ловить рыбу в прудах парка', price: 5, currency: 'cash', step: 'rod', kind: 'tool' },
+  { id: 'builder', label: 'Инструмент строителя', note: `+${BUILDER_WOOD} дерева`, price: 11, currency: 'cash', step: 'builder', kind: 'tool' },
+  { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 19, currency: 'cash', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
+  { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 41, currency: 'cash', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
+  { id: 'grenade', label: 'Гранаты ×2', price: 14, currency: 'cash', kind: 'weapon', weapon: 'grenade', count: 2 },
+  { id: 'wood', label: 'Дерево ×32', note: 'мост: 1 за плиту', price: 5, currency: 'cash', kind: 'blocks', material: 'wood', count: 32 },
+  { id: 'stone', label: 'Камень ×12', price: 12, currency: 'cash', kind: 'blocks', material: 'stone', count: 12 },
+  { id: 'metal', label: 'Металл ×6', price: 2, currency: 'crystal', kind: 'blocks', material: 'metal', count: 6 },
+  { id: 'ammo-pistol', label: 'Патроны: пистолет ×15', price: 3, currency: 'cash', kind: 'ammo', weapon: 'pistol', count: 15 },
+  { id: 'ammo-rifle', label: 'Патроны: автомат ×30', price: 6, currency: 'cash', kind: 'ammo', weapon: 'rifle', count: 30 },
+  { id: 'medkit', label: 'Аптечка', note: 'в руку, ЛКМ — полное здоровье', price: 8, currency: 'cash', kind: 'item', item: 'medkit', count: 1 },
 ];
 
-export type BuyResult = 'ok' | 'money' | 'locked' | 'full';
-/** What the shop shows: buyable items (with their key), plus the next locked ladder step as a teaser. */
-export interface ShopOffer { item: ShopItem; state: 'ok' | 'money' | 'locked' }
+export type BuyResult = 'ok' | 'money' | 'full';
+/** What the shop shows: every item still for sale and whether it is affordable. */
+export interface ShopOffer { item: ShopItem; state: 'ok' | 'money' }
 
 /**
- * One player's money and pockets: wallet, items, ladder progress. Purchases go straight into the weapon state
+ * One player's money and pockets: wallet, items, bought tools. Purchases go straight into the weapon state
  * and the block inventory.
  */
 export class Economy {
-  readonly items: Record<ItemId, number> = { bottle: 0, apple: 0, fish: 0 };
+  readonly items: Record<ItemId, number> = { bottle: 0, apple: 0, fish: 0, medkit: 0 };
   readonly done = new Set<Step>();
 
   constructor(readonly wallet: Record<Currency, number>, readonly blocks: BlockSystem, readonly weapons: WeaponState) {}
@@ -236,45 +247,38 @@ export class Economy {
     return this.done.has(step);
   }
 
-  /** Is the item for sale right now (its ladder requirement met; one-off steps not bought yet)? */
-  unlocked(item: ShopItem) {
-    return !item.needs || this.done.has(item.needs);
+  /** Already owned for good: one-off tools and guns leave the shelf once bought. */
+  private sold(item: ShopItem) {
+    if (item.step) return this.done.has(item.step);
+    return item.kind === 'weapon' && item.weapon !== 'grenade' && this.weapons.owned[item.weapon];
   }
 
-  /** Items that are on the shelf now, in shop order; one-off tools already bought are gone. */
+  /** Items on the shelf now, in shop order. */
   offers(): ShopOffer[] {
-    const out: ShopOffer[] = [];
-    let teaser = false;
-    for (const item of SHOP) {
-      const oneOff = item.kind === 'tool' || (item.kind === 'weapon' && item.weapon !== 'grenade');
-      if (oneOff && item.step && this.done.has(item.step)) continue;
-      if (!this.unlocked(item)) {
-        // show only the next ladder step as a locked teaser
-        if (!teaser && item.step) { out.push({ item, state: 'locked' }); teaser = true; }
-        continue;
-      }
-      out.push({ item, state: this.wallet[item.currency] >= item.price ? 'ok' : 'money' });
-    }
-    return out;
+    return SHOP.filter((item) => !this.sold(item))
+      .map((item) => ({ item, state: this.wallet[item.currency] >= item.price ? 'ok' as const : 'money' as const }));
   }
 
-  /** Buy an item. `heal` is applied by the caller (it only checks for money here). */
+  /** Buy an item. */
   buy(item: ShopItem): BuyResult {
-    if (!this.unlocked(item)) return 'locked';
+    if (this.sold(item)) return 'full';
     if (this.wallet[item.currency] < item.price) return 'money';
     const ws = this.weapons;
     if (item.kind === 'weapon' && item.weapon === 'grenade' && ws.ammo.grenade + item.count > WEAPONS.grenade.mag) return 'full';
+    if (item.kind === 'item' && item.item === 'medkit' && this.items.medkit + item.count > MAX_MEDKITS) return 'full';
     this.wallet[item.currency] -= item.price;
     if (item.step) this.done.add(item.step);
     if (item.kind === 'blocks') this.blocks.inventory[item.material] += item.count;
     else if (item.kind === 'weapon') giveWeapon(ws, item.weapon, item.count);
     else if (item.kind === 'ammo' && isGun(item.weapon)) ws.reserve[item.weapon] += item.count;
+    else if (item.kind === 'item') this.items[item.item] += item.count;
     else if (item.kind === 'tool' && item.id === 'builder') this.blocks.inventory.wood += BUILDER_WOOD;
     return 'ok';
   }
 
   /** Sell every item of a kind; returns the money made. */
   sell(id: ItemId): number {
+    if (!ITEMS[id].sell) return 0;
     const n = this.items[id];
     const cash = n * ITEMS[id].sell;
     this.items[id] = 0;
@@ -283,17 +287,40 @@ export class Economy {
   }
 
   sellAll(): number {
-    return ITEM_ORDER.reduce((sum, id) => sum + this.sell(id), 0);
+    return SELLABLE.reduce((sum, id) => sum + this.sell(id), 0);
   }
 
   get sellValue() {
-    return ITEM_ORDER.reduce((sum, id) => sum + this.items[id] * ITEMS[id].sell, 0);
+    return SELLABLE.reduce((sum, id) => sum + this.items[id] * ITEMS[id].sell, 0);
+  }
+
+  /** Use up one item (eaten, thrown, applied). False if there is none. */
+  take(id: ItemId): boolean {
+    if (this.items[id] <= 0) return false;
+    this.items[id]--;
+    return true;
   }
 
   /** Eat an apple. Returns false if there is none. */
   eat(): boolean {
-    if (this.items.apple <= 0) return false;
-    this.items.apple--;
-    return true;
+    return this.take('apple');
+  }
+
+  /**
+   * Death: everything in the pockets falls out — the items and half of the cash (the killer can pick it up).
+   * Tools, guns, ammo and blocks are kept. Returns the piles to put on the ground.
+   */
+  spill(): { kind: PickupKind; amount: number }[] {
+    const out: { kind: PickupKind; amount: number }[] = [];
+    for (const id of ITEM_ORDER) {
+      if (this.items[id] > 0) out.push({ kind: id, amount: this.items[id] });
+      this.items[id] = 0;
+    }
+    const cash = Math.floor(this.wallet.cash / 2);
+    if (cash > 0) {
+      this.wallet.cash -= cash;
+      out.push({ kind: 'cash', amount: cash });
+    }
+    return out;
   }
 }

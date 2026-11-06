@@ -4,7 +4,7 @@ import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
 import '@fontsource/inter/800.css';
 import './style.css';
-import { Quaternion, Vector3 } from 'three';
+import { Color, Quaternion, Vector3 } from 'three';
 import { BlockSystem } from '../shared/blocks';
 import { applyDifficulty, BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
@@ -18,10 +18,13 @@ import { moveBasis, viewQuat } from '../shared/movement';
 import { buildPhysicsWorld, initRapier } from '../shared/physics';
 import { PlayerSim } from '../shared/sim';
 import { teamByDown } from '../shared/teams';
+import { Throws } from '../shared/throwables';
 import type { WeaponId } from '../shared/weapons';
 import { GameAudio } from './audio';
 import { BlockController } from './blockController';
+import { Cursor } from './cursor';
 import { createDebugGui, DebugToggles } from './debugGui';
+import { Hands } from './hands';
 import { Hud, teamHex } from './hud';
 import { Input } from './input';
 import { createKeyHandler } from './keybinds';
@@ -40,7 +43,7 @@ import { loadAssets } from './render/assets';
 import { BotView } from './render/botView';
 import { KeeperView } from './render/keeperView';
 import { NpcView } from './render/npcView';
-import { FishingView, PickupView } from './render/pickupView';
+import { FishingView, PickupView, ThrownView } from './render/pickupView';
 import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
 import { ViewModel } from './render/viewmodel';
@@ -71,6 +74,7 @@ async function main() {
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
   const pickups = new Pickups(R, world, map);
   const npcs = new NpcManager(R, world, map, combat, pickups);
+  const throws = new Throws(combat, pickups);
   blocks.characters.push(...npcs.colliders);
   // the build tool and its blocks come from the shop
   blocks.inventory.wood = 0;
@@ -99,14 +103,19 @@ async function main() {
   const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
   build.onPlace = () => viewModel.dig();
   const eco = new Economy(match.wallet, blocks, player.weapons);
-  const ui = new MatchUi(match, eco, hud, audio, () => player.heal());
+  const cursor = new Cursor(input);
+  const ui = new MatchUi(match, eco, hud, audio, cursor);
   const pockets = new Pockets(eco, pickups, sim, player, hud, audio, map.ponds);
+  const hands = new Hands(eco, player, build, pockets, throws, sim, audio, hud, viewModel, cursor);
   const pickupView = new PickupView(scene, pickups);
+  const thrownView = new ThrownView(scene, throws);
   const fishingView = new FishingView(scene, pockets.fishing);
   const keepers = new KeeperView(scene, map, assets);
   const generators = new GeneratorView(scene, match);
   const guide = new Guide(match, bots, sim);
   player.canRespawn = () => match.onDeath();
+  // killed: the pockets spill out where the body fell
+  player.onDeath = (pos, up) => pockets.spill(pos, up, false);
   player.onRecoil = (pitch, yaw) => {
     input.pitch = Math.max(-1.55, Math.min(1.55, input.pitch + pitch));
     input.yaw -= yaw;
@@ -149,7 +158,9 @@ async function main() {
     player.me.quiet = local.input.crouch;
     player.me.crouched = local.input.crouch;
     if (!match.result) { bots.tick(TICK_DT); npcs.tick(TICK_DT); }
-    player.tick(!build.active && !pockets.rod && !ui.shopOpen && input.locked && input.down('Mouse0'));
+    throws.tick(TICK_DT);
+    // LMB fires only with a weapon in hand and no window open
+    player.tick(!hands.tool && !cursor.active && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
   };
   local.onEvent = (e) => {
@@ -164,6 +175,7 @@ async function main() {
     else if (e.type === 'respawn' && e.reason === 'void') {
       stats.deaths++;
       hud.toast('Упал в пустоту', '#ff6b6b');
+      pockets.spill(sim.state.pos, upOf(sim.state.frame), true); // the void keeps what you carried
       if (match.onDeath()) player.reset();
       else player.me.alive = false;
     } else if (e.type === 'respawn' && e.reason === 'killed') hud.toast('Ты погиб', '#ff6b6b');
@@ -171,12 +183,12 @@ async function main() {
 
   window.addEventListener('resize', () => gfx.resize());
   const handleKeys = createKeyHandler({
-    input, sim, local, build, player, ui, eco, pockets, nearShop: () => match.nearShop(sim.state.pos), hud, toggles, applyToggles, gui,
+    input, sim, local, build, player, ui, hands, pockets, nearShop: () => match.nearShop(sim.state.pos), camera, hud, toggles, applyToggles, gui,
   });
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, ready: true,
+    sim, local, input, camera, renderer, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -236,6 +248,10 @@ async function main() {
     }
     audio.ambience(ambient, dt);
     local.applyCamera(camera);
+    // windows (shop, inventory) take the mouse: the click goes to them, not to the hands
+    const click = cursor.update();
+    hands.update(dt, camera, input.locked && !cursor.active && input.down('Mouse0'), click);
+    if (cursor.active) build.active = false;
     build.update(dt, camera);
     gfx.updateLighting(local.renderFrame);
 
@@ -261,9 +277,18 @@ async function main() {
       }
     }
     // rod: LMB casts / strikes
-    if (pockets.rod && input.locked && !ui.shopOpen && input.take('Mouse0')) pockets.useRod(camera);
+    if (pockets.rod && input.locked && !cursor.active && input.take('Mouse0')) pockets.useRod(camera);
     const pocketPrompt = pockets.update(dt, camera, () => viewModel.cast());
-    ui.update(match.nearShop(sim.state.pos), reachable, pocketPrompt);
+    ui.update(match.nearShop(sim.state.pos), reachable, pocketPrompt, click);
+    // thrown items: a bottle breaks (and dazes an NPC), the rest land
+    for (const e of throws.events.splice(0)) {
+      if (e.type === 'shatter') {
+        audio.shatter(e.pos.distanceTo(sim.state.pos));
+        fx.burst(e.pos, null, 16, 3.2, new Color(0.45, 0.9, 0.5), 0.45);
+        if (e.stunned) hud.hitmarker(false, false);
+      } else if (e.type === 'land') audio.thud(e.pos.distanceTo(sim.state.pos));
+    }
+    thrownView.update(dt);
     generators.update(time);
     pickupView.update(time, pockets.near);
     keepers.update(dt, time);
@@ -289,7 +314,6 @@ async function main() {
     });
     lastYaw = input.yaw;
     lastPitch = input.pitch;
-    viewModel.setTool(build.active ? 'build' : pockets.rod ? 'rod' : null);
     viewModel.bite = pockets.fishing.phase === 'bite' ? 1 : 0;
     viewModel.render(renderer);
 
@@ -297,11 +321,11 @@ async function main() {
     const w = combat.wind.felt(combat.time, pUp.clone().negate());
     moveBasis(sim.state.frame, input.yaw, _wf, _wr);
     hud.setWind(Math.atan2(w.dot(_wr), w.dot(_wf)) - Math.PI / 2, w.length(), 0);
-    hud.setWeapon(player.weapons, build.active ? 'build' : pockets.rod ? 'rod' : null, { build: eco.has('builder'), rod: eco.has('rod') });
+    hud.setWeapon(player.weapons, hands.tool, eco.items);
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
     const gDown = sim.gravityDown();
     gizmo.render(renderer, viewQ, Math.abs(gDown.z) > 0.9 ? '' : teamByDown(gDown).id);
-    hud.setSpread(build.active || pockets.rod ? null : player.nextSpread, camera.fov);
+    hud.setSpread(hands.tool ? null : player.nextSpread, camera.fov);
     hud.setGuard(player.me.guard && player.me.alive ? player.me.guard.t : null);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
     stats.trackCash(match.wallet.cash);

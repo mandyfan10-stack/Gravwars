@@ -409,7 +409,15 @@ export class NpcManager {
         continue;
       }
       n.prevPos.copy(n.sim.state.pos);
-      const { input, fire, aim } = this.think(n, isl, h);
+      let { input, fire, aim } = this.think(n, isl, h);
+      if (n.target.stun) {
+        // hit by a bottle: dazed on the spot, the head lolling; then it remembers who threw it (onHit)
+        input = emptyInput();
+        input.yaw = n.sim.state.yaw + Math.sin(this.time * 7 + n.id) * 0.02;
+        fire = false;
+        aim = null;
+        n.status = 'оглушён';
+      }
       n.sim.tick(input, h);
       for (const e of n.sim.events.splice(0)) if (e.type === 'respawn') this.spawn(n); // fell off: back on the street
       upOf(n.sim.state.frame, n.target.up);

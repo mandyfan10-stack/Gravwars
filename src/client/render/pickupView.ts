@@ -3,14 +3,18 @@ import {
   MeshStandardMaterial, Quaternion, Scene, SphereGeometry, Vector2, Vector3,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Pickup, Pickups } from '../../shared/economy';
+import type { ItemId, Pickup, PickupKind, Pickups } from '../../shared/economy';
 import type { Fishing } from '../../shared/fishing';
+import type { Throws } from '../../shared/throwables';
 
 const Y = new Vector3(0, 1, 0);
 const _q = new Quaternion();
+const _ax = new Vector3();
+/** Items on the ground are drawn this much bigger than life: easy to spot from a distance. */
+export const PICKUP_SCALE = 2.5;
 
 /** Apple: a slightly squashed low-poly ball with a stem and a leaf (one merged geometry per material). */
-function appleMeshes() {
+export function appleMeshes() {
   const body = new IcosahedronGeometry(0.085, 1).scale(1, 0.88, 1).translate(0, 0.075, 0);
   const stem = new CylinderGeometry(0.006, 0.008, 0.045, 4).translate(0, 0.16, 0);
   const leaf = new SphereGeometry(0.03, 4, 2).scale(1, 0.2, 0.5).rotateZ(0.5).translate(0.03, 0.165, 0);
@@ -32,6 +36,33 @@ export function bottleMeshes() {
   return g;
 }
 
+/** Fish lying on its side: a flattened body, a tail fin, a darker back. */
+export function fishMeshes() {
+  const body = new SphereGeometry(0.05, 8, 5).scale(2.4, 0.42, 1).translate(0, 0.022, 0);
+  const tail = new BoxGeometry(0.06, 0.012, 0.075).translate(-0.14, 0.022, 0);
+  const g = new Group();
+  g.add(new Mesh(body, new MeshStandardMaterial({ color: 0x8c9aa3, roughness: 0.35, metalness: 0.3, flatShading: true })));
+  g.add(new Mesh(tail, new MeshStandardMaterial({ color: 0x5c6870, roughness: 0.6, flatShading: true })));
+  return g;
+}
+
+/** First-aid kit: a white case with a red cross and a dark handle. */
+export function medkitMeshes() {
+  const g = new Group();
+  const red = new MeshStandardMaterial({ color: 0xc8322c, roughness: 0.6 });
+  g.add(new Mesh(new BoxGeometry(0.16, 0.07, 0.11).translate(0, 0.035, 0), new MeshStandardMaterial({ color: 0xece8de, roughness: 0.7 })));
+  g.add(new Mesh(mergeGeometries([
+    new BoxGeometry(0.06, 0.004, 0.018).translate(0, 0.071, 0), new BoxGeometry(0.018, 0.004, 0.06).translate(0, 0.071, 0),
+  ]), red));
+  g.add(new Mesh(new BoxGeometry(0.06, 0.015, 0.012).translate(0, 0.078, 0), new MeshStandardMaterial({ color: 0x33363c, roughness: 0.8 })));
+  return g;
+}
+
+/** Meshes of one item (unscaled, real size). */
+export function itemMeshes(kind: ItemId): Group {
+  return kind === 'apple' ? appleMeshes() : kind === 'bottle' ? bottleMeshes() : kind === 'fish' ? fishMeshes() : medkitMeshes();
+}
+
 /** A wad of banknotes with a band (dropped by bandits). */
 function cashMeshes() {
   const g = new Group();
@@ -44,7 +75,9 @@ function cashMeshes() {
 /** Items lying on the map. Each pickup gets a mesh when it shows up; meshes of items gone for good are removed. */
 export class PickupView {
   private readonly meshes = new Map<number, Group>();
-  private readonly protos: Record<Pickup['kind'], Group> = { apple: appleMeshes(), bottle: bottleMeshes(), cash: cashMeshes() };
+  private readonly protos: Record<PickupKind, Group> = {
+    apple: appleMeshes(), bottle: bottleMeshes(), cash: cashMeshes(), fish: fishMeshes(), medkit: medkitMeshes(),
+  };
 
   constructor(private scene: Scene, private pickups: Pickups) {
     this.sync();
@@ -54,6 +87,7 @@ export class PickupView {
     for (const it of this.pickups.items) {
       if (this.meshes.has(it.id)) continue;
       const g = this.protos[it.kind].clone();
+      g.scale.setScalar(PICKUP_SCALE);
       g.traverse((o) => { o.castShadow = true; });
       this.place(g, it);
       this.scene.add(g);
@@ -76,8 +110,35 @@ export class PickupView {
       const g = this.meshes.get(it.id)!;
       if (g.visible !== it.alive || !g.position.equals(it.pos)) this.place(g, it);
       g.visible = it.alive;
-      if (it === near) g.position.copy(it.pos).addScaledVector(it.up, 0.04 + Math.sin(time * 6) * 0.03);
+      if (it === near) g.position.copy(it.pos).addScaledVector(it.up, 0.06 + Math.sin(time * 6) * 0.05);
     }
+  }
+}
+
+/** Items in flight (thrown by hand), tumbling. */
+export class ThrownView {
+  private readonly meshes = new Map<number, Group>();
+
+  constructor(private scene: Scene, private throws: Throws) {}
+
+  update(dt: number) {
+    const live = new Set<number>();
+    for (const t of this.throws.items) {
+      live.add(t.id);
+      let g = this.meshes.get(t.id);
+      if (!g) {
+        g = itemMeshes(t.kind);
+        g.scale.setScalar(PICKUP_SCALE);
+        g.traverse((o) => { o.castShadow = true; });
+        this.scene.add(g);
+        this.meshes.set(t.id, g);
+      }
+      g.position.copy(t.pos);
+      // tumble around an axis across the flight
+      _ax.copy(t.vel).cross(t.down);
+      if (_ax.lengthSq() > 1e-6) g.quaternion.premultiply(_q.setFromAxisAngle(_ax.normalize(), t.spin * dt));
+    }
+    for (const [id, g] of this.meshes) if (!live.has(id)) { this.scene.remove(g); this.meshes.delete(id); }
   }
 }
 

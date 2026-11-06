@@ -37,6 +37,8 @@ export interface Target {
   onImpulse?: (v: Vector3) => void;
   /** Spawn protection: no damage until it runs out, the owner fires or walks `SPAWN_GUARD.radius` away. */
   guard?: { from: Vector3; t: number } | null;
+  /** Stunned (hit by a bottle): NPCs stand dazed and do nothing for this many seconds. */
+  stun?: number;
 }
 
 export interface Projectile {
@@ -251,7 +253,7 @@ export class Combat {
     this.events.push({ type: 'melee', owner, pos: null, target: null });
   }
 
-  private rayWorld(from: Vector3, to: Vector3) {
+  rayWorld(from: Vector3, to: Vector3) {
     const d = _seg.copy(to).sub(from);
     const len = d.length();
     if (len < 1e-6) return null;
@@ -262,7 +264,7 @@ export class Combat {
     return { t: hit.timeOfImpact / len, normal: new Vector3(hit.normal.x, hit.normal.y, hit.normal.z), handle: hit.collider.handle };
   }
 
-  private rayTargets(p: Pick<Projectile, 'owner' | 'team'>, from: Vector3, to: Vector3) {
+  rayTargets(p: Pick<Projectile, 'owner' | 'team'>, from: Vector3, to: Vector3) {
     let best: { t: number; target: Target; head: boolean } | null = null;
     const st = { s: 0, t: 0 };
     for (const tg of this.targets) {
@@ -375,6 +377,7 @@ export class Combat {
   tick(dt: number) {
     this.time += dt;
     for (const tg of this.targets) {
+      if (tg.stun) tg.stun = tg.alive ? Math.max(0, tg.stun - dt) : 0;
       if (tg.guard && ((tg.guard.t -= dt) <= 0 || !tg.alive || tg.center.distanceTo(tg.guard.from) > SPAWN_GUARD.radius)) tg.guard = null;
       if (!tg.alive && tg.respawnIn > 0) {
         tg.respawnIn -= dt;
