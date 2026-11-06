@@ -60,6 +60,12 @@ const DIFFICULTY: Record<Difficulty, Partial<typeof BOT>> = {
 export function applyDifficulty(level: Difficulty) {
   Object.assign(BOT, NORMAL, DIFFICULTY[level]);
 }
+/** A separate tuning for one bot (lobby: every bot has its own difficulty). */
+export function tuning(level: Difficulty): typeof BOT {
+  return { ...NORMAL, ...DIFFICULTY[level] };
+}
+/** Bots per team, by difficulty (lobby). Teams left out get none; the player's team may have bots (allies). */
+export type BotRoster = Partial<Record<TeamId, Difficulty[]>>;
 
 type XZ = [number, number];
 /**
@@ -86,6 +92,8 @@ export interface Bot {
   role: BotRole;
   /** Index among the team's bots (spawn offset). */
   slot: number;
+  /** Its tuning: the shared BOT (follows applyDifficulty) or its own difficulty from the lobby. */
+  tune: typeof BOT;
   sim: PlayerSim;
   target: Target;
   weapons: WeaponState;
@@ -152,7 +160,7 @@ export class BotManager {
   private readonly teams: TeamId[];
 
   constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private combat: Combat,
-    private match: Match, private blocks: BlockSystem, readonly playerTeam: TeamId, perTeam = BOT.perTeam) {
+    private match: Match, private blocks: BlockSystem, readonly playerTeam: TeamId, perTeam = BOT.perTeam, roster?: BotRoster) {
     this.teams = map.teams as TeamId[];
     this.islands = map.islands.filter((i) => i.team).map((i) => {
       const q = new Quaternion(...i.quat);
@@ -166,9 +174,13 @@ export class BotManager {
     let id = 100;
     let wave = 0;
     for (const tid of this.teams) {
-      if (tid === playerTeam) continue;
+      // no roster: the old setup, `perTeam` bots with the shared tuning in every team but the player's
+      const levels: (Difficulty | null)[] = roster ? roster[tid] ?? [] : tid === playerTeam ? [] : Array(perTeam).fill(null);
       const t = { id: tid };
-      for (let slot = 0; slot < perTeam; slot++) {
+      for (let slot = 0; slot < levels.length; slot++) {
+        const level = levels[slot];
+        const tune = level ? tuning(level) : BOT;
+        // the first bot of every team (allies too) stays home, the rest go on the attack
         const role: BotRole = slot === 0 ? 'defend' : 'attack';
         const sim = new PlayerSim(R, world, map, t.id);
         sim.gravity.blocks = () => blocks.blocks.values();
@@ -180,8 +192,8 @@ export class BotManager {
         };
         combat.targets.push(target);
         const bot: Bot = {
-          id: target.id, team: t.id, role, slot, sim, target, weapons: createWeaponState(), goal: null,
-          departAt: role === 'attack' ? BOT.firstAttack + BOT.attackStagger * wave++ : Infinity,
+          id: target.id, team: t.id, role, slot, tune, sim, target, weapons: createWeaponState(), goal: null,
+          departAt: role === 'attack' ? tune.firstAttack + tune.attackStagger * wave++ : Infinity,
           respawnT: 0, out: false, enemy: null, seenT: 0, scanT: this.rng.range(0, 0.15), shots: 0, shotsTotal: 0, pauseT: 0,
           routeKey: '', routePts: [], wp: 0, detour: null, checkT: 0, progressT: 0, bestDist: Infinity, stuckT: 0, jumpT: 0,
           breach: null, wedgeT: 0, buildT: 0, bedT: 0, stand: 0, standT: 0, patrol: slot, patrolT: 0, prevPos: new Vector3(), status: '',
@@ -195,7 +207,7 @@ export class BotManager {
   /** Re-plan the attack waves from the current BOT tuning (difficulty changed before the match started). */
   retime() {
     let wave = 0;
-    for (const b of this.bots) if (b.role === 'attack') b.departAt = BOT.firstAttack + BOT.attackStagger * wave++;
+    for (const b of this.bots) if (b.role === 'attack') b.departAt = b.tune.firstAttack + b.tune.attackStagger * wave++;
   }
 
   // --- setup ------------------------------------------------------------------------------------
@@ -205,7 +217,7 @@ export class BotManager {
     sim.respawn('spawn');
     sim.events.length = 0;
     // spread team-mates so their capsules do not overlap
-    sim.state.pos.add(_v.set(1.4 * (bot.slot + 1), 0, -1.4 * bot.slot).applyQuaternion(sim.state.frame));
+    sim.state.pos.add(_v.set(1.4 * ((bot.slot % 3) + 1), 0, -1.5 * Math.floor(bot.slot / 3)).applyQuaternion(sim.state.frame));
     sim.mover.place(sim.state);
     bot.prevPos.copy(sim.state.pos);
     bot.target.hp = MAX_HP;
@@ -272,10 +284,11 @@ export class BotManager {
 
   private chooseGoal(bot: Bot): TeamId {
     const alive = this.teams.filter((t) => t !== bot.team && this.match.bed(t).alive);
-    if (!alive.length) return this.playerTeam;
-    if (alive.includes(this.playerTeam) && this.rng.chance(BOT.targetPlayerChance)) return this.playerTeam;
+    const fallback = bot.team !== this.playerTeam ? this.playerTeam : this.teams.find((t) => t !== bot.team) ?? bot.team;
+    if (!alive.length) return fallback;
+    if (alive.includes(this.playerTeam) && this.rng.chance(bot.tune.targetPlayerChance)) return this.playerTeam;
     const others = alive.filter((t) => t !== this.playerTeam);
-    return others.length ? this.rng.pick(others) : this.playerTeam;
+    return others.length ? this.rng.pick(others) : fallback;
   }
 
   /** Team whose base the bot is heading for right now. */
@@ -369,11 +382,11 @@ export class BotManager {
 
   private findEnemy(bot: Bot, eye: Vector3): Target | null {
     let best: Target | null = null;
-    let bestD = BOT.sightRange;
+    let bestD = bot.tune.sightRange;
     const home = this.heading(bot) === bot.team ? this.match.bed(bot.team).pos : null;
     for (const t of this.combat.targets) {
       if (!t.alive || t.guard || t.team === bot.team) continue; // spawn protection: no point shooting
-      if (home && t.center.distanceTo(home) > BOT.defendRadius) continue;
+      if (home && t.center.distanceTo(home) > bot.tune.defendRadius) continue;
       const d = eye.distanceTo(t.center);
       // city NPCs: only those who go for this bot or get in its face
       if (t.npc && t.aggro !== bot.id && d > 4) continue;
@@ -390,7 +403,7 @@ export class BotManager {
       if (bot.out) continue;
       if (!bot.target.alive) {
         if (bot.respawnT <= 0) {
-          bot.respawnT = BOT.respawnDelay;
+          bot.respawnT = bot.tune.respawnDelay;
           this.park(bot);
         }
         bot.respawnT -= dt;
@@ -398,7 +411,7 @@ export class BotManager {
         if (bot.respawnT <= 0) {
           if (this.match.bed(bot.team).alive) {
             this.placeAtSpawn(bot);
-            if (bot.role === 'attack') bot.departAt = this.match.time + BOT.reattack;
+            if (bot.role === 'attack') bot.departAt = this.match.time + bot.tune.reattack;
           } else {
             bot.out = true;
             bot.status = 'выбыл';
@@ -428,9 +441,9 @@ export class BotManager {
         const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
         this.combat.use(fired, bot.id, eye, aim, bot.sim.state.vel, bot.target.up.clone().negate());
         bot.shotsTotal++;
-        if (++bot.shots >= BOT.burst) {
+        if (++bot.shots >= bot.tune.burst) {
           bot.shots = 0;
-          bot.pauseT = BOT.burstPause;
+          bot.pauseT = bot.tune.burstPause;
         }
       }
     }
@@ -440,15 +453,15 @@ export class BotManager {
   private arm(bot: Bot): WeaponId {
     const ws = bot.weapons;
     const t = this.match.time;
-    if (t >= BOT.pistolAt && !ws.owned.pistol) giveWeapon(ws, 'pistol');
-    if (t >= BOT.rifleAt && !ws.owned.rifle) giveWeapon(ws, 'rifle');
+    if (t >= bot.tune.pistolAt && !ws.owned.pistol) giveWeapon(ws, 'pistol');
+    if (t >= bot.tune.rifleAt && !ws.owned.rifle) giveWeapon(ws, 'rifle');
     for (const w of ['pistol', 'rifle'] as const) if (isGun(w) && ws.owned[w]) ws.reserve[w] = 999;
     return ws.owned.rifle ? 'rifle' : ws.owned.pistol ? 'pistol' : 'fists';
   }
 
   /** How far the bot's current weapon is worth using. */
   private range(bot: Bot) {
-    return bot.weapons.current === 'fists' ? WEAPONS.fists.reach : BOT.sightRange;
+    return bot.weapons.current === 'fists' ? WEAPONS.fists.reach : bot.tune.sightRange;
   }
 
   private think(bot: Bot, dt: number): { input: MoveInput; fire: boolean; aim: Vector3 | null } {
@@ -529,7 +542,7 @@ export class BotManager {
         if (!last && bot.stuckT > 2) bot.wp++;
       }
       if (arrived || bot.progressT === 0) bot.stuckT = Math.max(0, bot.stuckT - dt * 0.5);
-      if (bot.stuckT > BOT.giveUp) { bot.stuckT = 0; this.placeAtSpawn(bot); }
+      if (bot.stuckT > bot.tune.giveUp) { bot.stuckT = 0; this.placeAtSpawn(bot); }
       // stuck behind blocks (someone's wall, own fortification): shoot through them
       if (!arrived && bot.stuckT > 3 && bot.breach === null) bot.breach = this.blockInTheWay(sim, steerTo);
       if (bot.breach !== null) {
@@ -567,7 +580,7 @@ export class BotManager {
     }
 
     // combat overrides the view: shoot the enemy while still walking the route
-    if (bot.enemy && bot.seenT > BOT.reaction && eye.distanceTo(bot.enemy.center) < this.range(bot) + 0.3) {
+    if (bot.enemy && bot.seenT > bot.tune.reaction && eye.distanceTo(bot.enemy.center) < this.range(bot) + 0.3) {
       aimAt = bot.enemy.center.clone().addScaledVector(bot.enemy.up, 0.25);
       wantFire = true;
     }
@@ -576,7 +589,7 @@ export class BotManager {
     if (aimAt) {
       const dir = aimAt.sub(eye).normalize();
       [input.yaw, input.pitch] = this.look(sim, dir);
-      aim = dir.add(new Vector3(this.rng.range(-1, 1), this.rng.range(-1, 1), this.rng.range(-1, 1)).multiplyScalar(BOT.spread)).normalize();
+      aim = dir.add(new Vector3(this.rng.range(-1, 1), this.rng.range(-1, 1), this.rng.range(-1, 1)).multiplyScalar(bot.tune.spread)).normalize();
     } else if (wish.lengthSq() > 0.01) {
       [input.yaw] = this.look(sim, wish);
       input.pitch = 0;
@@ -586,7 +599,7 @@ export class BotManager {
     if (!s.onGround) { /* ballistic */ } else if (wish.lengthSq() > 0.01) {
       input.forward = wish.dot(_fwd);
       input.right = wish.dot(_right);
-    } else if (bot.enemy && bot.seenT > BOT.reaction) {
+    } else if (bot.enemy && bot.seenT > bot.tune.reaction) {
       input.right = Math.sin(this.match.time * 2.3 + bot.id) > 0 ? 1 : -1; // strafe while holding a position
     }
     if (bot.jumpT > 0) { input.jump = true; bot.jumpT -= dt; }

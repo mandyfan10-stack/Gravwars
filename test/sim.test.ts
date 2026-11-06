@@ -4,6 +4,7 @@ import {
   BLOCK_MATERIALS, BlockSystem, BRIDGE_COST, PIECE_CELL, PIECE_COST, PIECE_HP_MUL, PIECE_LEVEL, PIECE_THICK, START_BLOCKS,
 } from '../src/shared/blocks';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
+import { activeTeams, botRoster, defaultLobby, lobbyProblem, parseLobby, playerTeam, seatPlayer } from '../src/shared/lobby';
 import { GENERATORS, Match } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
 import { holdables, Hotbar } from '../src/shared/inventory';
@@ -999,6 +1000,44 @@ for (const deg of [20, 37, 45]) {
   check('difficulty: easy is slower and less accurate than hard', easy.reaction > normal.reaction && normal.reaction > hard.reaction
     && easy.spread > hard.spread && easy.firstAttack > hard.firstAttack && easy.pistolAt > hard.pistolAt);
   check('difficulty: back to normal restores every value', JSON.stringify(BOT) === JSON.stringify(normal));
+}
+
+// --- lobby: line-ups, islands only for teams that play, allies and per-bot difficulty
+{
+  const d = defaultLobby();
+  check('lobby: the default is you in red and 2 bots in every other team', playerTeam(d) === 'red' && activeTeams(d).length === 4
+    && JSON.stringify(botRoster(d)) === JSON.stringify({ blue: ['normal', 'normal'], green: ['normal', 'normal'], yellow: ['normal', 'normal'] }));
+  const c = parseLobby(JSON.stringify(d));
+  c.seats.blue = [null, null, null, null, null];
+  c.seats.yellow = [null, null, null, null, null];
+  c.seats.green = [{ kind: 'bot', difficulty: 'hard' }, { kind: 'bot', difficulty: 'easy' }, null, null, null];
+  seatPlayer(c, 'green', 2);
+  check('lobby: sitting down elsewhere leaves the old seat; a lone team cannot start', playerTeam(c) === 'green' && !c.seats.red[0]
+    && lobbyProblem(c) !== null);
+  c.seats.yellow[0] = { kind: 'bot', difficulty: 'hard' };
+  c.seats.green[3] = { kind: 'bot', difficulty: 'easy' };
+  check('lobby: two teams can start; broken storage falls back to the default', lobbyProblem(c) === null
+    && playerTeam(parseLobby('{"seats":1}')) === 'red' && playerTeam(parseLobby(null)) === 'red');
+  const lm = generateMap(1337, 'green', activeTeams(c));
+  check('lobby: only teams that play get an island and a crystal', JSON.stringify(lm.teams) === '["green","yellow"]'
+    && lm.statues.length === 2 && lm.islands.filter((i) => i.team).length === 2);
+  const w = buildPhysicsWorld(R, lm);
+  const ps = new PlayerSim(R, w, lm, 'green');
+  const combat = new Combat(R, w, lm, [ps.mover.collider]);
+  const bs = new BlockSystem(R, w, ps.mover.collider);
+  const m = new Match(R, w, lm, bs, 'green', ps.mover.collider);
+  const bots = new BotManager(R, w, lm, combat, m, bs, 'green', 0, botRoster(c));
+  const allies = bots.bots.filter((b) => b.team === 'green'), foes = bots.bots.filter((b) => b.team === 'yellow');
+  check('lobby: allies join the player\'s team, each bot with its own difficulty', allies.length === 3 && foes.length === 1
+    && allies[1].tune.reaction > foes[0].tune.reaction && allies[0].role === 'defend' && allies[1].role === 'attack'
+    && foes[0].tune !== BOT, `allies ${allies.length}, foes ${foes.length}`);
+  // late in the match: every attacker has set off
+  m.time = 300;
+  const t0 = performance.now();
+  for (let i = 0; i < 64 * 20; i++) { m.time += TICK_DT; bots.tick(TICK_DT); }
+  const goals = new Set(allies.filter((b) => b.goal).map((b) => b.goal));
+  check('lobby: allies go for the enemy, never their own base', goals.has('yellow') && !goals.has('green') && allies.every((b) => !b.out),
+    `goals ${[...goals].join(',')}, ${((performance.now() - t0) / 20).toFixed(0)} ms per game second`);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

@@ -124,7 +124,7 @@ export class MatchUi {
     const key = m.beds.map((b) => `${+b.alive}${m.membersAlive(b.team)}${+m.isOut(b.team)}`).join('');
     if (key !== this.bedsKey) {
       this.bedsKey = key;
-      this.bedsEl.innerHTML = TEAMS.map((t) => {
+      this.bedsEl.innerHTML = TEAMS.filter((t) => m.beds.some((b) => b.team === t.id)).map((t) => {
         const bed = m.bed(t.id);
         const mine = t.id === m.team ? ' mine' : '';
         const out = m.isOut(t.id);

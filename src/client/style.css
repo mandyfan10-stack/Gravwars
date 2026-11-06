@@ -312,3 +312,49 @@ button.x.hover { background: rgba(255, 255, 255, .12); color: #fff; }
 .stats dd small { display: block; color: var(--muted); font: 500 10px var(--display); }
 .btn[hidden] { display: none; }
 #menu-state.over { color: #fff; font-size: 13px; }
+
+/* ---------------- lobby (before the match, next to the menu) */
+.lobby { align-self: center; width: min(760px, calc(100vw - 520px)); margin: 0 40px; padding: 18px 20px 16px; border-radius: 4px;
+  background: rgba(10, 11, 16, .78); color: rgba(255, 255, 255, .85); font-size: 13px; }
+.lobby[hidden] { display: none; }
+.lobby header { margin-bottom: 14px; }
+.lobby h2 { margin: 0; font: 600 15px var(--display); color: #fff; }
+.lobby header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.lobby .teams { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.lobby .team { padding: 10px 0 0; border-top: 2px solid var(--c); }
+.lobby .team.off { border-top-color: var(--line); }
+.lobby .team.off h3 { color: var(--muted); }
+.lobby h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; font: 600 13px var(--display); color: #fff; }
+.lobby h3 i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.lobby h3 small { margin-left: auto; color: var(--muted); font-weight: 500; font-size: 11px; }
+.lobby ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.lobby .seat { display: flex; height: 32px; border-radius: 3px; background: rgba(255, 255, 255, .05); overflow: hidden; }
+.lobby .seat button { all: unset; cursor: pointer; display: flex; align-items: center; padding: 0 9px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.lobby .seat button:hover { color: #fff; background: rgba(255, 255, 255, .08); }
+.lobby .seat.free { background: transparent; border: 1px dashed rgba(255, 255, 255, .12); }
+.lobby .seat.free button:first-child { flex: 1; }
+.lobby .seat.free button + button { border-left: 1px dashed rgba(255, 255, 255, .12); }
+.lobby .seat.you { align-items: center; padding: 0 10px; background: color-mix(in srgb, var(--c) 22%, transparent); border-left: 2px solid var(--c); color: #fff; font-weight: 600; }
+.lobby .seat.bot .lvl { flex: 1; color: rgba(255, 255, 255, .85); }
+.lobby .seat.bot .lvl.easy { color: rgba(255, 255, 255, .6); }
+.lobby .seat.bot .lvl.hard { color: #f0c27a; }
+.lobby .seat .x { padding: 0 10px; font-size: 15px; }
+.lobby footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.lobby .quick { display: flex; gap: 4px; }
+.lobby .quick button { all: unset; cursor: pointer; padding: 6px 10px; border-radius: 3px; background: rgba(255, 255, 255, .06); font-size: 12px; font-weight: 500; }
+.lobby .quick button:hover { background: rgba(255, 255, 255, .12); color: #fff; }
+.lobby footer label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.lobby footer select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: rgba(0, 0, 0, .35); color: #fff; font: inherit; }
+.lobby .problem { margin: 10px 0 0; color: #f0a07a; font-size: 12px; }
+@media (max-width: 1100px) { .lobby .teams { grid-template-columns: repeat(2, 1fr); } .lobby { width: auto; } }
+
+/* ---------------- building the world, the intro */
+#building { position: fixed; inset: 0; z-index: 4; display: none; place-items: center; background: #0a0b10; color: var(--muted); font: 500 13px var(--display); letter-spacing: .08em; }
+body.building #building { display: grid; }
+body.intro #hud { visibility: hidden; }
+#intro-cap { position: fixed; left: 56px; bottom: 64px; z-index: 3; pointer-events: none; text-shadow: var(--shadow); }
+#intro-cap[hidden] { display: none; }
+#intro-cap b { display: block; padding-left: 12px; border-left: 3px solid var(--c); font: 700 30px var(--display); letter-spacing: -.01em; }
+#intro-cap small { display: block; margin: 10px 0 0 15px; color: var(--muted); font: 500 11px var(--display); letter-spacing: .08em; }
+#intro-cap.show b { animation: cap-in .5s ease-out both; }
+@keyframes cap-in { from { opacity: 0; transform: translateX(-10px); } }

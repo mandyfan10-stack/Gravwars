@@ -2,6 +2,10 @@
 export class GameAudio {
   private ctx: AudioContext | null = null;
   volume = 0.45;
+  /** The audio context once unlocked (music plays through it). */
+  get context() {
+    return this.ctx;
+  }
   unlock() {
     this.ctx ??= new AudioContext();
     if (this.ctx.state !== 'running') void this.ctx.resume();

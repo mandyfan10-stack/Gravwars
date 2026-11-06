@@ -12,9 +12,17 @@ const errors: string[] = [];
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 await page.goto(url);
-await page.waitForFunction(() => (window as any).__game?.ready, null, { timeout: 120000 });
-await page.waitForTimeout(2500);
+// the lobby: wait for loading, then «В бой» builds the world and starts the intro
+await page.waitForFunction(() => !(document.getElementById('start-game') as HTMLButtonElement).disabled, null, { timeout: 120000 });
+await page.waitForTimeout(800);
 await page.screenshot({ path: `${out}/1-menu.png` });
+await page.click('#start-game');
+await page.waitForFunction(() => (window as any).__game?.ready, null, { timeout: 120000 });
+if (process.env.INTRO) {
+  for (const [i, t] of [[1, 2500], [2, 6000], [3, 6000]] as const) { await page.waitForTimeout(t); await page.screenshot({ path: `${out}/0-intro-${i}.png` }); }
+}
+await page.evaluate('__game.skipIntro()');
+await page.waitForTimeout(1500);
 
 const g = (fn: string) => page.evaluate(fn);
 /** Take something into the hands by what it is (hotbar slots depend on what was bought first); null = fists. */

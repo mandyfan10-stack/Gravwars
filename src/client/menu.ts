@@ -1,5 +1,4 @@
 import type { PerspectiveCamera } from 'three';
-import { DIFFICULTY_LABEL, type Difficulty } from '../shared/bots';
 import type { GameAudio } from './audio';
 import type { DebugToggles } from './debugGui';
 import type { Input } from './input';
@@ -10,8 +9,6 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 export interface MenuHooks {
   /** Graphics toggles changed (texture filter). */
   onToggles: () => void;
-  /** Difficulty picked before the match started: retune the bots. */
-  onDifficulty: (d: Difficulty) => void;
   /** The match summary (teams table + personal numbers) for the side panel. */
   statsHtml: () => string;
 }
@@ -28,7 +25,7 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
   let started = false;
   let over = false;
   const showMatch = () => {
-    $('menu-roster').hidden = started;
+    $('menu-lobby').hidden = started;
     $('menu-match').hidden = !started;
     if (started) $('menu-match-body').innerHTML = hooks.statsHtml();
   };
@@ -37,7 +34,6 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
       started = true;
       start.textContent = over ? 'Осмотреться' : 'Продолжить';
       newMatch.hidden = false;
-      $('difficulty-note').textContent = 'со следующего матча';
     } else if (started) {
       $('menu-state').hidden = false;
       showMatch();
@@ -98,15 +94,6 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
   filter.addEventListener('change', () => {
     toggles.pixel = settings.pixel = filter.value === 'pixel';
     hooks.onToggles();
-    save();
-  });
-
-  const difficulty = $<HTMLSelectElement>('difficulty');
-  difficulty.innerHTML = (Object.keys(DIFFICULTY_LABEL) as Difficulty[]).map((d) => `<option value="${d}">${DIFFICULTY_LABEL[d]}</option>`).join('');
-  difficulty.value = settings.difficulty;
-  difficulty.addEventListener('change', () => {
-    settings.difficulty = difficulty.value as Difficulty;
-    if (!started) hooks.onDifficulty(settings.difficulty);
     save();
   });
 

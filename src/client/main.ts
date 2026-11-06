@@ -4,12 +4,13 @@ import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
 import '@fontsource/inter/800.css';
 import './style.css';
-import { Color, Quaternion, Vector3 } from 'three';
+import { Color, FogExp2, Quaternion, Vector3 } from 'three';
 import { BlockSystem } from '../shared/blocks';
-import { applyDifficulty, BotManager, DIFFICULTY_LABEL } from '../shared/bots';
+import { BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { generateMap } from '../shared/map';
+import { activeTeams, botRoster, playerTeam } from '../shared/lobby';
 import { NpcManager } from '../shared/npcs';
 import { Economy, Pickups } from '../shared/economy';
 import { KILL_REWARD, Match } from '../shared/match';
@@ -17,7 +18,7 @@ import { upOf } from '../shared/math';
 import { moveBasis, viewQuat } from '../shared/movement';
 import { buildPhysicsWorld, initRapier } from '../shared/physics';
 import { PlayerSim } from '../shared/sim';
-import { teamByDown } from '../shared/teams';
+import { getTeam, teamByDown, TeamId } from '../shared/teams';
 import { Throws } from '../shared/throwables';
 import type { WeaponId } from '../shared/weapons';
 import { Ambience, Area } from './ambience';
@@ -35,6 +36,9 @@ import { Guide } from './guide';
 import { icon } from './icons';
 import { MatchUi } from './matchUi';
 import { setupMenu } from './menu';
+import { Lobby } from './lobby';
+import { Intro } from './intro';
+import { INTRO_MUSIC_LENGTH, playIntroMusic } from './music';
 import { PlayerCombat } from './playerCombat';
 import { Pockets } from './pockets';
 import { Fx } from './render/fx';
@@ -53,19 +57,66 @@ import { setPixelTextures } from './render/texFilter';
 import { loadSettings, saveSettings } from './settings';
 import { formatTime, MatchStats } from './stats';
 
+/** Seconds from the start of the intro to the camera landing in the player's eyes (the music's big hit). */
+const INTRO_LENGTH = INTRO_MUSIC_LENGTH - 5;
+
 async function main() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const overlay = document.getElementById('overlay')!;
+  const start = document.getElementById('start-game') as HTMLButtonElement;
+
+  // --- before the match: menu + lobby while wasm, models and fonts load
+  const settings = loadSettings();
+  const loading = Promise.all([initRapier(), loadAssets(), document.fonts.load('800 64px Inter', 'МАГАЗИН КРАСНЫЕ')]);
+  const gfx = new Graphics(canvas);
+  const { renderer, scene, camera } = gfx;
+  const input = new Input(canvas, overlay);
+  const audio = new GameAudio();
+  audio.volume = settings.volume;
+  const toggles: DebugToggles = { bloom: true, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
+  let viewModel: ViewModel | null = null;
+  const applyToggles = () => {
+    gfx.bloom.enabled = toggles.bloom;
+    input.sensitivity = toggles.sensitivity;
+    camera.fov = toggles.fov;
+    camera.updateProjectionMatrix();
+    setPixelTextures(toggles.pixel, viewModel ? [scene, viewModel.scene] : [scene]);
+  };
+  let statsHtml = () => '';
+  const menu = setupMenu(input, audio, camera, toggles, settings, { onToggles: applyToggles, statsHtml: () => statsHtml() });
+  const lobby = new Lobby(settings.difficulty);
+  let loaded = false;
+  const syncStart = (problem = lobby.problem) => {
+    if (input.armed) return;
+    start.disabled = !loaded || !!problem;
+    start.textContent = loaded ? 'В бой' : 'Загрузка…';
+    start.title = problem ?? '';
+  };
+  lobby.onChange = syncStart;
+  lobby.onLevel = (d) => { settings.difficulty = d; saveSettings(settings); };
+  const [R, assets] = await loading;
+  loaded = true;
+  syncStart();
+  // «В бой»: the click unlocks the audio and takes the mouse right away (a user gesture is needed for both)
+  await new Promise<void>((resolve) => start.addEventListener('click', function go() {
+    if (start.disabled) return;
+    start.removeEventListener('click', go);
+    lobby.save();
+    audio.unlock();
+    input.armed = true;
+    input.lock();
+    resolve();
+  }));
+  lobby.hidden = true;
+  document.body.classList.add('building');
+  await new Promise((r) => setTimeout(r, 30)); // let the "building" note paint
 
   // --- simulation (shared with the future server)
-  const settings = loadSettings();
-  /** Difficulty of the running match (a change mid-match waits for the next one). */
-  let difficulty = settings.difficulty;
-  applyDifficulty(difficulty);
-  const R = await initRapier();
-  const map = generateMap();
+  const cfg = lobby.config;
+  const myTeam = playerTeam(cfg)!;
+  const map = generateMap(1337, myTeam, activeTeams(cfg));
   const world = buildPhysicsWorld(R, map);
-  const sim = new PlayerSim(R, world, map, 'red');
+  const sim = new PlayerSim(R, world, map, myTeam);
   const combat = new Combat(R, world, map, [sim.mover.collider]);
   const blocks = new BlockSystem(R, world, sim.mover.collider);
   sim.gravity.blocks = () => blocks.blocks.values(); // built floors (bridges) are gravity surfaces
@@ -73,7 +124,7 @@ async function main() {
   combat.onExplosion = (pos, radius, damage) => blocks.explosion(pos, radius, damage);
   combat.materialOf = (handle) => blocks.byCollider(handle)?.material ?? null;
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
-  const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
+  const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id, 0, botRoster(cfg));
   const pickups = new Pickups(R, world, map);
   const npcs = new NpcManager(R, world, map, combat, pickups);
   const throws = new Throws(combat, pickups);
@@ -82,22 +133,15 @@ async function main() {
   blocks.inventory.wood = 0;
 
   // --- rendering
-  const assets = await loadAssets();
-  const gfx = new Graphics(canvas);
-  const { renderer, scene, camera } = gfx;
   const mapView = buildMapView(map);
   scene.add(mapView.group);
-  await document.fonts.load('800 64px Inter', 'МАГАЗИН КРАСНЫЕ'); // decals are drawn on canvases
   scene.add(buildPropView(map, assets));
   const fx = new Fx(scene);
-  const viewModel = new ViewModel(sim.team.color, assets);
+  viewModel = new ViewModel(sim.team.color, assets);
   viewModel.environment = scene.environment;
   const gizmo = new GravityGizmo();
 
   // --- player, UI
-  const input = new Input(canvas, overlay);
-  const audio = new GameAudio();
-  audio.volume = settings.volume;
   const hud = new Hud();
   const player = new PlayerCombat(sim, combat, hud, fx, audio, viewModel);
   const botView = new BotView(scene, bots, assets);
@@ -130,20 +174,7 @@ async function main() {
     match.wallet.cash += KILL_REWARD;
   };
 
-  const toggles: DebugToggles = { bloom: true, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
-  const applyToggles = () => {
-    gfx.bloom.enabled = toggles.bloom;
-    input.sensitivity = toggles.sensitivity;
-    camera.fov = toggles.fov;
-    camera.updateProjectionMatrix();
-    setPixelTextures(toggles.pixel, [scene, viewModel.scene]);
-  };
-  const statsHtml = () => stats.teamsHtml(player.me.alive) + stats.personalHtml();
-  const menu = setupMenu(input, audio, camera, toggles, settings, {
-    onToggles: applyToggles,
-    onDifficulty: (d) => { difficulty = d; applyDifficulty(d); bots.retime(); },
-    statsHtml,
-  });
+  statsHtml = () => stats.teamsHtml(player.me.alive) + stats.personalHtml();
   // the debug panel (G) tunes the same values: keep them saved too
   const gui = createDebugGui(sim.cfg, sim.mover, toggles, () => {
     applyToggles();
@@ -152,6 +183,9 @@ async function main() {
   });
   applyToggles();
   const scoreEl = document.getElementById('scoreboard')!;
+  // scoreboard header: the bots' difficulty (one word if they are all the same)
+  const levels = [...new Set(Object.values(botRoster(cfg)).flat())];
+  const botsLabel = !levels.length ? 'без ботов' : levels.length === 1 ? `боты: ${DIFFICULTY_LABEL[levels[0]].toLowerCase()}` : 'боты: разные';
   let scoreT = 0;
 
   const local = new LocalPlayer(sim, input);
@@ -202,6 +236,11 @@ async function main() {
     play() {
       input.setLocked(true);
     },
+    /** Skip the match intro (screenshots, tests). */
+    skipIntro() {
+      intro.skip();
+      music?.stop(0.2);
+    },
     look(yaw: number, pitch: number) {
       input.yaw = yaw;
       input.pitch = pitch;
@@ -223,6 +262,40 @@ async function main() {
   };
   const STEP_LEN = 2.3;
 
+  // --- the intro: a flight over the map to the player's eyes, with music
+  local.applyCamera(camera);
+  const eye = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
+  const roster = botRoster(cfg);
+  const botsWord = (n: number) => (n === 1 ? 'бот' : n < 5 ? 'бота' : 'ботов');
+  const about = (t: TeamId) => {
+    const n = roster[t]?.length ?? 0;
+    const who = t === myTeam ? (n ? `ты и ${n} ${botsWord(n)}` : 'ты') : `${n} ${botsWord(n)}`;
+    return `${getTeam(t).name} · ${who}`;
+  };
+  const music = audio.context ? playIntroMusic(audio.context, audio.volume) : null;
+  const intro = new Intro(map, activeTeams(cfg), myTeam, eye, about, INTRO_LENGTH);
+  const ctx = audio.context;
+  if (ctx && ctx.state === 'running') { const t0 = ctx.currentTime + 0.1; intro.clock = () => ctx.currentTime - t0; }
+  const fog = scene.fog as FogExp2;
+  const FOG = fog.density;
+  document.body.classList.remove('building');
+  gfx.updateLighting(local.renderFrame);
+  /** Intro frame: only the world moves (nothing is simulated), the camera flies. */
+  const introFrame = (dt: number, t: number) => {
+    if (input.take('Space') || input.take('Enter') || input.take('Mouse0')) { intro.skip(); music?.stop(1.5); }
+    intro.update(dt, camera);
+    // the far shots need a clearer air
+    const d = camera.position.distanceTo(eye.pos);
+    fog.density = intro.active ? FOG * Math.min(1, Math.max(0.22, 1 - (d - 40) / 500)) : FOG;
+    generators.update(t);
+    keepers.update(dt, t);
+    botView.update(dt, local.alpha);
+    npcView.update(dt, local.alpha, camera);
+    mapView.update(t, dt);
+    gfx.render(dt);
+    input.endFrame();
+  };
+
   let last = performance.now();
   let time = 0;
   const viewQ = new Quaternion();
@@ -234,6 +307,7 @@ async function main() {
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
     time += dt;
+    if (intro.active) { introFrame(dt, time); requestAnimationFrame(frame); return; }
     handleKeys();
     local.update(input.locked ? dt : 0);
     // footsteps and landings
@@ -357,16 +431,12 @@ async function main() {
     scoreT -= dt;
     if (showScore && scoreT <= 0) {
       scoreT = 0.25;
-      scoreEl.innerHTML = `<h3>Счёт<span>боты: ${DIFFICULTY_LABEL[difficulty].toLowerCase()}</span></h3>${statsHtml()}`;
+      scoreEl.innerHTML = `<h3>Счёт<span>${botsLabel}</span></h3>${statsHtml()}`;
     }
     input.endFrame();
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
-  // the button stays disabled while wasm, models and fonts load: every handler is wired up by now
-  const start = document.getElementById('start-game') as HTMLButtonElement;
-  start.disabled = false;
-  start.textContent = 'Играть';
 }
 
 main().catch((err: unknown) => {

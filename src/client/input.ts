@@ -9,9 +9,12 @@ export class Input {
   onMouseMove: (dx: number, dy: number) => boolean = () => false;
   onWheel: (delta: number) => boolean = () => false;
 
+  /** A match exists: the menu button and a click on the canvas take the mouse (before that the menu is the lobby). */
+  armed = false;
+
   constructor(private canvas: HTMLCanvasElement, private overlay: HTMLElement) {
-    document.getElementById('start-game')!.addEventListener('click', () => canvas.requestPointerLock());
-    canvas.addEventListener('click', () => !this.locked && canvas.requestPointerLock());
+    document.getElementById('start-game')!.addEventListener('click', () => this.lock());
+    canvas.addEventListener('click', () => !this.locked && this.armed && canvas.requestPointerLock());
     document.addEventListener('pointerlockchange', () => this.setLocked(document.pointerLockElement === canvas));
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Tab') e.preventDefault();
@@ -42,6 +45,10 @@ export class Input {
       else this.wheelJump = 3;
     }, { passive: false });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
+  }
+
+  lock() {
+    if (this.armed) void this.canvas.requestPointerLock();
   }
 
   /** Pointer lock state (also used by the screenshot script, where headless Chrome has no pointer lock). */

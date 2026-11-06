@@ -39,7 +39,7 @@ export class MatchStats {
   /** Teams table: crystal, fighters left, kills. */
   teamsHtml(playerAlive: boolean) {
     const m = this.match;
-    const rows = TEAMS.map((t) => {
+    const rows = TEAMS.filter((t) => m.beds.some((b) => b.team === t.id)).map((t) => {
       const mine = t.id === m.team;
       const out = m.isOut(t.id);
       const alive = mine ? (playerAlive && !out ? 1 : 0) : m.membersAlive(t.id);
