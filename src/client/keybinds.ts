@@ -1,8 +1,7 @@
 import { Vector3 } from 'three';
-import { PLAYER_HEIGHT, WORLD } from '../shared/constants';
+import { PLAYER_HEIGHT } from '../shared/constants';
 import type { Economy } from '../shared/economy';
 import type { WeaponId } from '../shared/weapons';
-import { upOf } from '../shared/math';
 import type { PlayerSim } from '../shared/sim';
 import { TEAMS } from '../shared/teams';
 import type { BlockController } from './blockController';
@@ -78,16 +77,12 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       hud.toast(sim.state.noclip ? 'Noclip: вкл' : 'Noclip: выкл', '#8af5ff', 1);
     }
     if (input.take('KeyT')) {
-      const up = upOf(sim.state.frame);
-      sim.state.pos.copy(up).multiplyScalar(WORLD.coreHalf + PLAYER_HEIGHT / 2 + 0.1);
+      // debug: onto the central square
+      sim.setGravity(new Vector3(0, 0, -1));
+      sim.state.pos.set(0, 0, PLAYER_HEIGHT / 2 + 0.3);
       sim.state.vel.set(0, 0, 0);
       sim.mover.place(sim.state);
       local.snap();
-    }
-    if (input.take('KeyP')) {
-      toggles.portals = !toggles.portals;
-      ctx.applyToggles();
-      gui.controllersRecursive().forEach((c) => c.updateDisplay());
     }
     if (input.take('KeyG')) {
       guiVisible = !guiVisible;

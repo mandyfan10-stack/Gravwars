@@ -30,6 +30,8 @@ export const PIECE_LEVEL = 3;
 export const PIECE_THICK = 0.25;
 /** Material units one piece costs. */
 export const PIECE_COST = 3;
+/** A floor piece laid over the void (a bridge) costs only this: bridges to the centre are ~75 pieces long. */
+export const BRIDGE_COST = 1;
 /** Piece HP = material HP × this. */
 export const PIECE_HP_MUL = 2.5;
 
@@ -175,8 +177,18 @@ export class BlockSystem {
     return { kind, center, half, quat, key, level };
   }
 
-  validate(plan: PiecePlan, material: BlockMaterial): PlaceResult {
-    if (this.inventory[material] < PIECE_COST) return 'resources';
+  /** Material a piece costs: a floor with nothing under it is a bridge plate. */
+  costOf(plan: PiecePlan): number {
+    if (plan.kind !== 'floor') return PIECE_COST;
+    const down = axisOf(new Vector3(0, 1, 0).applyQuaternion(plan.quat)).negate();
+    const hit = this.world.castRay(new this.R.Ray(plan.center, down), 4, true, undefined, undefined, undefined, undefined,
+      (c) => !this.isCharacter(c));
+    return hit ? PIECE_COST : BRIDGE_COST;
+  }
+
+  /** `free`: bots build without an inventory. */
+  validate(plan: PiecePlan, material: BlockMaterial, free = false): PlaceResult {
+    if (!free && this.inventory[material] < this.costOf(plan)) return 'resources';
     for (const b of this.blocks.values()) if (b.key === plan.key) return 'occupied';
     const shape = new this.R.Cuboid(plan.half.x, plan.half.y, plan.half.z);
     const capsule = new this.R.Capsule(PLAYER_HALF_SEGMENT, PLAYER_RADIUS);
@@ -185,11 +197,12 @@ export class BlockSystem {
     return 'ok';
   }
 
-  place(plan: PiecePlan, material: BlockMaterial, team: TeamId | null): PlaceResult {
-    const result = this.validate(plan, material);
+  place(plan: PiecePlan, material: BlockMaterial, team: TeamId | null, free = false): PlaceResult {
+    const result = this.validate(plan, material, free);
     if (result !== 'ok') return result;
-    this.inventory[material] -= PIECE_COST;
-    this.insert(plan.kind, plan.center, plan.half, plan.quat, material, team, PIECE_COST, plan.key, plan.level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
+    const cost = this.costOf(plan);
+    if (!free) this.inventory[material] -= cost;
+    this.insert(plan.kind, plan.center, plan.half, plan.quat, material, team, free ? 0 : cost, plan.key, plan.level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
     return 'ok';
   }
 

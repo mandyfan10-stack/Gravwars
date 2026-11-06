@@ -3,11 +3,11 @@ import { Combat, Noise, Target } from './combat';
 import { EYE_OFFSET } from './constants';
 import type { Pickups } from './economy';
 import type { IslandNav, MapData, XZ } from './map';
-import { frameForUp, Rng, upOf } from './math';
+import { Rng, upOf } from './math';
 import { emptyInput, MoveInput, moveBasis } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
 import { PlayerSim } from './sim';
-import { TEAMS, TeamId } from './teams';
+import { TeamId } from './teams';
 import { createWeaponState, giveWeapon, WeaponState, weaponTick, WEAPONS } from './weapons';
 
 export type NpcKind = 'bum' | 'gang';
@@ -76,8 +76,10 @@ export const NPC = {
     /** A crouched figure is harder to make out. */
     crouch: 0.6,
   },
-  /** Islands nobody is walking on are simulated this many times slower (bums still drink, bottles still drop). */
+  /** NPCs nobody is near are simulated this many times slower (bums still drink, bottles still drop). */
   idleStep: 8,
+  /** "Near": a player or bot within this many metres. */
+  liveRange: 60,
 };
 
 export type NpcState = 'wander' | 'drink' | 'fight' | 'patrol' | 'search' | 'combat' | 'dead';
@@ -85,7 +87,8 @@ export type NpcState = 'wander' | 'drink' | 'fight' | 'patrol' | 'search' | 'com
 export interface Npc {
   id: number;
   kind: NpcKind;
-  island: TeamId;
+  /** Island id: a team id or 'center'. */
+  island: string;
   /** Gang index on its island (bums: -1). */
   slot: number;
   sim: PlayerSim;
@@ -159,11 +162,14 @@ export function navPath(nav: IslandNav, from: number, to: number): number[] {
 }
 
 interface Island {
-  team: TeamId;
+  id: string;
   up: Vector3;
   q: Quaternion;
+  /** Ground centre. */
+  origin: Vector3;
+  half: number;
   nav: IslandNav;
-  /** Nodes where NPCs may stand (not next to the lift pad). */
+  /** Nodes where NPCs may stand (not at the bridge stub / central square). */
   street: number[];
   gangHome: number;
   gangPatrol: number[];
@@ -172,8 +178,9 @@ interface Island {
 }
 
 /**
- * City NPCs on the base islands: bums wander the streets, drink and leave empty bottles, pick fights with anyone
- * (each other too); a small armed gang holds a corner of every island and shoots whoever it notices.
+ * City NPCs on every island: bums wander the streets, drink and leave empty bottles, pick fights with anyone
+ * (each other too); an armed gang holds a corner of every island and shoots whoever it notices. The central city
+ * has more of both.
  * Noticing is gradual: suspicion grows while a target is in view (faster when close, running, in the open) and
  * fades when it is not. Shots, explosions, punches and running footsteps can be heard.
  */
@@ -184,43 +191,45 @@ export class NpcManager {
   time = 0;
   private tickN = 0;
 
-  constructor(R: Rapier, world: PhysicsWorld, private map: MapData, private combat: Combat, private pickups: Pickups,
+  constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private combat: Combat, private pickups: Pickups,
     opts: { bums?: number; gang?: number } = {}) {
     let id = 500;
-    for (const t of TEAMS) {
-      const nav = map.nav[t.id];
+    for (const def of map.islands) {
+      const nav = map.nav[def.id];
       if (!nav) continue;
-      const up = new Vector3(...t.down).negate();
-      const isl: Island = { team: t.id, up, q: frameForUp(up, new Quaternion()), nav, street: [], gangHome: 0, gangPatrol: [], busy: false };
-      const dl = (i: number) => Math.hypot(nav.nodes[i][0] - nav.lift[0], nav.nodes[i][1] - nav.lift[1]);
-      // not next to the lift pad, not at the torn edges (road ends hang over the void)
-      const inner = (i: number) => Math.max(Math.abs(nav.nodes[i][0]), Math.abs(nav.nodes[i][1])) < map.islandHalf - 10;
+      const up = new Vector3(...def.up);
+      const isl: Island = { id: def.id, up, q: new Quaternion(...def.quat), origin: new Vector3(...def.origin), half: def.half,
+        nav, street: [], gangHome: 0, gangPatrol: [], busy: false };
+      const dl = (i: number) => Math.hypot(nav.nodes[i][0] - nav.hub[0], nav.nodes[i][1] - nav.hub[1]);
+      // not at the stub / square, not at the torn edges (road ends hang over the void)
+      const inner = (i: number) => Math.max(Math.abs(nav.nodes[i][0]), Math.abs(nav.nodes[i][1])) < def.half - 10;
       isl.street = nav.nodes.map((_, i) => i).filter((i) => dl(i) > 10 && inner(i));
-      // the gang holds the corner furthest from the lift (and so from the way home)
+      // the gang holds the corner furthest from the hub (and so from the way to the bridge)
       isl.gangHome = isl.street.reduce((a, b) => (dl(b) > dl(a) ? b : a), isl.street[0]);
       const near = nav.edges.filter(([a, b]) => a === isl.gangHome || b === isl.gangHome).map(([a, b]) => (a === isl.gangHome ? b : a));
       isl.gangPatrol = [isl.gangHome, ...near.filter((i) => isl.street.includes(i))];
       this.islands.push(isl);
-      for (let k = 0; k < (opts.bums ?? NPC.bumsPerIsland); k++) this.npcs.push(this.create(R, world, id++, 'bum', isl, -1));
-      for (let k = 0; k < (opts.gang ?? NPC.gangSize); k++) this.npcs.push(this.create(R, world, id++, 'gang', isl, k));
+      const more = def.team ? 1 : 2; // the central city is bigger and rougher
+      for (let k = 0; k < (opts.bums ?? NPC.bumsPerIsland) * more; k++) this.npcs.push(this.create(R, world, id++, 'bum', isl, -1));
+      for (let k = 0; k < (opts.gang ?? NPC.gangSize) + (more - 1) * 2; k++) this.npcs.push(this.create(R, world, id++, 'gang', isl, k));
     }
     for (const n of this.npcs) this.spawn(n);
   }
 
   private create(R: Rapier, world: PhysicsWorld, id: number, kind: NpcKind, isl: Island, slot: number): Npc {
-    const sim = new PlayerSim(R, world, this.map, isl.team);
-    sim.usePads = false;
+    const sim = new PlayerSim(R, world, this.map, (this.map.teams[0] ?? 'red') as TeamId);
+    sim.surfaces = false;
     sim.events.length = 0;
     this.combat.addCharacter(sim.mover.collider);
     const target: Target = {
-      id, team: kind === 'bum' ? `bum:${id}` : `gang:${isl.team}`, npc: kind, aggro: null, vel: sim.state.vel,
+      id, team: kind === 'bum' ? `bum:${id}` : `gang:${isl.id}`, npc: kind, aggro: null, vel: sim.state.vel,
       center: sim.state.pos, up: upOf(sim.state.frame), hp: NPC[kind].hp, alive: true, respawnIn: -1,
       onImpulse: (v) => sim.applyImpulse(v),
     };
     const weapons = createWeaponState();
     if (kind === 'gang') giveWeapon(weapons, 'pistol');
     const npc: Npc = {
-      id, kind, island: isl.team, slot, sim, target, weapons, state: kind === 'bum' ? 'wander' : 'patrol', stateT: 0,
+      id, kind, island: isl.id, slot, sim, target, weapons, state: kind === 'bum' ? 'wander' : 'patrol', stateT: 0,
       route: [], wp: 0, foe: null, suspicion: new Map(), grudge: new Map(), lastSeen: null, lostT: 0, seenT: 0, searchAt: null,
       lookAt: null, lookUntil: 0, drinkAt: this.rng.range(...NPC.bum.drinkEvery), respawnT: 0, scanT: this.rng.range(0, 0.2), shots: 0,
       shotsTotal: 0, pauseT: 0, progressT: 0, bestDist: Infinity, stuckN: 0, jumpT: 0, patrol: slot, prevPos: new Vector3(), status: '',
@@ -235,20 +244,20 @@ export class NpcManager {
     return this.npcs.map((n) => n.sim.mover.collider);
   }
 
-  island(team: TeamId) {
-    return this.islands.find((i) => i.team === team)!;
+  island(id: string) {
+    return this.islands.find((i) => i.id === id)!;
   }
 
   // --- coordinates --------------------------------------------------------------------------------
 
   /** Island-local XZ at street level → world (capsule centre height). */
   private toWorld(isl: Island, p: XZ, out = new Vector3()) {
-    return out.set(p[0], 0.95, p[1]).applyQuaternion(isl.q).addScaledVector(isl.up, -this.map.islandDistance);
+    return out.set(p[0], 0.95, p[1]).applyQuaternion(isl.q).add(isl.origin);
   }
 
   /** World → island-local (x, height, z). */
   private toLocal(isl: Island, p: Vector3, out = new Vector3()) {
-    return out.copy(p).addScaledVector(isl.up, this.map.islandDistance).applyQuaternion(_inv.copy(isl.q).invert());
+    return out.copy(p).sub(isl.origin).applyQuaternion(_inv.copy(isl.q).invert());
   }
 
   private nearestNode(isl: Island, p: Vector3) {
@@ -262,10 +271,16 @@ export class NpcManager {
     return best;
   }
 
+  /** Somebody (player / bot) within NPC.liveRange of this NPC? */
+  private watched(n: Npc) {
+    const r2 = NPC.liveRange * NPC.liveRange;
+    return this.combat.targets.some((t) => t.alive && !t.npc && t.center.distanceToSquared(n.sim.state.pos) < r2);
+  }
+
   /** Is a world point on this island's street level (not the roof, not another island)? */
   private onStreets(isl: Island, p: Vector3) {
     const l = this.toLocal(isl, p, _w);
-    return l.y > -3 && l.y < 20 && Math.max(Math.abs(l.x), Math.abs(l.z)) < this.map.islandHalf + 4;
+    return l.y > -3 && l.y < 20 && Math.max(Math.abs(l.x), Math.abs(l.z)) < isl.half + 4;
   }
 
   // --- life cycle ---------------------------------------------------------------------------------
@@ -282,9 +297,12 @@ export class NpcManager {
     }
     const s = n.sim.state;
     const p = isl.nav.nodes[node];
-    // spread a little so that NPCs on the same node do not overlap
+    // spread a little so that NPCs on the same node do not overlap (a corner node may sit at a torn edge: only
+    // where there is ground)
     const off: XZ = [this.rng.range(-1.2, 1.2), this.rng.range(-1.2, 1.2)];
     this.toWorld(isl, [p[0] + off[0], p[1] + off[1]], s.pos);
+    const down = isl.up.clone().negate();
+    if (!this.world.castRay(new this.R.Ray(s.pos, down), 3, true)) this.toWorld(isl, p, s.pos);
     s.vel.set(0, 0, 0);
     s.frame.copy(isl.q);
     s.yaw = this.rng.range(0, Math.PI * 2);
@@ -378,7 +396,10 @@ export class NpcManager {
       if (n.state !== 'dead' && !n.target.alive) this.die(n);
       if (n.state !== 'dead') for (const z of noises) this.hear(n, z);
       // quiet islands: a step every few ticks with a longer dt
-      const step = isl.busy ? 1 : NPC.idleStep;
+      // full rate only near somebody who can see it (the central city is big: one bot crossing it does not wake
+      // the far side)
+      const live = isl.busy && this.watched(n);
+      const step = live ? 1 : NPC.idleStep;
       if ((this.tickN + n.id) % step !== 0) continue;
       const h = dt * step;
       if (n.state === 'dead') {

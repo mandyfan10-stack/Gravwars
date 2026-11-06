@@ -1,7 +1,7 @@
 /* Headless checks of the shared simulation: run with `npm test`. */
 import { Quaternion, Vector3 } from 'three';
 import {
-  BLOCK_MATERIALS, BlockSystem, PIECE_CELL, PIECE_COST, PIECE_HP_MUL, PIECE_LEVEL, PIECE_THICK, START_BLOCKS,
+  BLOCK_MATERIALS, BlockSystem, BRIDGE_COST, PIECE_CELL, PIECE_COST, PIECE_HP_MUL, PIECE_LEVEL, PIECE_THICK, START_BLOCKS,
 } from '../src/shared/blocks';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
 import { GENERATORS, Match } from '../src/shared/match';
@@ -49,12 +49,13 @@ function place(x: number, y: number, z: number, yaw = 0) {
   sim.mover.place(s);
 }
 
-// 1. spawn & stand
+// 1. spawn & stand: inside the base hall (tile (0,1), centre z = 32)
 run(64, {});
-check('spawns on the skyscraper roof', s.onGround && Math.abs(s.pos.y - (G + 0.15 + 50 + 0.915)) < 0.1, `y=${s.pos.y.toFixed(3)}`);
+check('spawns inside the base hall', s.onGround && Math.abs(s.pos.y - (G + 0.15 + 0.915)) < 0.1 && Math.abs(s.pos.z - 32) < 12 && Math.abs(s.pos.x) < 12,
+  `pos=${s.pos.toArray().map((v) => v.toFixed(2))}`);
 
-// 2. walk speed (along the road x = 14)
-place(14, G + 1, 10, 0);
+// 2. walk speed (along the road x = 16)
+place(16, G + 1, 10, 0);
 run(30, {});
 run(128, { forward: 1 });
 check('ground speed ≈ maxSpeed', Math.abs(planarSpeed() - 300 * HU) < 0.05, `${(planarSpeed() / HU).toFixed(0)} u/s`);
@@ -64,7 +65,7 @@ run(10, {});
 check('stand up again', !s.crouched);
 // coyote time: a jump right after running off an edge still works, a late one does not
 const airJump = (airT: number) => {
-  place(0, WORLD.coreHalf + 30, 0, 0);
+  place(300, 300, 300, 0);
   s.airT = airT;
   s.jumpReleased = true;
   run(1, { jump: true });
@@ -72,17 +73,29 @@ const airJump = (airT: number) => {
 };
 check('coyote jump just after leaving the ground', airJump(0.05) && !airJump(0.3) && !airJump(-1));
 
-// 3. bhop + air strafe gains speed
-place(0, WORLD.coreHalf + 1, 0, 0); // open middle of the top core face
-run(30, {});
-run(40, { forward: 1 });
-let maxSp = 0;
-run(320, () => {
-  const yaw = Math.atan2(-s.vel.x, -s.vel.z);
-  maxSp = Math.max(maxSp, planarSpeed());
-  return { jump: true, right: 1, yaw };
-});
-check('air strafe + bhop gains speed', maxSp > 500 * HU, `max ${(maxSp / HU).toFixed(0)} u/s`);
+// 3. bhop + air strafe gains speed (on a big empty floor of its own)
+{
+  const fw = new R.World({ x: 0, y: 0, z: 0 });
+  fw.createCollider(R.ColliderDesc.cuboid(400, 1, 400).setTranslation(0, -1, 0));
+  fw.step();
+  const fs = new PlayerSim(R, fw, map, 'red');
+  fs.surfaces = false;
+  const st = fs.state;
+  st.pos.set(0, 1, 0); st.vel.set(0, 0, 0); st.frame.identity(); st.yaw = 0; fs.mover.place(st);
+  const go = (n: number, f: () => Partial<MoveInput>) => {
+    for (let i = 0; i < n; i++) fs.tick({ ...emptyInput(), yaw: st.yaw, pitch: st.pitch, ...f() }, TICK_DT);
+  };
+  const sp = () => Math.hypot(st.vel.x, st.vel.z);
+  go(30, () => ({}));
+  go(40, () => ({ forward: 1 }));
+  let maxSp = 0;
+  go(320, () => {
+    maxSp = Math.max(maxSp, sp());
+    return { jump: true, right: 1, yaw: Math.atan2(-st.vel.x, -st.vel.z) };
+  });
+  check('air strafe + bhop gains speed', maxSp > 500 * HU, `max ${(maxSp / HU).toFixed(0)} u/s`);
+  fs.mover.dispose();
+}
 
 // 4. stairs (playground on red island, local == world because red frame is identity)
 place(-5.5 + PX, G + 1, -9.5 + PZ, Math.PI / 2); // facing -X
@@ -99,68 +112,99 @@ run(70, () => ({ right: -1 }));
 minY = s.pos.y;
 check('surfs (not grounded on steep ramp, keeps speed)', !s.onGround || s.vel.length() > 8, `v=${s.vel.length().toFixed(1)} y=${(minY - G).toFixed(2)}`);
 
-// 6. spawn on roof → walk into the geyser → lands on the middle island
-sim.respawn();
-run(30, {});
-let launched = false;
-sim.events.length = 0;
-run(64 * 10, (i) => {
-  if (sim.events.some((e) => e.type === 'launch')) launched = true;
-  sim.events.length = 0;
-  return i < 200 && !launched ? { forward: 1, yaw: -3 * Math.PI / 4 } : {};
-});
-check('geyser launches', launched);
-const landing = Math.min(...map.pads.filter((p) => p.kind === 'geyser' && p.team === 'red').map((p) => s.pos.distanceTo(new Vector3(...p.target))));
-check('lands on a side island', s.onGround && Math.abs(s.pos.y - (-WORLD.midDistance + 0.15 + 0.915)) < 0.15 && landing < 3, `pos=${s.pos.toArray().map((v) => v.toFixed(1))} miss=${landing.toFixed(1)}`);
+// 6. the hall: the east ramp leads up onto the roof (hall-local (10, -10) = island (10, 22), rising towards +z)
+place(10, G + 1, 21, Math.PI);
+run(64 * 5, { forward: 1 });
+check('hall ramp leads onto the roof', s.onGround && s.pos.y - G > 0.15 + 8 + 0.9 - 0.15, `h=${(s.pos.y - G).toFixed(2)} z=${s.pos.z.toFixed(1)}`);
 
-// 7. middle island gate → own (far) core face; then the top face's opposite portal → bottom face (gravity flips)
-const throughPortal = (x: number, y: number, z: number, yaw = 0) => {
-  place(x, y, z, yaw); // yaw 0: facing -Z toward the portal
-  run(20, {});
-  sim.events.length = 0;
-  let teleported = false;
-  run(200, () => {
-    if (sim.events.some((e) => e.type === 'teleport')) teleported = true;
-    sim.events.length = 0;
-    return teleported ? {} : { forward: 1 };
-  });
-  return teleported;
+// 7. the bridge stub: walking into it turns the gravity to -Z (level with the centre), the far end is the void
+const upNow = () => upOf(s.frame);
+/** Yaw whose forward is closest to the world direction `d` (in the current frame). */
+const yawTo = (d: Vector3) => {
+  let best = 0, bd = -2;
+  const f = new Vector3(), r = new Vector3();
+  for (let k = 0; k < 64; k++) {
+    const y = (k / 64) * Math.PI * 2;
+    moveBasis(s.frame, y, f, r);
+    if (f.dot(d) > bd) { bd = f.dot(d); best = y; }
+  }
+  return best;
 };
-// red's up is +Y, so the side-island nav frame is world XZ
-const [[gx, gz], [hx, hz]] = map.mid.red[0].portal;
-check('side island gate teleports to the core', throughPortal(gx, -WORLD.midDistance + 1.2, gz, Math.atan2(-(hx - gx), -(hz - gz))));
+place(2, G + 1.2, 3, 0); // in front of the stub, facing -z
+run(20, {});
+sim.events.length = 0;
+let turned = false;
+run(64 * 2, () => {
+  if (sim.events.some((e) => e.type === 'gravity')) turned = true;
+  sim.events.length = 0;
+  return turned ? {} : { forward: 1 };
+});
 run(30, {});
-check('stands on own core face', s.onGround && Math.abs(s.pos.y - (WORLD.coreHalf + 0.915)) < 0.15, `pos=${s.pos.toArray().map((v) => v.toFixed(1))}`);
-const teleported = throughPortal(0, WORLD.coreHalf + 1.2, -20);
-run(30, {});
-const up = new Vector3(0, 1, 0).applyQuaternion(s.frame);
-check('portal teleports', teleported);
-check('stands on bottom face with flipped gravity', s.onGround && up.y < -0.99 && Math.abs(s.pos.y + WORLD.coreHalf + 0.915) < 0.15,
-  `pos=${s.pos.toArray().map((v) => v.toFixed(1))} up=${up.toArray().map((v) => v.toFixed(2))}`);
+check('walking into the stub turns the gravity onto it', turned && upNow().z > 0.99 && s.onGround && Math.abs(s.pos.z - 0.915) < 0.1,
+  `up=${upNow().toArray().map((v) => v.toFixed(2))} pos=${s.pos.toArray().map((v) => v.toFixed(2))}`);
+// walk up the stub towards the centre (+y) to its end and off it: the void
+s.yaw = yawTo(new Vector3(0, 1, 0));
+sim.events.length = 0;
+let fell = false;
+const startY = s.pos.y;
+run(64 * 8, () => {
+  if (sim.events.some((e) => e.type === 'respawn' && e.reason === 'void')) fell = true;
+  sim.events.length = 0;
+  return fell ? {} : { forward: 1 };
+});
+check('walking off the stub end falls into the void', fell && startY < G + 3);
 
-// 7b. side island crossing arch: red's face → the neighbour's face of the same island, gravity follows
-sim.team = TEAMS[0];
-sim.respawn();
-const onCoreP = (p: number[]) => Math.max(...p.map(Math.abs)) < WORLD.coreHalf + 6;
-const cross = map.portals.find((p) => !onCoreP(p.pos) && !onCoreP(map.portals[p.partner].pos) && Math.abs(p.pos[1] + WORLD.midDistance - 2.15) < 0.1)!;
-const cn = new Vector3(0, 0, 1).applyQuaternion(new Quaternion(...cross.quat));
-const crossed = throughPortal(cross.pos[0] + cn.x * 4, -WORLD.midDistance + 1.2, cross.pos[2] + cn.z * 4, Math.atan2(cn.x, cn.z));
-run(40, {});
-const downX = sim.gravityDown();
-check('crossing arch leads to the neighbour face', crossed && s.onGround && Math.abs(Math.abs(downX.x) - 1) < 0.01,
-  `down=${downX.toArray().map((v) => v.toFixed(2))} pos=${s.pos.toArray().map((v) => v.toFixed(1))}`);
+// 7b. a floor piece over the void is a bridge plate: cheap, and it holds you level with the centre
+{
+  const bs = new BlockSystem(R, world, sim.mover.collider);
+  sim.gravity.blocks = () => bs.blocks.values();
+  sim.setGravity(new Vector3(0, 0, -1));
+  s.pos.set(2, G + 18, 0.935); s.vel.set(0, 0, 0); sim.mover.place(s);
+  run(20, {});
+  s.yaw = yawTo(new Vector3(0, 1, 0));
+  const fwd = new Vector3();
+  moveBasis(s.frame, s.yaw, fwd, new Vector3());
+  const plan = bs.plan('floor', s.pos, upNow(), fwd)!;
+  check('bridge plate goes in the next cell past the stub', Math.abs(plan.center.y - (G + 22)) < 0.01 && Math.abs(plan.center.x - 2) < 0.01
+    && Math.abs(plan.center.z + PIECE_THICK / 2) < 0.01, plan.center.toArray().map((v) => v.toFixed(2)).join(','));
+  check('a floor over the void costs less', bs.costOf(plan) === BRIDGE_COST && BRIDGE_COST < PIECE_COST);
+  const wood0 = bs.inventory.wood;
+  check('placing a bridge plate', bs.place(plan, 'wood', 'red') === 'ok' && bs.inventory.wood === wood0 - BRIDGE_COST);
+  run(32, { forward: 1 });
+  run(10, {});
+  check('walks on the bridge plate', s.onGround && s.pos.y > G + 20.3 && Math.abs(s.pos.z - 0.915) < 0.1 && upNow().z > 0.99,
+    `pos=${s.pos.toArray().map((v) => v.toFixed(2))}`);
+  sim.gravity.blocks = () => [];
+  for (const b of [...bs.blocks.values()]) bs.damageCollider(b.collider.handle, b.hp);
+}
+
+// 7c. back down the stub: walking into the island ground turns the gravity back
+sim.setGravity(new Vector3(0, 0, -1));
+s.pos.set(2, G + 10, 0.935); s.vel.set(0, 0, 0); sim.mover.place(s);
+run(20, {});
+s.yaw = yawTo(new Vector3(0, -1, 0));
+sim.events.length = 0;
+turned = false;
+run(64 * 3, () => {
+  if (sim.events.some((e) => e.type === 'gravity')) turned = true;
+  sim.events.length = 0;
+  return turned ? {} : { forward: 1 };
+});
+run(30, {});
+check('walking down the stub returns to the island gravity', turned && upNow().y > 0.99 && s.onGround && Math.abs(s.pos.y - (G + 0.15 + 0.915)) < 0.1,
+  `pos=${s.pos.toArray().map((v) => v.toFixed(2))}`);
 
 // 8. gravity switch to green (down +X)
-place(14, G + 1, 0, 0);
+place(16, G + 1, 0, 0);
 run(10, {});
 sim.setGravity(new Vector3(1, 0, 0));
 const up2 = new Vector3(0, 1, 0).applyQuaternion(s.frame);
 check('gravity switch rotates frame', up2.x < -0.99, up2.toArray().map((v) => v.toFixed(2)).join(','));
 
-// 9. walk off the island → void death
+// 9. walk off the island → void death (outer road of the always present tile (0,-2))
 sim.respawn();
 sim.events.length = 0;
-place(WORLD.islandHalf - 1, G + 1, 0, -Math.PI / 2); // facing +X, at the torn edge of the (always present) tile (2,0)
+place(0, G + 1, -79.6, 0);
 run(30, {});
 let died = false;
 run(64 * 8, () => {
@@ -170,23 +214,25 @@ run(64 * 8, () => {
 });
 check('falling into the void respawns', died);
 
-
-// 10. every team's lift (street → roof), descent (roof → street) and geyser (roof → middle island) land on target
+// 10. every team spawns standing in its own hall; a team without players gets no island
 import { TEAMS } from '../src/shared/teams';
-for (const [i, pad] of map.pads.entries()) {
-  const team = TEAMS.find((t) => t.id === pad.team)!;
+for (const team of TEAMS) {
   sim.team = team;
   sim.respawn();
-  const pu = new Vector3(...pad.up);
-  s.pos.set(...pad.pos).addScaledVector(pu, 0.95);
-  sim.mover.place(s);
-  sim.events.length = 0;
-  run(64 * 9, {});
-  const dist = s.pos.distanceTo(new Vector3(...pad.target));
-  // the geyser lands at speed and slides a little on the landing plaza
-  check(`${pad.kind} ${team.id}`, s.onGround && dist < (pad.kind === 'geyser' ? 2.5 : 1.5), `miss=${dist.toFixed(2)}m`);
+  run(64, {});
+  const u = upNow();
+  check(`${team.id} spawns on its island`, s.onGround && u.dot(new Vector3(...team.down)) < -0.99
+    && Math.abs(s.pos.dot(u) + WORLD.islandDistance - 0.15 - 0.915) < 0.1, `pos=${s.pos.toArray().map((v) => v.toFixed(1))}`);
 }
-
+sim.team = TEAMS[0];
+sim.respawn();
+{
+  const m2 = generateMap(1337, 'red', ['red', 'blue']);
+  check('teams without players get no island', m2.islands.length === 3 && !m2.statues.some((q) => q.team === 'green' || q.team === 'yellow')
+    && Object.keys(m2.lanes).join() === 'red,blue' && m2.teams.join() === 'red,blue');
+  check('every island has two ponds; the centre has neutral shops', TEAMS.every((t) => map.ponds.filter((p) => p.team === t.id).length === 2)
+    && map.bases.filter((b) => b.team === '').length >= 4 && map.crystalSpots.length === 4);
+}
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
 import { Combat, MAX_HP, Target } from '../src/shared/combat';
@@ -194,14 +240,14 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
 {
   sim.team = TEAMS[0];
   sim.respawn();
-  const combat = new Combat(R, world, map, sim.portals, [sim.mover.collider]);
+  const combat = new Combat(R, world, map, [sim.mover.collider]);
   const me: Target = { id: 0, team: 'red', center: s.pos, up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1,
     onImpulse: (v) => sim.applyImpulse(v) };
-  const dummy: Target = { id: 1, team: 'blue', center: new Vector3(14, G + 1.065, -10), up: new Vector3(0, 1, 0),
+  const dummy: Target = { id: 1, team: 'blue', center: new Vector3(16, G + 1.065, -10), up: new Vector3(0, 1, 0),
     hp: MAX_HP, alive: true, respawnIn: 0 };
   combat.targets.push(me, dummy);
   // shoot from the road at the dummy 10 m ahead (aim at chest)
-  place(14, G + 1, 0, 0);
+  place(16, G + 1, 0, 0);
   run(30, {});
   const eye = s.pos.clone().add(new Vector3(0, 0.71, 0));
   let hits = 0;
@@ -306,7 +352,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   check('punch hits up close for small damage', near === WEAPONS.fists.damage && far === 0, `near=${near} far=${far}`);
   punchDummy.alive = false;
   combat.events.length = 0;
-  place(14, G + 1, 6, 0);
+  place(16, G + 1, 6, 0);
   run(30, {});
   sim.events.length = 0;
   combat.events.length = 0;
@@ -339,6 +385,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   w.createCollider(R.ColliderDesc.cuboid(30, 1, 30).setTranslation(0, -1, 0)); // ground, top at y = 0
   w.step();
   const ps = new PlayerSim(R, w, map, 'red');
+  ps.surfaces = false; // a test world at the origin: the centre's gravity plate is not there
   const bs = new BlockSystem(R, w, ps.mover.collider);
   const stand = (x: number, y: number, z: number) => {
     ps.state.pos.set(x, y + 0.915 + 0.05, z); ps.state.vel.set(0, 0, 0); ps.state.frame.identity(); ps.mover.place(ps.state);
@@ -389,7 +436,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   fb.explosion(stone.center.clone().add(new Vector3(0, 1.5, 0)), 5.5, 75);
   check('explosion destroys a damaged block and its collider', !fb.byCollider(stone.collider.handle)
     && !bw.castRay(new R.Ray(new Vector3(-3.5, 3, 0.5), { x: 0, y: -1, z: 0 }), 1.8, true));
-  const c = new Combat(R, bw, map, []);
+  const c = new Combat(R, bw, map);
   c.windMul = 0;
   c.onWorldDamage = (handle, damage) => { fb.damageCollider(handle, damage); };
   const wood = fb.add(new Vector3(-6.5, 1.37, -8), 'wood', 'blue');
@@ -436,7 +483,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const ps = new PlayerSim(R, w, map, 'red');
   const bs = new BlockSystem(R, w, ps.mover.collider);
   const up = new Vector3(0, 1, 0);
-  for (const [x, z] of [[14, -8], [14, 20], [-14, 1]]) {
+  for (const [x, z] of [[16, -8], [16, 20], [-16, 1]]) {
     ps.state.pos.set(x, G + 1.5, z); ps.state.vel.set(0, 0, 0); ps.state.frame.identity(); ps.mover.place(ps.state);
     for (let k = 0; k < 90; k++) ps.tick(emptyInput(), TICK_DT);
     const plan = bs.plan('floor', ps.state.pos, up, new Vector3(0, 0, -1))!;
@@ -529,7 +576,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const bottles = p.items.filter((i) => i.kind === 'bottle');
   const trees = map.trees.filter((t) => t.kind === 'tree').length;
   check('an apple under (almost) every tree', apples.length >= trees * 0.9, `${apples.length}/${trees}`);
-  check('bottles on every base island', TEAMS.every((t) => bottles.filter((b) => b.up.equals(new Vector3(...t.down).negate())).length === PICKUPS.bottlesPerIsland),
+  check('bottles on every base island', TEAMS.every((t) => bottles.filter((b) => b.up.dot(new Vector3(...t.down)) < -0.99).length === PICKUPS.bottlesPerIsland),
     `${bottles.length} bottles`);
   const onRed = bottles.find((b) => b.up.y > 0.99)!;
   check('bottles lie on the street level', Math.abs(onRed.pos.y - G) < 0.3, `y=${(onRed.pos.y - G).toFixed(2)}`);
@@ -581,12 +628,12 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
 // City NPCs: bums and gangs on the streets, gradual noticing (sight cone, distance, movement), hearing, loot.
 {
   const w = buildPhysicsWorld(R, map);
-  const combat = new Combat(R, w, map, []);
+  const combat = new Combat(R, w, map);
   combat.windMul = 0;
   const pk = new Pickups(R, w, map);
   const npcs = new NpcManager(R, w, map, combat, pk);
   const vel = new Vector3();
-  const me: Target = { id: 0, team: 'red', center: new Vector3(14, G + 0.95, 10), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1,
+  const me: Target = { id: 0, team: 'red', center: new Vector3(16, G + 0.95, 10), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1,
     vel, quiet: false };
   combat.targets.push(me);
   check('bums and a gang on every base island', TEAMS.every((t) => npcs.npcs.filter((n) => n.island === t.id && n.kind === 'bum').length === NPC.bumsPerIsland
@@ -651,7 +698,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   check('a dead bandit drops money', pk.items.filter((i) => i.kind === 'cash').length === cash0 + 1 && (g2.state as string) === 'dead');
 
   // a minute of street life with somebody around: bums drink, litter, scuffle
-  me.center.set(14, G + 0.95, 10); vel.set(0, 0, 0); me.hp = 1e9;
+  me.center.set(16, G + 0.95, 10); vel.set(0, 0, 0); me.hp = 1e9;
   const bottles0 = pk.countOn('bottle', new Vector3(0, 1, 0));
   let brawls = 0;
   const t0 = performance.now();
@@ -667,15 +714,19 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   check('bums drink and leave empty bottles', pk.countOn('bottle', new Vector3(0, 1, 0)) > bottles0, `${bottles0} → ${pk.countOn('bottle', new Vector3(0, 1, 0))}`);
   check('bums pick fights with each other', brawls > 0, `${brawls} hits`);
   check('NPCs stay on the streets', npcs.npcs.every((n) => n.state === 'dead' || n.sim.state.pos.toArray().every(Number.isFinite)
-    && Math.abs(n.sim.state.pos.dot(upOf(n.sim.state.frame)) + WORLD.islandDistance - 0.94) < 3));
+    && (() => {
+      const isl = map.islands.find((i) => i.id === n.island)!;
+      const u = upOf(n.sim.state.frame);
+      return Math.abs(n.sim.state.pos.dot(u) - new Vector3(...isl.origin).dot(u) - 0.94) < 3;
+    })()));
   check('NPCs are cheap to simulate', ms < 40, `${ms.toFixed(1)} ms per game second, ${npcs.npcs.length} NPCs`);
 }
 
-// Bots: verified drop points, a full headless match (player parked out of reach): crystals fall, nobody gets lost.
+// Bots: a full headless match (player parked out of reach): crystals fall, nobody gets lost.
 {
   const w = buildPhysicsWorld(R, map);
   const ps = new PlayerSim(R, w, map, 'red');
-  const combat = new Combat(R, w, map, ps.portals, [ps.mover.collider]);
+  const combat = new Combat(R, w, map, [ps.mover.collider]);
   const bs = new BlockSystem(R, w, ps.mover.collider);
   combat.onWorldDamage = (h, d) => { bs.damageCollider(h, d); };
   combat.onExplosion = (p, r, d) => bs.explosion(p, r, d);
@@ -687,8 +738,6 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const bots = new BotManager(R, w, map, combat, m, bs, 'red');
   // the city lives on: bots cross the streets past bums and gangs
   const npcs = new NpcManager(R, w, map, combat, new Pickups(R, w, map));
-  check('every core face has a verified drop point', TEAMS.every((t) => bots.dropOk.has(t.id)),
-    TEAMS.filter((t) => !bots.dropOk.has(t.id)).map((t) => t.id).join(' '));
   check('two bots per enemy team', bots.bots.length === (TEAMS.length - 1) * 2 && !bots.bots.some((b) => b.team === 'red'));
   check('bots start with fists like the player', bots.bots.every((b) => b.weapons.current === 'fists' && !b.weapons.owned.pistol));
   let kills = 0;
@@ -696,7 +745,8 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   let maxAir = 0;
   const air = new Map<number, number>();
   const t0 = performance.now();
-  for (let k = 0; k < 64 * 240; k++) {
+  const MATCH_T = 360; // bridges are long: the first fights start after ~4 minutes
+  for (let k = 0; k < 64 * MATCH_T; k++) {
     bots.tick(TICK_DT);
     npcs.tick(TICK_DT);
     combat.tick(TICK_DT);
@@ -712,12 +762,11 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const broken = m.beds.filter((b) => !b.alive).map((b) => b.team);
   check('bots get a pistol on a timer, then a rifle', pistolAt >= BOT.pistolAt && pistolAt < BOT.pistolAt + 1
     && bots.bots.every((b) => b.out || b.weapons.current === 'rifle'), `pistol at ${pistolAt.toFixed(1)} s`);
-  check('bots break crystals within 4 minutes', broken.length > 0, `broken=${broken.join(',')}`);
-  check('bots fight each other', kills >= 2, // 3 enemy teams on a big map: fewer encounters in 4 min
-    `kills=${kills}`);
+  check('bots break crystals within 6 minutes', broken.length > 0, `broken=${broken.join(',')}`);
+  check('bots fight each other', kills >= 2, `kills=${kills}`);
   check('no bot stays airborne for long', maxAir < 10, `max=${maxAir.toFixed(1)}s`);
   check('bot positions stay finite', bots.bots.every((b) => b.sim.state.pos.toArray().every(Number.isFinite)));
-  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / 240 < 60, `${((performance.now() - t0) / 240).toFixed(1)} ms per game second`);
+  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 60, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
 }
 
 // Slopes: walking up / down a ramp keeps full ground speed and stays grounded (build ramps are ~37°).
@@ -730,6 +779,7 @@ for (const deg of [20, 37, 45]) {
   w.createCollider(R.ColliderDesc.cuboid(4, 0.5, L / 2).setTranslation(c.x, c.y, c.z).setRotation(q));
   w.step();
   const ps = new PlayerSim(R, w, map, 'red');
+  ps.surfaces = false; // a test world at the origin: the centre's gravity plate is not there
   const walk = (z: number, y: number, yaw: number) => {
     ps.state.pos.set(0, y, z); ps.state.vel.set(0, 0, 0); ps.state.frame.identity(); ps.mover.place(ps.state);
     for (let k = 0; k < 20; k++) ps.tick(emptyInput(), TICK_DT);

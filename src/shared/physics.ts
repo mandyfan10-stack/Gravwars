@@ -63,8 +63,6 @@ export function buildPhysicsWorld(R: Rapier, map: MapData): PhysicsWorld {
       .setTranslation(t.pos[0] + t.up[0] * th / 2, t.pos[1] + t.up[1] * th / 2, t.pos[2] + t.up[2] * th / 2)
       .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }));
   }
-  const c = map.coreHalf;
-  add(R.ColliderDesc.cuboid(c, c, c));
   world.step();
   return world;
 }

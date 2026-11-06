@@ -47,12 +47,15 @@ export class Match {
 
   /** Own shop kiosk, if the team has a base. */
   readonly shop: Vector3 | null;
+  /** Every shop you can buy at: your own and the neutral ones in the central city. */
+  readonly shops: Vector3[];
 
   constructor(private R: Rapier, private world: PhysicsWorld, map: MapData, readonly blocks: BlockSystem, readonly team: TeamId,
     /** The local player's capsule: ignored by line-of-sight rays that start at the eye. */
     private playerCollider?: ReturnType<PhysicsWorld['createCollider']>) {
     const base = map.bases.find((b) => b.team === team);
     this.shop = base ? new Vector3(...base.shop) : null;
+    this.shops = map.bases.filter((b) => b.team === team || b.team === '').map((b) => new Vector3(...b.shop));
     this.beds = map.statues.map((s) => ({ team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up), alive: true }));
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
     // fortify enemy beds
@@ -176,6 +179,6 @@ export class Match {
   }
 
   nearShop(pos: Vector3) {
-    return !!this.shop && pos.distanceTo(this.shop) < SHOP_RADIUS;
+    return this.shops.some((s) => pos.distanceTo(s) < SHOP_RADIUS);
   }
 }

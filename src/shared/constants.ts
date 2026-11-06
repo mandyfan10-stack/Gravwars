@@ -52,15 +52,15 @@ export const DEFAULT_MOVEMENT: MovementConfig = {
 };
 
 export const WORLD = {
-  /** Half size of the central island cube. */
-  coreHalf: 60,
-  /** Distance from world center to the ground of each team base island. */
-  islandDistance: 215,
-  /** Half extent of a base island (5×5 city tiles of 28 m). */
-  islandHalf: 70,
-  /** Distance from world center to the ground of the middle islands (between base and core). */
-  midDistance: 115,
-  midHalf: 42,
-  /** Leaving this sphere = falling into the void = death. */
-  killRadius: 300,
+  /**
+   * Distance from the world centre to the ground of each team base island (doubled in v2). Bases sit in a ring in
+   * the XY plane, each facing the centre; the centre is a flat city in that plane, top face +Z.
+   */
+  islandDistance: 432,
+  /** Half extent of a base island (5×5 city tiles of 32 m). */
+  islandHalf: 80,
+  /** Half extent of the central city (7×7 tiles). */
+  centerHalf: 112,
+  /** Further than this from the centre = fell into the void = death. */
+  killRadius: 700,
 };

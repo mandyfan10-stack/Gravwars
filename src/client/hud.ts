@@ -140,12 +140,14 @@ export class Hud {
     _up.set(0, 1, 0).applyQuaternion(s.frame);
     const planar = s.vel.clone().addScaledVector(_up, -s.vel.dot(_up)).length();
     this.speed.textContent = String(Math.round(planar / HU));
-    const team = teamByDown(sim.gravityDown(_down));
-    if (team.id !== this.lastTeam) {
-      this.lastTeam = team.id;
-      const hex = '#' + team.color.toString(16).padStart(6, '0');
-      this.gravDot.style.color = hex;
-      this.gravName.textContent = `Гравитация: ${team.name}`;
+    // -Z is no team's gravity: the central city and the bridges
+    const down = sim.gravityDown(_down);
+    const team = Math.abs(down.z) > 0.9 ? null : teamByDown(down);
+    const id = team?.id ?? 'center';
+    if (id !== this.lastTeam) {
+      this.lastTeam = id;
+      this.gravDot.style.color = team ? '#' + team.color.toString(16).padStart(6, '0') : '#e8e2d0';
+      this.gravName.textContent = `Гравитация: ${team ? team.name : 'центр'}`;
     }
     this.info.textContent =
       `${Math.round(this.fps)} fps\n` +

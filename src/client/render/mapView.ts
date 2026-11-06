@@ -1,14 +1,14 @@
 import {
-  AdditiveBlending, BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, DoubleSide, EdgesGeometry,
-  Group, IcosahedronGeometry, InstancedMesh, LineBasicMaterial, LineSegments, Material, Matrix4, Mesh, MeshBasicMaterial,
-  MeshStandardMaterial, Object3D, OctahedronGeometry, Quaternion, Texture, TorusGeometry, Vector3,
+  BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, DoubleSide,
+  Group, IcosahedronGeometry, InstancedMesh, Material, Matrix4, Mesh, MeshBasicMaterial,
+  MeshStandardMaterial, Object3D, OctahedronGeometry, Quaternion, Texture, Vector3,
 } from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { HouseDef, MapData, MatKind } from '../../shared/map';
 import { Rng } from '../../shared/math';
 import {
-  coreTextures, glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture,
+  glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture,
 } from './textures';
 import { withRooms } from './rooms';
 import { trackTexture } from './texFilter';
@@ -331,19 +331,6 @@ export function buildMapView(map: MapData): MapView {
   blobMesh.computeBoundingSphere();
   group.add(shadowy(blobMesh));
 
-  // --- central island core: sandstone with golden runes
-  const c = map.coreHalf * 2;
-  const [cA, cE] = coreTextures();
-  cA.repeat.set(10, 10);
-  cE.repeat.set(10, 10);
-  const core = new Mesh(new BoxGeometry(c, c, c), new MeshStandardMaterial({
-    map: cA, emissiveMap: cE, emissive: new Color(1.4, 1.1, 0.6), roughness: 0.8,
-  }));
-  group.add(shadowy(core));
-  const edges = new LineSegments(new EdgesGeometry(new BoxGeometry(c + 0.05, c + 0.05, c + 0.05)),
-    new LineBasicMaterial({ color: new Color(2.4, 1.7, 0.6) }));
-  group.add(edges);
-
   // --- bed crystals (no collider; hidden when the bed is broken) + small floating markers above them
   const spinners: { mesh: Mesh; up: Vector3; base: Vector3; phase: number }[] = [];
   const beds = new Map<string, Object3D[]>();
@@ -368,25 +355,6 @@ export function buildMapView(map: MapData): MapView {
     spinners.push({ mesh: m, up, base, phase: Math.random() * 6 });
   }
 
-  // --- lift / geyser rings
-  const rings: { mesh: Mesh; base: Vector3; up: Vector3; t: number }[] = [];
-  const ringGeo = new TorusGeometry(1.1, 0.06, 6, 32);
-  for (const pad of map.pads) {
-    const up = new Vector3(...pad.up);
-    const base = new Vector3(...pad.pos);
-    const color = pad.kind === 'lift' ? 0x4ad8ff : 0xb05cff;
-    for (let i = 0; i < 4; i++) {
-      const mat = new MeshBasicMaterial({
-        color: new Color(color).multiplyScalar(2), transparent: true, blending: AdditiveBlending,
-        depthWrite: false, side: DoubleSide,
-      });
-      const m = new Mesh(ringGeo, mat);
-      m.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), up);
-      group.add(m);
-      rings.push({ mesh: m, base, up, t: i / 4 });
-    }
-  }
-
   const water = mats.water as MeshStandardMaterial;
   return {
     group,
@@ -398,12 +366,6 @@ export function buildMapView(map: MapData): MapView {
       for (const s of spinners) {
         s.mesh.rotateOnWorldAxis(s.up, dt * 1.2);
         s.mesh.position.copy(s.base).addScaledVector(s.up, Math.sin(time * 1.6 + s.phase) * 0.25);
-      }
-      for (const r of rings) {
-        r.t = (r.t + dt * 0.6) % 1;
-        r.mesh.position.copy(r.base).addScaledVector(r.up, r.t * 5);
-        r.mesh.scale.setScalar(1 - r.t * 0.5);
-        (r.mesh.material as MeshBasicMaterial).opacity = 1 - r.t;
       }
     },
   };

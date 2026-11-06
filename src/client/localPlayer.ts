@@ -112,11 +112,6 @@ export class LocalPlayer {
       if (e.type === 'gravity') {
         this.turnFrom.copy(this.renderFrame);
         this.turnT = 0;
-      } else if (e.type === 'teleport') {
-        // seamless: carry the interpolation state through the portal
-        this.prevPos.applyMatrix4(e.matrix);
-        this.renderFrame.premultiply(e.quat);
-        this.turnFrom.premultiply(e.quat);
       } else if (e.type === 'respawn') {
         this.snap();
         this.keys.yaw = this.sim.state.yaw;

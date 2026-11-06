@@ -1,26 +1,28 @@
-import { Matrix4, Quaternion, Vector3 } from 'three';
-import { DEFAULT_MOVEMENT, MovementConfig } from './constants';
+import { Quaternion, Vector3 } from 'three';
+import { DEFAULT_MOVEMENT, MovementConfig, PLAYER_HEIGHT } from './constants';
+import { fieldFor, GravityField } from './gravity';
 import type { MapData } from './map';
 import { upOf } from './math';
 import { createPlayerState, MoveInput, moveBasis, Mover, PlayerState } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
-import { buildPortals, crossesPortal, PortalRuntime } from './portals';
 import { getTeam, TeamDef, TeamId } from './teams';
 
 export type RespawnReason = 'void' | 'manual' | 'spawn' | 'killed';
 
 export type SimEvent =
   | { type: 'gravity' }
-  | { type: 'teleport'; matrix: Matrix4; quat: Quaternion }
   | { type: 'respawn'; reason: RespawnReason }
   | { type: 'launch' };
 
-const _prev = new Vector3();
 const _up = new Vector3();
 const _fwd = new Vector3();
 const _right = new Vector3();
 const _q = new Quaternion();
-const _d = new Vector3();
+const _n = new Vector3();
+/** After a switch the body is put this far above the new surface (capsule half height + a short drop). */
+const SWITCH_CLEARANCE = PLAYER_HEIGHT / 2 + 0.2;
+/** Falling this long with nothing level for you below = the void. */
+const VOID_TIME = 1.5;
 
 /**
  * Authoritative player simulation (movement + world rules). Runs on the client for prediction
@@ -29,19 +31,19 @@ const _d = new Vector3();
 export class PlayerSim {
   readonly state: PlayerState = createPlayerState();
   readonly mover: Mover;
-  readonly portals: PortalRuntime[];
   readonly events: SimEvent[] = [];
+  readonly gravity: GravityField;
   team: TeamDef;
-  /** Lifts / geysers launch this body (NPCs stay in their streets). */
-  usePads = true;
-  /** In a geyser arc: the landing soaks up the horizontal speed (long arcs would slide you off the island). */
-  private softLanding = false;
+  /** Gravity follows the surface you step onto (gravity.ts). NPCs stay in the gravity they were made in. */
+  surfaces = true;
+  /** Time spent falling with nothing under you. */
+  private voidT = 0;
 
   constructor(R: Rapier, world: PhysicsWorld, readonly map: MapData, teamId: TeamId,
     readonly cfg: MovementConfig = { ...DEFAULT_MOVEMENT }) {
     this.team = getTeam(teamId);
     this.mover = new Mover(R, world, cfg);
-    this.portals = buildPortals(map.portals);
+    this.gravity = fieldFor(map);
     this.respawn('spawn');
   }
 
@@ -55,7 +57,7 @@ export class PlayerSim {
     s.pitch = 0;
     s.onGround = false;
     s.airT = -1;
-    this.softLanding = false;
+    this.voidT = 0;
     this.mover.place(s);
     this.events.push({ type: 'respawn', reason });
   }
@@ -93,60 +95,26 @@ export class PlayerSim {
 
   tick(input: MoveInput, dt: number) {
     const s = this.state;
-    _prev.copy(s.pos);
     this.mover.step(s, input, dt);
-    if (this.softLanding && s.onGround) {
-      this.softLanding = false;
-      const up = upOf(s.frame, _up);
-      s.vel.addScaledVector(up, -s.vel.dot(up)).multiplyScalar(0.15);
-    }
+    if (s.noclip) return;
+    const up = upOf(s.frame, _up);
 
-    // portals: teleport + inherit the gravity of the exit face
-    for (const p of this.portals) {
-      if (!crossesPortal(p, _prev, s.pos)) continue;
-      s.pos.applyMatrix4(p.toPartner);
-      s.vel.applyQuaternion(p.qToPartner);
-      s.frame.premultiply(p.qToPartner).normalize();
-      // ground state belongs to the old frame: re-probe next tick (no jump / coyote carried through)
-      s.onGround = false;
-      s.airT = -1;
-      this.mover.place(s);
-      this.events.push({ type: 'teleport', matrix: p.toPartner, quat: p.qToPartner });
-      break;
-    }
-
-    // geysers
-    if (s.onGround && !s.noclip && this.usePads) {
-      const up = upOf(s.frame, _up);
-      for (const pad of this.map.pads) {
-        const pu = new Vector3(...pad.up);
-        if (pu.dot(up) < 0.99) continue;
-        _d.copy(s.pos).sub(new Vector3(...pad.pos));
-        const h = _d.dot(pu);
-        if (h > 1.6) continue;
-        _d.addScaledVector(pu, -h);
-        if (_d.length() > pad.radius) continue;
-        this.launch(pad.target, pad.apex, pu);
-        this.softLanding = pad.kind === 'geyser';
-        break;
+    // walked onto a surface of another gravity (bridge stub, built floor): turn onto it
+    if (this.surfaces) {
+      const pull = this.gravity.pull(s.pos, up);
+      if (pull) {
+        const n = _n.copy(pull.plate.up);
+        if (pull.h < SWITCH_CLEARANCE) s.pos.addScaledVector(n, SWITCH_CLEARANCE - pull.h);
+        const into = s.vel.dot(n);
+        if (into < 0) s.vel.addScaledVector(n, -into);
+        this.setGravity(n.negate());
+        s.airT = -1;
+        return;
       }
     }
 
+    if (s.onGround || this.gravity.holds(s.pos, up)) this.voidT = 0;
+    else if ((this.voidT += dt) > VOID_TIME) this.respawn('void');
     if (s.pos.length() > this.map.killRadius) this.respawn('void');
-  }
-
-  /** Ballistic launch that lands on `target` with the current gravity. */
-  private launch(target: number[], apex: number, up: Vector3) {
-    const g = this.cfg.gravity;
-    const s = this.state;
-    const delta = new Vector3(target[0] - s.pos.x, target[1] - s.pos.y, target[2] - s.pos.z);
-    const dy = delta.dot(up);
-    // apex is counted from the higher end (a descent pad throws you up a little, then down)
-    const vUp = Math.sqrt(2 * g * (Math.max(dy, 0) + apex));
-    const t = (vUp + Math.sqrt(Math.max(vUp * vUp - 2 * g * dy, 0))) / g;
-    const horiz = delta.addScaledVector(up, -dy).divideScalar(t);
-    s.vel.copy(horiz).addScaledVector(up, vUp);
-    s.onGround = false;
-    this.events.push({ type: 'launch' });
   }
 }

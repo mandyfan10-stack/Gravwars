@@ -1,9 +1,8 @@
 import { Quaternion, Vector3 } from 'three';
 import { BlockMaterial, BlockSystem } from './blocks';
 import type { MapData } from './map';
-import { frameForUp, Rng } from './math';
+import { Rng } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
-import { TEAMS } from './teams';
 import { giveWeapon, isGun, WeaponId, WeaponState, WEAPONS } from './weapons';
 
 // --- items -------------------------------------------------------------------------------------
@@ -75,12 +74,13 @@ export class Pickups {
       if (!ground) continue;
       this.items.push({ id: this.nextId++, kind: 'apple', amount: 0, once: false, pos: ground, up, alive: true, respawnT: 0, spot: -1 });
     }
-    // bottles: along the road graph of each base island, a little off the centre line
-    for (const team of TEAMS) {
-      const nav = map.nav[team.id];
+    // bottles: along the road graph of each island, a little off the centre line
+    for (const isl of map.islands) {
+      const nav = map.nav[isl.id];
       if (!nav) continue;
-      const up = new Vector3(...team.down).negate();
-      const q = frameForUp(up, new Quaternion());
+      const up = new Vector3(...isl.up);
+      const q = new Quaternion(...isl.quat);
+      const origin = new Vector3(...isl.origin);
       for (const [a, b] of nav.edges) {
         const A = nav.nodes[a], B = nav.nodes[b];
         const len = Math.hypot(B[0] - A[0], B[1] - A[1]);
@@ -89,7 +89,7 @@ export class Pickups {
           const nx = -(B[1] - A[1]) / len, nz = (B[0] - A[0]) / len;
           const off = this.rng.range(-0.7, 0.7);
           const local = new Vector3(A[0] + (B[0] - A[0]) * k + nx * off, 0.3, A[1] + (B[1] - A[1]) * k + nz * off);
-          const p = local.applyQuaternion(q).addScaledVector(up, -map.islandDistance);
+          const p = local.applyQuaternion(q).add(origin);
           const ground = this.ground(p, up);
           if (ground) this.bottleSpots.push({ pos: ground, up });
         }

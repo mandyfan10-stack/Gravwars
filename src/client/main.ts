@@ -43,7 +43,6 @@ import { NpcView } from './render/npcView';
 import { FishingView, PickupView } from './render/pickupView';
 import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
-import { PortalView } from './render/portalView';
 import { ViewModel } from './render/viewmodel';
 import { setPixelTextures } from './render/texFilter';
 import { loadSettings, saveSettings } from './settings';
@@ -62,14 +61,14 @@ async function main() {
   const map = generateMap();
   const world = buildPhysicsWorld(R, map);
   const sim = new PlayerSim(R, world, map, 'red');
-  const combat = new Combat(R, world, map, sim.portals, [sim.mover.collider]);
+  const combat = new Combat(R, world, map, [sim.mover.collider]);
   const blocks = new BlockSystem(R, world, sim.mover.collider);
+  sim.gravity.blocks = () => blocks.blocks.values(); // built floors (bridges) are gravity surfaces
   combat.onWorldDamage = (handle, damage) => { blocks.damageCollider(handle, damage); };
   combat.onExplosion = (pos, radius, damage) => blocks.explosion(pos, radius, damage);
   combat.materialOf = (handle) => blocks.byCollider(handle)?.material ?? null;
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id);
-  blocks.characters.push(...bots.bots.map((b) => b.sim.mover.collider));
   const pickups = new Pickups(R, world, map);
   const npcs = new NpcManager(R, world, map, combat, pickups);
   blocks.characters.push(...npcs.colliders);
@@ -84,7 +83,6 @@ async function main() {
   scene.add(mapView.group);
   await document.fonts.load('800 64px Inter', 'МАГАЗИН КРАСНЫЕ'); // decals are drawn on canvases
   scene.add(buildPropView(map, assets));
-  const portalView = new PortalView(renderer, scene, sim.portals);
   const fx = new Fx(scene);
   const viewModel = new ViewModel(sim.team.color, assets);
   viewModel.environment = scene.environment;
@@ -120,9 +118,8 @@ async function main() {
     match.wallet.cash += KILL_REWARD;
   };
 
-  const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
+  const toggles: DebugToggles = { bloom: true, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
   const applyToggles = () => {
-    portalView.enabled = toggles.portals;
     gfx.bloom.enabled = toggles.bloom;
     input.sensitivity = toggles.sensitivity;
     camera.fov = toggles.fov;
@@ -156,9 +153,13 @@ async function main() {
     match.tick(TICK_DT, sim.state.pos);
   };
   local.onEvent = (e) => {
-    if (e.type === 'gravity' || e.type === 'teleport') {
-      const t = teamByDown(sim.gravityDown());
-      hud.toast(`Гравитация: ${t.name}`, teamHex(t.color));
+    if (e.type === 'gravity') {
+      const down = sim.gravityDown();
+      if (Math.abs(down.z) > 0.9) hud.toast('Гравитация: центр', '#e8e2d0');
+      else {
+        const t = teamByDown(down);
+        hud.toast(`Гравитация: ${t.name}`, teamHex(t.color));
+      }
     } else if (e.type === 'respawn' && e.reason === 'manual') player.reset();
     else if (e.type === 'respawn' && e.reason === 'void') {
       stats.deaths++;
@@ -166,7 +167,6 @@ async function main() {
       if (match.onDeath()) player.reset();
       else player.me.alive = false;
     } else if (e.type === 'respawn' && e.reason === 'killed') hud.toast('Ты погиб', '#ff6b6b');
-    else if (e.type === 'launch') hud.toast('Гейзер!', '#d7a8ff', 1);
   };
 
   window.addEventListener('resize', () => gfx.resize());
@@ -176,7 +176,7 @@ async function main() {
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, portalView, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, ready: true,
+    sim, local, input, camera, renderer, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -277,7 +277,6 @@ async function main() {
     player.applyCameraKick(camera, dt);
 
     fishingView.update(time, pockets.rod ? viewModel.rodTipWorld(camera) : null);
-    portalView.render(camera, time);
     gfx.render(dt);
     const invCam = camera.quaternion.clone().invert();
     const pUp = upOf(sim.state.frame);
@@ -300,7 +299,8 @@ async function main() {
     hud.setWind(Math.atan2(w.dot(_wr), w.dot(_wf)) - Math.PI / 2, w.length(), 0);
     hud.setWeapon(player.weapons, build.active ? 'build' : pockets.rod ? 'rod' : null, { build: eco.has('builder'), rod: eco.has('rod') });
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
-    gizmo.render(renderer, viewQ, teamByDown(sim.gravityDown()).id);
+    const gDown = sim.gravityDown();
+    gizmo.render(renderer, viewQ, Math.abs(gDown.z) > 0.9 ? '' : teamByDown(gDown).id);
     hud.setSpread(build.active || pockets.rod ? null : player.nextSpread, camera.fov);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
     stats.trackCash(match.wallet.cash);

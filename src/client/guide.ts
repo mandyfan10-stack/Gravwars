@@ -10,8 +10,8 @@ const _p = new Vector3();
 const _d = new Vector3();
 
 /**
- * New-player guidance: an objective line that follows where you are (roof → geyser → core face → portal → drop →
- * lift → enemy crystal), and screen markers for every crystal still standing, with the distance.
+ * New-player guidance: an objective line that follows where you are (hall → bridge stub → bridge → centre →
+ * enemy lane → enemy hall → crystal), and screen markers for every crystal still standing, with the distance.
  */
 export class Guide {
   private readonly tip = document.getElementById('objective')!;
@@ -21,7 +21,7 @@ export class Guide {
 
   constructor(private match: Match, private bots: BotManager, private sim: PlayerSim) {
     const layer = document.getElementById('markers')!;
-    for (const t of TEAMS) {
+    for (const t of TEAMS.filter((x) => match.beds.some((b) => b.team === x.id))) {
       const el = document.createElement('div');
       el.className = `marker${t.id === match.team ? ' mine' : ''}`;
       el.style.setProperty('--c', teamHex(t.color));
@@ -36,19 +36,17 @@ export class Guide {
     const team = (id: TeamId) => `<b style="color:${teamHex(getTeam(id).color)}">${getTeam(id).name}</b>`;
     if (!m.bed(m.team).alive) return ['lost', 'Твой кристалл сломан — следующая смерть станет последней'];
     if (loc.kind === 'air') return [this.tipKey, this.tip.innerHTML];
-    const mine = loc.team === m.team;
-    if (loc.kind === 'island' && mine && loc.roof)
-      return ['home-roof', '<b class="geyser">Фиолетовые гейзеры</b> в углах крыши — на острова между базами. <b class="lift">Голубая площадка</b> — вниз в город'];
-    if (loc.kind === 'island' && mine) return ['home-street', '<b class="lift">Голубой лифт</b> у входа в небоскрёб — обратно на крышу'];
-    if (loc.kind === 'mid') return [`mid-${loc.team}`, 'Арка в центре острова — на грань центрального куба, арка у ребра — на сторону соседей. С края не прыгай: внизу пустота'];
-    if (loc.kind === 'face' && mine) return ['home-face', 'Арки-порталы ведут на грани других команд. Цвет арки — чья грань за ней'];
-    if (loc.kind === 'face') {
-      if (m.isOut(loc.team)) return ['out-face', `${team(loc.team)} уже выбыли — иди через портал к другим`];
-      return [`face-${loc.team}`, `Грань: ${team(loc.team)}. Сойди с края — упадёшь на их остров`];
+    if (loc.kind === 'center') {
+      if (Math.max(Math.abs(loc.x), Math.abs(loc.z)) > this.sim.map.centerHalf)
+        return ['bridge', 'Мост: держи пол под ногами — <kbd>B</kbd>, плита «Пол» над пустотой стоит 1 материал. Упадёшь — конец'];
+      return ['center', 'Центр: генераторы кристаллов на площади, нейтральные магазины на рынках. Мосты к базам идут по бульварам'];
     }
-    if (!loc.roof) return [`street-${loc.team}`, `Остров: ${team(loc.team)}. <b class="lift">Голубой лифт</b> у небоскрёба — на крышу к кристаллу`];
-    if (m.bed(loc.team).alive) return [`roof-${loc.team}`, 'Пробей стену вокруг кристалла и держи <kbd>E</kbd> рядом с ним'];
-    return [`roof-done-${loc.team}`, `Кристалл ${team(loc.team)} сломан — добей оставшихся бойцов`];
+    const id = loc.island as TeamId;
+    if (id === m.team && loc.hall) return ['home-hall', 'Выходи из зала и иди в <b>опору моста</b> на площади перед ним — гравитация повернёт тебя к центру'];
+    if (id === m.team) return ['home-street', 'Опора моста — бетонная полоса посреди площади. Подойди к ней вплотную: она станет полом'];
+    if (!m.bed(id).alive) return [`done-${id}`, `Кристалл ${team(id)} сломан — добей оставшихся бойцов`];
+    if (loc.hall) return [`hall-${id}`, 'Пробей стену вокруг кристалла и держи <kbd>E</kbd> рядом с ним'];
+    return [`street-${id}`, `База: ${team(id)}. Кристалл в зале — две двери с улицы и два спуска с крыши`];
   }
 
   update(camera: PerspectiveCamera) {

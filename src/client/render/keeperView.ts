@@ -57,7 +57,6 @@ export class KeeperView {
   constructor(scene: Scene, map: MapData, assets: GameAssets) {
     const tex = auraTexture();
     for (const b of map.bases) {
-      const team = getTeam(b.team as TeamId);
       const model = new PlayerModel(assets, SUIT, 'none');
       const head = model.bone('head');
       const glasses = sunglasses();
@@ -67,7 +66,8 @@ export class KeeperView {
       model.setPose(new Vector3(...b.keeper.pos), new Quaternion(...b.keeper.quat), Math.PI);
       scene.add(model.group);
 
-      const color = new Color(team.color);
+      // neutral shops in the central city: a cool steel blue
+      const color = new Color(b.team ? getTeam(b.team as TeamId).color : 0x6fa8d0);
       const auraMat = new MeshBasicMaterial({
         // back faces only: the glow sits behind the silhouette and does not tint the face
         color: color.clone().multiplyScalar(1.6), map: tex, transparent: true, blending: AdditiveBlending, depthWrite: false, side: BackSide,
@@ -80,10 +80,10 @@ export class KeeperView {
       ring.position.y = -1.83 / 2 + 0.02;
       model.group.add(ring);
       // light at the feet: tints the floor and the counter, not the face
-      const light = new PointLight(team.color, 1.4, 3, 2);
+      const light = new PointLight(color.getHex(), 1.4, 3, 2);
       light.position.y = -0.75;
       model.group.add(light);
-      this.keepers.push({ team: team.id, model, aura, ring, light, phase: this.keepers.length * 1.7 });
+      this.keepers.push({ team: b.team as TeamId, model, aura, ring, light, phase: this.keepers.length * 1.7 });
     }
   }
 

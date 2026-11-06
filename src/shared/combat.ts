@@ -2,7 +2,6 @@ import { Vector3 } from 'three';
 import { DEFAULT_MOVEMENT, PLAYER_HALF_SEGMENT, PLAYER_RADIUS } from './constants';
 import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
-import { crossesPortal, PortalRuntime } from './portals';
 import type { TeamId } from './teams';
 import { energyLeft, PENETRATION, WeaponId, WEAPONS } from './weapons';
 import { Wind } from './wind';
@@ -161,7 +160,7 @@ export class Combat {
   /** Ray filter that skips every character capsule. */
   readonly notCharacter = (c: { handle: number }) => !this.characters.has(c.handle);
 
-  constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private portals: PortalRuntime[],
+  constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData,
     /** Character-controller colliders to ignore (projectiles test player capsules analytically). */
     characters: { handle: number }[] = [], windSeed = 2024) {
     this.wind = new Wind(windSeed);
@@ -390,12 +389,6 @@ export class Combat {
       const th = p.weapon !== 'grenade' ? this.rayTargets(p, _a, _b) : null;
       const tEnd = Math.min(wh ? wh.t : 1, th ? th.t : 1);
       const end = _a.clone().lerp(_b, tEnd);
-      // v1: portals swallow projectiles
-      if (this.portals.some((pt) => crossesPortal(pt, _a, end))) {
-        p.alive = false;
-        this.events.push({ type: 'fizzle', pos: end });
-        continue;
-      }
       if (th && (!wh || th.t <= wh.t)) {
         p.alive = false;
         p.pos.copy(end);
