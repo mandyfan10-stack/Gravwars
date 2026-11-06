@@ -1,6 +1,6 @@
 import { Quaternion, Vector3 } from 'three';
 import { Combat, Noise, Target } from './combat';
-import { EYE_OFFSET } from './constants';
+import { DEFAULT_MOVEMENT, EYE_OFFSET } from './constants';
 import type { Pickups } from './economy';
 import type { IslandNav, MapData, XZ } from './map';
 import { Rng, upOf } from './math';
@@ -45,10 +45,27 @@ export const NPC = {
     sight: 24,
     fov: 110,
     /** Delay between seeing the foe and the first shot. */
-    reaction: 0.7,
-    spread: 0.08,
+    reaction: 0.5,
+    /**
+     * Telegraphed bursts: the bandit stops and raises the gun for `windup` s (a click, a glint at the muzzle, a red
+     * mark); the aim follows the foe until `lock` s before the burst, then freezes on that spot. Standing still you
+     * are hit, a step aside and the burst goes past.
+     */
+    windup: 0.85,
+    lock: 0.35,
+    spread: 0.025,
     burst: 3,
-    burstPause: 1.3,
+    burstPause: 1.6,
+    /** Grenades per life, thrown every `grenadeEvery` s at most, at a foe `grenadeRange` m away; `grenadeWindup` s
+     * of a swing before the throw. Behind cover (not seen for a moment) the foe gets a high lob over it. */
+    grenades: 2,
+    grenadeEvery: [9, 16] as [number, number],
+    grenadeRange: [7, 21] as [number, number],
+    grenadeWindup: 0.7,
+    /** A thrown grenade goes off this long after it lands (it is cooked for the rest of the fuse). */
+    grenadeAfter: 1.1,
+    /** Chance to pick a grenade instead of a burst when one is ready and the foe is in the open. */
+    grenadeChance: 0.35,
     /** Will not follow further than this from home. */
     leash: 34,
     /** Without seeing the foe this long: search the last seen spot, then go home. */
@@ -121,6 +138,18 @@ export interface Npc {
   shots: number;
   shotsTotal: number;
   pauseT: number;
+  /** Gang fire cycle: free (moving, choosing), windup (raising the gun), burst (firing at the locked spot). */
+  fire: 'free' | 'windup' | 'burst';
+  /** Windup time left (burst or grenade). */
+  windT: number;
+  /** Where the burst goes (followed, then locked) / where the grenade is thrown. */
+  aimAt: Vector3;
+  /** Winding up a grenade throw (instead of a burst); `lob`: the high arc over cover. */
+  throwing: boolean;
+  lob: boolean;
+  grenades: number;
+  grenadeT: number;
+  throwsTotal: number;
   progressT: number;
   bestDist: number;
   /** Stuck events since the last reached waypoint. */
@@ -184,8 +213,14 @@ interface Island {
  * Noticing is gradual: suspicion grows while a target is in view (faster when close, running, in the open) and
  * fades when it is not. Shots, explosions, punches and running footsteps can be heard.
  */
+/** For the client: telegraphs (sound) and throws. */
+export type NpcEvent =
+  | { type: 'windup'; id: number; pos: Vector3; grenade: boolean }
+  | { type: 'throw'; id: number; pos: Vector3 };
+
 export class NpcManager {
   readonly npcs: Npc[] = [];
+  readonly events: NpcEvent[] = [];
   readonly islands: Island[] = [];
   private readonly rng = new Rng(31337);
   time = 0;
@@ -232,7 +267,8 @@ export class NpcManager {
       id, kind, island: isl.id, slot, sim, target, weapons, state: kind === 'bum' ? 'wander' : 'patrol', stateT: 0,
       route: [], wp: 0, foe: null, suspicion: new Map(), grudge: new Map(), lastSeen: null, lostT: 0, seenT: 0, searchAt: null,
       lookAt: null, lookUntil: 0, drinkAt: this.rng.range(...NPC.bum.drinkEvery), respawnT: 0, scanT: this.rng.range(0, 0.2), shots: 0,
-      shotsTotal: 0, pauseT: 0, progressT: 0, bestDist: Infinity, stuckN: 0, jumpT: 0, patrol: slot, prevPos: new Vector3(), status: '',
+      shotsTotal: 0, pauseT: 0, fire: 'free', windT: 0, aimAt: new Vector3(), throwing: false, lob: false, grenades: NPC.gang.grenades,
+      grenadeT: this.rng.range(...NPC.gang.grenadeEvery), throwsTotal: 0, progressT: 0, bestDist: Infinity, stuckN: 0, jumpT: 0, patrol: slot, prevPos: new Vector3(), status: '',
     };
     target.onHit = (owner) => this.onHit(npc, owner);
     this.combat.targets.push(target);
@@ -322,6 +358,10 @@ export class NpcManager {
     n.searchAt = null;
     n.lookAt = null;
     n.drinkAt = this.time + this.rng.range(...NPC.bum.drinkEvery);
+    n.fire = 'free';
+    n.throwing = false;
+    n.grenades = NPC.gang.grenades;
+    n.grenadeT = this.rng.range(...NPC.gang.grenadeEvery);
   }
 
   /** Dead NPCs wait far away (their capsule must not block anyone). */
@@ -373,7 +413,7 @@ export class NpcManager {
   }
 
   private setState(n: Npc, s: NpcState) {
-    if (n.state !== s) { n.state = s; n.stateT = 0; n.route = []; }
+    if (n.state !== s) { n.state = s; n.stateT = 0; n.route = []; n.fire = 'free'; n.throwing = false; }
   }
 
   /** How suspicious this NPC is of target `id` (0..1; UI). */
@@ -390,6 +430,7 @@ export class NpcManager {
     for (const isl of this.islands)
       isl.busy = this.combat.targets.some((t) => t.alive && !t.npc && this.onStreets(isl, t.center));
     const noises = this.combat.noises.splice(0);
+    if (this.events.length > 64) this.events.splice(0, this.events.length - 64); // nobody draining (tests, server)
 
     for (const n of this.npcs) {
       const isl = this.island(n.island);
@@ -416,6 +457,8 @@ export class NpcManager {
         input.yaw = n.sim.state.yaw + Math.sin(this.time * 7 + n.id) * 0.02;
         fire = false;
         aim = null;
+        n.fire = 'free'; // dazed mid-windup: the burst / throw is lost
+        n.throwing = false;
         n.status = 'оглушён';
       }
       n.sim.tick(input, h);
@@ -428,7 +471,7 @@ export class NpcManager {
         const eye = n.sim.state.pos.clone().addScaledVector(n.target.up, EYE_OFFSET);
         this.combat.use(fired, n.id, eye, aim, n.sim.state.vel, n.target.up.clone().negate());
         n.shotsTotal++;
-        if (n.kind === 'gang' && ++n.shots >= NPC.gang.burst) { n.shots = 0; n.pauseT = NPC.gang.burstPause; }
+        if (n.kind === 'gang' && ++n.shots >= NPC.gang.burst) { n.shots = 0; n.pauseT = NPC.gang.burstPause; n.fire = 'free'; }
       }
     }
   }
@@ -502,6 +545,7 @@ export class NpcManager {
     const eye = s.pos.clone().addScaledVector(up, EYE_OFFSET);
     n.stateT += dt;
     n.pauseT = Math.max(0, n.pauseT - dt);
+    n.grenadeT = Math.max(0, n.grenadeT - dt);
 
     n.scanT -= dt;
     let seen: Set<number> | null = null;
@@ -534,22 +578,16 @@ export class NpcManager {
         n.status = 'драка';
       } else {
         speed = NPC.gang.run;
-        if (n.lostT === 0) {
-          face = foe.center;
-          if (d > NPC.gang.range) goal = foe.center;
-          if (n.seenT > NPC.gang.reaction && n.pauseT <= 0) {
-            fire = true;
-            aim = foe.center.clone().addScaledVector(foe.up, 0.25);
-          }
-          n.status = 'стреляет';
-        } else {
-          goal = n.lastSeen;
-          n.status = 'преследует';
-        }
+        const r = this.gangFight(n, foe, eye, up, dt);
+        goal = r.goal;
+        face = r.face;
+        fire = r.fire;
+        aim = r.aim;
       }
       if (aim) {
         aim.sub(eye).normalize();
         const spread = n.kind === 'gang' ? NPC.gang.spread : 0.02;
+        // the burst goes to the locked spot: a moving target is missed, a still one is not
         aim.add(new Vector3(this.rng.range(-1, 1), this.rng.range(-1, 1), this.rng.range(-1, 1)).multiplyScalar(spread)).normalize();
       }
     } else if (n.state === 'drink') {
@@ -626,6 +664,93 @@ export class NpcManager {
     return { input, fire, aim };
   }
 
+  /**
+   * A bandit in a fight: walk up to `range`, then wind up and fire a burst at a locked spot, or wind up and throw a
+   * grenade. Lost sight: chase the last seen spot; if the foe ducked behind cover close enough, lob a grenade there.
+   */
+  private gangFight(n: Npc, foe: Target, eye: Vector3, up: Vector3, dt: number) {
+    const G = NPC.gang;
+    let goal: Vector3 | null = null, face: Vector3 | null = null, aim: Vector3 | null = null, fire = false;
+    const seen = n.lostT === 0;
+    const target = seen ? foe.center : n.lastSeen;
+    const d = target ? eye.distanceTo(target) : Infinity;
+    if (n.fire === 'windup') {
+      // standing, the gun up (or the arm back); the aim follows until the lock, then stays
+      n.windT -= dt;
+      if (n.throwing) face = n.aimAt;
+      else {
+        if (seen && n.windT > G.lock) n.aimAt.copy(foe.center).addScaledVector(foe.up, 0.2);
+        face = n.aimAt;
+      }
+      if (n.windT <= 0) {
+        if (n.throwing) { this.throwGrenade(n, eye, up); n.fire = 'free'; n.throwing = false; n.pauseT = G.burstPause; }
+        else n.fire = 'burst';
+      }
+      n.status = n.throwing ? 'замах гранатой' : 'целится';
+    } else if (n.fire === 'burst') {
+      face = n.aimAt;
+      fire = true;
+      aim = n.aimAt.clone();
+      n.status = 'стреляет';
+    } else if (seen) {
+      face = foe.center;
+      if (d > G.range) goal = foe.center;
+      n.status = 'в бою';
+      if (n.seenT > G.reaction && n.pauseT <= 0) {
+        const nade = this.canThrow(n, d) && this.rng.chance(G.grenadeChance);
+        this.windup(n, nade ? foe.center.clone().addScaledVector(foe.up, -0.7) : foe.center.clone().addScaledVector(foe.up, 0.2), nade, false);
+      }
+    } else {
+      goal = n.lastSeen;
+      n.status = 'преследует';
+      // ducked behind cover a moment ago, close enough: a grenade over it
+      if (n.lastSeen && n.lostT > 0.4 && n.lostT < 3 && n.pauseT <= 0 && this.canThrow(n, d)) {
+        this.windup(n, n.lastSeen.clone().addScaledVector(up, -0.7), true, true);
+      }
+    }
+    if (n.fire !== 'free') goal = null; // nobody shoots or throws on the run
+    return { goal, face, aim, fire };
+  }
+
+  private canThrow(n: Npc, d: number) {
+    const [lo, hi] = NPC.gang.grenadeRange;
+    return n.grenades > 0 && n.grenadeT <= 0 && d >= lo && d <= hi;
+  }
+
+  private windup(n: Npc, at: Vector3, grenade: boolean, lob: boolean) {
+    n.fire = 'windup';
+    n.throwing = grenade;
+    n.lob = lob;
+    n.windT = grenade ? NPC.gang.grenadeWindup : NPC.gang.windup;
+    n.aimAt.copy(at);
+    n.shots = 0;
+    this.events.push({ type: 'windup', id: n.id, pos: n.sim.state.pos.clone(), grenade });
+  }
+
+  /**
+   * Throw a grenade at `n.aimAt`: an underhand lob at ~45° with just enough speed in the open (it lands soft and
+   * does not roll far), a high arc at full speed over cover. Cooked so that it goes off soon after landing.
+   */
+  private throwGrenade(n: Npc, eye: Vector3, up: Vector3) {
+    const g = DEFAULT_MOVEMENT.gravity;
+    const rel = _v.copy(n.aimAt).sub(eye);
+    const y = rel.dot(up);
+    const x = Math.max(0.5, rel.addScaledVector(up, -y).length());
+    const v = n.lob ? WEAPONS.grenade.speed : Math.min(WEAPONS.grenade.speed, Math.sqrt(g * (y + Math.hypot(x, y))) * 1.02);
+    const dir = lobDirection(eye, n.aimAt, up, v, g, n.lob);
+    if (!dir) return;
+    n.grenades--;
+    n.grenadeT = this.rng.range(...NPC.gang.grenadeEvery);
+    n.throwsTotal++;
+    const p = this.combat.use('grenade', n.id, eye, dir, n.sim.state.vel, up.clone().negate());
+    if (p) {
+      p.vel.copy(dir).multiplyScalar(v).addScaledVector(n.sim.state.vel, WEAPONS.grenade.inherit);
+      const flight = x / Math.max(1, v * Math.sqrt(Math.max(0, 1 - dir.dot(up) ** 2)));
+      p.age = Math.max(0, Math.min(WEAPONS.grenade.fuse - 0.8, WEAPONS.grenade.fuse - flight - NPC.gang.grenadeAfter));
+    }
+    this.events.push({ type: 'throw', id: n.id, pos: n.sim.state.pos.clone() });
+  }
+
   private look(n: Npc, pos: Vector3) {
     n.lookAt = pos.clone();
     n.lookUntil = this.time + 2.5;
@@ -683,3 +808,19 @@ export class NpcManager {
   }
 }
 
+/**
+ * Launch direction to hit `to` from `from` at speed `v` under gravity `g` along -up (no drag): the low (fast) or the
+ * high (lob) solution. Null if it is out of reach.
+ */
+export function lobDirection(from: Vector3, to: Vector3, up: Vector3, v: number, g: number, high: boolean): Vector3 | null {
+  const rel = to.clone().sub(from);
+  const y = rel.dot(up);
+  const flat = rel.addScaledVector(up, -y);
+  const x = flat.length();
+  if (x < 0.5) return up.clone();
+  const disc = v ** 4 - g * (g * x * x + 2 * y * v * v);
+  if (disc < 0) return null;
+  const tan = (v * v + (high ? 1 : -1) * Math.sqrt(disc)) / (g * x);
+  const a = Math.atan(tan);
+  return flat.divideScalar(x).multiplyScalar(Math.cos(a)).addScaledVector(up, Math.sin(a));
+}

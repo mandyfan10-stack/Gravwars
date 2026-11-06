@@ -97,6 +97,20 @@ export class GameAudio {
   pickup() { this.tone('triangle',660,880,.05,.04);this.tone('triangle',880,990,.05,.03,.05); }
   eat() { this.noise(.06,.08,2600,900);this.noise(.06,.07,2200,800); }
   coins() { this.tone('square',1250,1250,.05,.02);this.tone('square',1660,1660,.09,.02,.06); }
+  /** A bandit raises the pistol: the slide is racked — a metallic clack-clack (the burst is coming). */
+  cock(dist = 0) {
+    const near = 1 / (1 + dist / 10);
+    if (near < 0.08) return;
+    this.click(.11 * near, 2100);
+    this.click(.13 * near, 1500, .09);
+  }
+  /** A grenade pin pulled and the spoon flying off. */
+  pin(dist = 0) {
+    const near = 1 / (1 + dist / 10);
+    if (near < 0.08) return;
+    this.click(.08 * near, 3400);
+    this.tone('triangle', 2600, 1900, .12, .03 * near, .18);
+  }
   /** Underarm throw: a short swish. */
   toss() { this.noise(.14,.06,900,2600,0,'bandpass',1.2); }
   /** A bottle breaking: a bright crash and a few glass tinkles after it. */

@@ -9,10 +9,10 @@ import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS
 import { holdables, Hotbar } from '../src/shared/inventory';
 import { THROW, Throws } from '../src/shared/throwables';
 import { Fishing, FISHING } from '../src/shared/fishing';
-import { NPC, NpcManager } from '../src/shared/npcs';
+import { lobDirection, NPC, Npc, NpcManager } from '../src/shared/npcs';
 import { upOf } from '../src/shared/math';
 import { moveBasis } from '../src/shared/movement';
-import { HU, TICK_DT, WORLD } from '../src/shared/constants';
+import { DEFAULT_MOVEMENT, HU, TICK_DT, WORLD } from '../src/shared/constants';
 import { generateMap, PLAYGROUND } from '../src/shared/map';
 import { CROUCH_SPEED, emptyInput, MoveInput, SPRINT_SPEED, STAMINA } from '../src/shared/movement';
 import { buildPhysicsWorld, initRapier } from '../src/shared/physics';
@@ -822,6 +822,94 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
       return Math.abs(n.sim.state.pos.dot(u) - new Vector3(...isl.origin).dot(u) - 0.94) < 3;
     })()));
   check('NPCs are cheap to simulate', ms < 40, `${ms.toFixed(1)} ms per game second, ${npcs.npcs.length} NPCs`);
+}
+
+// Gang fights: telegraphed bursts at a locked spot (standing still you are hit, a step aside dodges), grenades.
+{
+  // the throw solver: low and high arcs both land on the point (no drag, no wind)
+  const up = new Vector3(0, 1, 0), g = DEFAULT_MOVEMENT.gravity, v = WEAPONS.grenade.speed;
+  const from = new Vector3(0, 1.5, 0), to = new Vector3(14, 0, 5);
+  const land = (high: boolean) => {
+    const d = lobDirection(from, to, up, v, g, high)!;
+    const p = from.clone(), vel = d.multiplyScalar(v);
+    for (let k = 0; k < 64 * 6 && !(vel.y < 0 && p.y <= to.y); k++) { vel.y -= g * TICK_DT; p.addScaledVector(vel, TICK_DT); }
+    return p;
+  };
+  check('grenade arcs land on the target (low and lob)', land(false).distanceTo(to) < 0.6 && land(true).distanceTo(to) < 0.8,
+    `low ${land(false).distanceTo(to).toFixed(2)}, lob ${land(true).distanceTo(to).toFixed(2)}`);
+  check('a target out of reach gets no throw', lobDirection(from, new Vector3(60, 0, 0), up, v, g, false) === null);
+
+  const w = buildPhysicsWorld(R, map);
+  const combat = new Combat(R, w, map);
+  combat.windMul = 0;
+  const npcs = new NpcManager(R, w, map, combat, new Pickups(R, w, map));
+  const N = npcs as unknown as { engage(n: Npc, t: Target): void; park(n: Npc): void; spawn(n: Npc): void };
+  const gm = npcs.npcs.find((n) => n.island === 'red' && n.kind === 'gang')!;
+  for (const o of npcs.npcs) if (o !== gm) { o.state = 'dead'; o.respawnT = 1e9; o.target.alive = false; N.park(o); }
+  const me: Target = { id: 0, team: 'red', center: new Vector3(), up: new Vector3(0, 1, 0), hp: 1e6, alive: true, respawnIn: -1, vel: new Vector3() };
+  combat.targets.push(me);
+  let t = 0;
+  const log: { t: number; type: string; hit?: boolean; d?: number }[] = [];
+  const step = (sec: number, each?: () => void, until?: () => boolean) => {
+    for (let k = 0; k < 64 * sec && !until?.(); k++) {
+      each?.(); t += TICK_DT;
+      npcs.tick(TICK_DT); combat.tick(TICK_DT);
+      for (const e of npcs.events.splice(0)) if (e.id === gm.id) log.push({ t, type: e.type === 'windup' ? (e.grenade ? 'nadeWindup' : 'windup') : 'throw' });
+      for (const e of combat.events.splice(0)) {
+        if (e.type === 'fire' && e.owner === gm.id) log.push({ t, type: e.weapon === 'grenade' ? 'grenade' : 'shot' });
+        if (e.type === 'bounce') log.push({ t, type: 'bounce', d: e.pos.distanceTo(me.center) });
+        if (e.type === 'hit' && e.owner === gm.id && e.target === 0) log.push({ t, type: 'hit' });
+        if (e.type === 'explode') log.push({ t, type: 'explode', hit: e.pos.distanceTo(me.center) < WEAPONS.grenade.radius * 0.75, d: e.pos.distanceTo(me.center) });
+      }
+    }
+  };
+  step(1);
+  const s0 = gm.sim.state;
+  const fwd = new Vector3(), side = new Vector3();
+  moveBasis(s0.frame, s0.yaw, fwd, side);
+  me.center.copy(s0.pos).addScaledVector(fwd, 10);
+  gm.grenades = 0;
+  N.engage(gm, me);
+  const burst = () => {
+    const from = log.length;
+    step(4, undefined, () => log.slice(from).some((e) => e.type === 'windup'));
+    const w0 = log.slice(from).find((e) => e.type === 'windup');
+    return { from, w0 };
+  };
+  let b = burst();
+  step(2, undefined, () => gm.fire === 'free' && log.slice(b.from).some((e) => e.type === 'shot'));
+  step(0.2);
+  const shots = log.slice(b.from).filter((e) => e.type === 'shot');
+  const hits = log.slice(b.from).filter((e) => e.type === 'hit').length;
+  check('a bandit winds up before the burst (time to react)', !!b.w0 && shots.length === NPC.gang.burst && shots[0].t - b.w0!.t >= NPC.gang.windup - 0.05,
+    b.w0 ? `${(shots[0]?.t - b.w0.t).toFixed(2)} s, ${shots.length} shots` : 'no windup');
+  check('standing still in a burst gets you hit', hits >= 2, `${hits}/${shots.length}`);
+  // the next burst: step aside once it winds up
+  b = burst();
+  const away = side.clone().multiplyScalar(4.5 * TICK_DT);
+  step(2, () => me.center.add(away), () => gm.fire === 'free' && log.slice(b.from).some((e) => e.type === 'shot'));
+  step(0.2);
+  const dodged = log.slice(b.from).filter((e) => e.type === 'hit').length;
+  check('a step aside after the lock dodges the burst', !!b.w0 && log.slice(b.from).some((e) => e.type === 'shot') && dodged === 0, `${dodged} hits`);
+
+  // grenades: in the open, at 14 m; it lands next to you (a fresh bandit at home: the chase above took it far)
+  N.spawn(gm);
+  step(0.5);
+  moveBasis(gm.sim.state.frame, gm.sim.state.yaw, fwd, side);
+  me.center.copy(gm.sim.state.pos).addScaledVector(fwd, 14);
+  gm.grenades = 2; gm.grenadeT = 0;
+  N.engage(gm, me);
+  const chance = NPC.gang.grenadeChance;
+  NPC.gang.grenadeChance = 1;
+  const at = log.length;
+  step(6, undefined, () => log.slice(at).some((e) => e.type === 'explode'));
+  NPC.gang.grenadeChance = chance;
+  const nw = log.slice(at).find((e) => e.type === 'nadeWindup'), thr = log.slice(at).find((e) => e.type === 'grenade');
+  const boom = log.slice(at).find((e) => e.type === 'explode');
+    check('a bandit winds up and throws a grenade', !!nw && !!thr && thr.t - nw.t >= NPC.gang.grenadeWindup - 0.05 && gm.grenades === 1);
+  const touch = log.slice(at).find((e) => e.type === 'bounce');
+  check('the grenade lands at the target and goes off within the blast radius', !!touch && touch.d! < 1.5 && !!boom?.hit,
+    `touchdown ${touch?.d?.toFixed(1)} m, blast ${boom?.d?.toFixed(1)} m`);
 }
 
 // Bots: a full headless match (player parked out of reach): crystals fall, nobody gets lost.

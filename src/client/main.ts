@@ -24,6 +24,7 @@ import { GameAudio } from './audio';
 import { BlockController } from './blockController';
 import { Cursor } from './cursor';
 import { createDebugGui, DebugToggles } from './debugGui';
+import { GrenadeWarn } from './grenadeWarn';
 import { Hands } from './hands';
 import { Hud, teamHex } from './hud';
 import { Input } from './input';
@@ -109,6 +110,7 @@ async function main() {
   const hands = new Hands(eco, player, build, pockets, throws, sim, audio, hud, viewModel, cursor);
   const pickupView = new PickupView(scene, pickups);
   const thrownView = new ThrownView(scene, throws);
+  const grenadeWarn = new GrenadeWarn(combat);
   const fishingView = new FishingView(scene, pockets.fishing);
   const keepers = new KeeperView(scene, map, assets);
   const generators = new GeneratorView(scene, match);
@@ -188,7 +190,7 @@ async function main() {
 
   // test / debug hook
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, ready: true,
+    sim, local, input, camera, renderer, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -289,6 +291,12 @@ async function main() {
       } else if (e.type === 'land') audio.thud(e.pos.distanceTo(sim.state.pos));
     }
     thrownView.update(dt);
+    // bandits telegraph: the slide racked before a burst, the pin pulled before a throw
+    for (const e of npcs.events.splice(0)) {
+      const d = e.pos.distanceTo(sim.state.pos);
+      if (e.type === 'windup') { if (e.grenade) audio.pin(d); else audio.cock(d); }
+      else if (d < 25) audio.toss();
+    }
     generators.update(time);
     pickupView.update(time, pockets.near);
     keepers.update(dt, time);
@@ -296,6 +304,7 @@ async function main() {
 
     botView.update(dt, local.alpha);
     npcView.update(dt, local.alpha, camera);
+    grenadeWarn.update(camera, sim.state.pos);
     fx.down.copy(gfx.upDir).negate();
     fx.update(dt, combat, time);
     mapView.update(time, dt);

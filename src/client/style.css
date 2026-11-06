@@ -81,6 +81,17 @@ body.debug #info, body.debug #speed { display: block; }
   background: linear-gradient(90deg, #f1ece2 var(--fill), rgba(0, 0, 0, .45) var(--fill)); }
 #markers .npc-mark.hostile { color: #ff6a5c; }
 #markers .npc-mark.hostile::after { display: none; }
+/* a live grenade near you: icon in a ring that fills with the fuse */
+#markers .nade-mark { position: absolute; left: 0; top: 0; width: 34px; height: 34px; margin: -17px 0 0 -17px; display: grid; place-items: center;
+  border-radius: 50%; will-change: transform; color: #fff; font-size: 18px;
+  background: radial-gradient(closest-side, rgba(14, 16, 22, .7) 78%, transparent 80%),
+    conic-gradient(#ff4a3d var(--fuse), rgba(255, 255, 255, .25) var(--fuse)); }
+#hud #markers .nade-mark .ic { filter: none; }
+/* winding up a burst / a throw at you */
+#markers .npc-mark.aim { width: 20px; height: 20px; margin: -26px 0 0 -10px; padding-top: 2px; border-radius: 3px; background: #e5352a;
+  color: #fff; font-size: 15px; line-height: 18px; text-shadow: none; box-shadow: 0 0 0 1px rgba(0, 0, 0, .5), 0 0 10px rgba(255, 60, 40, .6);
+  animation: aim .22s ease-in-out infinite alternate; }
+@keyframes aim { from { opacity: .55; } to { opacity: 1; } }
 /* dazed: two bright dots orbiting over the head (an ellipse, approximated by keyframes) */
 #markers .npc-mark.stun { width: 0; height: 0; margin: -14px 0 0 0; }
 #markers .npc-mark.stun::before, #markers .npc-mark.stun::after { content: ''; position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; margin: 0;

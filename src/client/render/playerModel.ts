@@ -1,6 +1,6 @@
 import {
-  AnimationAction, AnimationClip, AnimationMixer, Color, Group, LoopOnce, Mesh, MeshStandardMaterial, Object3D, Quaternion,
-  Vector3,
+  AdditiveBlending, AnimationAction, AnimationClip, AnimationMixer, CanvasTexture, Color, CylinderGeometry, Group, LatheGeometry, LoopOnce, Mesh,
+  MeshStandardMaterial, Object3D, Quaternion, Sprite, SpriteMaterial, Vector2, Vector3,
 } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { GameAssets } from './assets';
@@ -13,6 +13,39 @@ const AY = new Vector3(0, 1, 0);
 /** Palette column (u range) of the uniform's red shades (helmet crest, skirt): they take the team colour. */
 const TEAM_U: [number, number] = [0.6875, 0.75];
 const ARM_TRACK = /^arm-(left|right)\./;
+
+/** A hard little star of light: the glint of a raised gun barrel (shared by every model). */
+let glintTex: CanvasTexture | null = null;
+function glintTexture() {
+  if (glintTex) return glintTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  r.addColorStop(0, '#fff');
+  r.addColorStop(0.18, 'rgba(255,240,210,.9)');
+  r.addColorStop(0.45, 'rgba(255,200,140,.18)');
+  r.addColorStop(1, 'rgba(255,180,120,0)');
+  g.fillStyle = r;
+  g.fillRect(0, 0, 64, 64);
+  g.fillStyle = 'rgba(255,245,225,.85)';
+  g.fillRect(2, 31, 60, 2);
+  g.fillRect(31, 2, 2, 60);
+  glintTex = new CanvasTexture(c);
+  return glintTex;
+}
+
+/** Hand grenade for the third-person models (metres). */
+function grenadeMesh() {
+  const g = new Group();
+  const body = new Mesh(new LatheGeometry([
+    new Vector2(0, -0.05), new Vector2(0.034, -0.046), new Vector2(0.045, -0.02), new Vector2(0.046, 0.015),
+    new Vector2(0.036, 0.04), new Vector2(0.018, 0.05), new Vector2(0, 0.05)], 8),
+  new MeshStandardMaterial({ color: 0x46592f, roughness: 0.6, flatShading: true }));
+  const cap = new Mesh(new CylinderGeometry(0.014, 0.016, 0.022, 6).translate(0, 0.058, 0), new MeshStandardMaterial({ color: 0x55575c, roughness: 0.4, metalness: 0.6 }));
+  g.add(body, cap);
+  return g;
+}
 
 /** Clip without the arm tracks (legs + body follow locomotion, arms hold the gun). */
 function withoutArms(c: AnimationClip) {
@@ -59,8 +92,8 @@ export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0)
   return m;
 }
 
-/** fists / none: empty hands (punching / standing behind a counter). */
-export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none';
+/** fists / none: empty hands (punching / standing behind a counter); grenade: the right arm up, about to throw. */
+export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none' | 'grenade';
 
 export interface ModelState {
   /** Planar speed, m/s. */
@@ -89,7 +122,9 @@ export class PlayerModel {
   private flash = 0;
   private dying = false;
   private readonly guns: Record<'rifle' | 'pistol', Object3D>;
-  private readonly armClips: Record<'both' | 'free', [AnimationAction, AnimationAction]>;
+  private readonly armClips: Record<'both' | 'free' | 'throw', [AnimationAction, AnimationAction]>;
+  private readonly grenade: Group;
+  private readonly glint: Sprite;
   /** What the character holds: arm pose + gun model. */
   held: HeldItem = 'rifle';
 
@@ -122,6 +157,19 @@ export class PlayerModel {
     pistol.position.set(-0.04, 0.06, 0.26);
     torso.add(rifle, pistol);
     this.guns = { rifle, pistol };
+    // glint at the pistol muzzle (telegraphs an aimed burst)
+    this.glint = new Sprite(new SpriteMaterial({ map: glintTexture(), color: new Color(2.2, 1.9, 1.5), blending: AdditiveBlending,
+      depthWrite: false, transparent: true, toneMapped: false }));
+    this.glint.position.copy(pistolModel().muzzle).add(new Vector3(0, 0, -0.03));
+    this.glint.visible = false;
+    pistol.add(this.glint);
+    // a grenade in the right fist (wind-up before a throw)
+    this.grenade = grenadeMesh();
+    // (on the torso like the guns: the arm bone does not point where the skinned hand is in the "holding" pose)
+    this.grenade.scale.setScalar(1.5 / SCALE);
+    this.grenade.position.set(-0.14, 0.17, 0.27);
+    this.grenade.visible = false;
+    torso.add(this.grenade);
 
     this.mixer = new AnimationMixer(this.body);
     const find = (n: string) => AnimationClip.findByName(src.animations, n)!;
@@ -135,6 +183,8 @@ export class PlayerModel {
       both: [this.mixer.clipAction(armsOnly(find('holding-both'))), once(this.mixer.clipAction(armsOnly(find('holding-both-shoot'))))],
       // bare hands: natural arm swing, a right hook to punch
       free: [this.mixer.clipAction(armsOnly(find('idle'))), once(this.mixer.clipAction(armsOnly(find('attack-melee-right'))))],
+      // the grenade: held up in the right hand, thrown with the overhand swing
+      throw: [this.mixer.clipAction(armsOnly(find('holding-right'))), once(this.mixer.clipAction(armsOnly(find('attack-melee-right'))))],
     };
     [this.arms, this.armsShoot] = this.armClips.both;
     this.arms.play();
@@ -146,7 +196,8 @@ export class PlayerModel {
   setHeld(held: HeldItem) {
     this.guns.rifle.visible = held === 'rifle';
     this.guns.pistol.visible = held === 'pistol';
-    const [arms, shoot] = this.armClips[held === 'rifle' || held === 'pistol' ? 'both' : 'free'];
+    this.grenade.visible = held === 'grenade';
+    const [arms, shoot] = this.armClips[held === 'rifle' || held === 'pistol' ? 'both' : held === 'grenade' ? 'throw' : 'free'];
     if (arms !== this.arms) {
       this.arms.stop();
       this.armsShoot.stop();
@@ -155,6 +206,18 @@ export class PlayerModel {
       if (!this.dying) this.arms.reset().play();
     }
     this.held = held;
+  }
+
+  /** Barrel glint 0..1 (0 = hidden): a raised gun about to fire. */
+  setGlint(k: number) {
+    this.glint.visible = k > 0.01 && this.held === 'pistol';
+    this.glint.scale.setScalar(0.12 + k * 0.32);
+    (this.glint.material as SpriteMaterial).opacity = Math.min(1, k * 1.4);
+  }
+
+  /** The grenade leaves the hand (the swing plays on). */
+  release() {
+    this.grenade.visible = false;
   }
 
   /** Bone to hang accessories on (sunglasses on the head). */
@@ -209,7 +272,7 @@ export class PlayerModel {
       loco.timeScale = Math.max(0.6, s.speed / 3.2);
       if (s.fired) {
         this.armsShoot.reset().play();
-        this.shootT = this.held === 'fists' ? 0.45 : 0.2;
+        this.shootT = this.held === 'fists' || this.held === 'grenade' ? 0.45 : 0.2;
       }
     }
     this.shootT = Math.max(0, this.shootT - dt);

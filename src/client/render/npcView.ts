@@ -1,7 +1,7 @@
 import { Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, Scene, Vector3 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { upOf } from '../../shared/math';
-import type { Npc, NpcManager } from '../../shared/npcs';
+import { NPC, Npc, NpcManager } from '../../shared/npcs';
 import type { GameAssets } from './assets';
 import { bottleMeshes } from './pickupView';
 import { PlayerModel } from './playerModel';
@@ -37,6 +37,9 @@ interface View {
   bottle: Group | null;
   hp: number;
   shots: number;
+  throws: number;
+  /** After a throw: the swing plays out before the pistol comes back. */
+  throwT: number;
   corpseT: number;
   lastPos: Vector3;
   lastFrame: Quaternion;
@@ -71,7 +74,7 @@ export class NpcView {
       const mark = document.createElement('div');
       mark.className = 'npc-mark';
       layer.append(mark);
-      return { npc, model, bottle, hp: npc.target.hp, shots: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, mark };
+      return { npc, model, bottle, hp: npc.target.hp, shots: 0, throws: 0, throwT: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, mark };
     });
   }
 
@@ -101,8 +104,20 @@ export class NpcView {
       v.lastYaw = s.yaw;
       upOf(s.frame, _up);
       const vUp = s.vel.dot(_up);
-      const fired = n.shotsTotal !== v.shots;
+      let fired = n.shotsTotal !== v.shots;
       v.shots = n.shotsTotal;
+      // gang: the pistol up with a growing glint while winding up a burst; a grenade in hand before a throw
+      if (n.kind === 'gang') {
+        const threw = n.throwsTotal !== v.throws;
+        v.throws = n.throwsTotal;
+        if (threw) { v.throwT = 0.5; fired = true; m.release(); }
+        v.throwT = Math.max(0, v.throwT - dt);
+        const nade = (n.fire === 'windup' && n.throwing) || v.throwT > 0;
+        if (nade && m.held !== 'grenade') m.setHeld('grenade');
+        else if (!nade && m.held !== 'pistol') m.setHeld('pistol');
+        const winding = n.fire === 'windup' && !n.throwing;
+        m.setGlint(winding ? 1 - n.windT / NPC.gang.windup : n.fire === 'burst' ? 1 : 0);
+      }
       if (v.bottle) v.bottle.visible = n.state === 'drink';
       m.update(dt, { speed: Math.sqrt(Math.max(0, s.vel.lengthSq() - vUp * vUp)), grounded: s.onGround, vUp, fired });
 
@@ -113,9 +128,11 @@ export class NpcView {
       _d.copy(_p).addScaledVector(_up, MARK_HEIGHT).project(camera);
       if ((a < 0.08 && !stun) || dist > MARK_RANGE || _d.z > 1) { v.mark.style.display = 'none'; continue; }
       const hostile = n.foe?.id === this.playerId;
+      // winding up at you: the "!" turns into a pulsing red warning (a burst or a grenade is coming)
+      const aiming = hostile && n.fire !== 'free';
       v.mark.style.display = '';
       v.mark.textContent = stun ? '' : hostile ? '!' : '?';
-      v.mark.className = `npc-mark${stun ? ' stun' : hostile ? ' hostile' : ''}`;
+      v.mark.className = `npc-mark${stun ? ' stun' : aiming ? ' hostile aim' : hostile ? ' hostile' : ''}`;
       v.mark.style.opacity = hostile || stun ? '1' : String(0.35 + a * 0.65);
       v.mark.style.setProperty('--fill', `${Math.round(a * 100)}%`);
       v.mark.style.transform = `translate(${((_d.x * 0.5 + 0.5) * w).toFixed(1)}px, ${((-_d.y * 0.5 + 0.5) * h).toFixed(1)}px)`;

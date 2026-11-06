@@ -91,6 +91,8 @@ const PIERCE_PROBE = 1.2;
 export const MAX_HP = 100;
 /** Spawn protection: seconds, and how far from the spawn point it holds. */
 export const SPAWN_GUARD = { time: 3, radius: 6 };
+/** Share of a grenade's sliding speed lost on each floor bounce. */
+export const GRENADE_GRIP = 0.55;
 const DUMMY_RESPAWN = 3;
 
 const _a = new Vector3();
@@ -434,7 +436,9 @@ export class Combat {
         p.pos.copy(end).addScaledVector(n, 0.06);
         if (vn < 0) {
           p.vel.addScaledVector(n, -(1 + def.bounce) * vn);
-          p.vel.multiplyScalar(0.8);
+          // a floor grips: most of the sliding speed is lost (a grenade does not roll on for metres); walls just damp
+          if (n.dot(p.down) < -0.7) p.vel.addScaledVector(_rel.copy(p.vel).addScaledVector(n, -p.vel.dot(n)), -GRENADE_GRIP);
+          else p.vel.multiplyScalar(0.8);
           if (-vn > 1.5) this.events.push({ type: 'bounce', pos: p.pos.clone(), speed: -vn });
           if (n.dot(p.down) < -0.7 && p.vel.length() < 1.2) {
             p.resting = true;
