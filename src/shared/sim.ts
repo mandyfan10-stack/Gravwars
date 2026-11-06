@@ -34,6 +34,8 @@ export class PlayerSim {
   team: TeamDef;
   /** Lifts / geysers launch this body (NPCs stay in their streets). */
   usePads = true;
+  /** In a geyser arc: the landing soaks up the horizontal speed (long arcs would slide you off the island). */
+  private softLanding = false;
 
   constructor(R: Rapier, world: PhysicsWorld, readonly map: MapData, teamId: TeamId,
     readonly cfg: MovementConfig = { ...DEFAULT_MOVEMENT }) {
@@ -52,6 +54,8 @@ export class PlayerSim {
     s.yaw = sp.yaw;
     s.pitch = 0;
     s.onGround = false;
+    s.airT = -1;
+    this.softLanding = false;
     this.mover.place(s);
     this.events.push({ type: 'respawn', reason });
   }
@@ -91,6 +95,11 @@ export class PlayerSim {
     const s = this.state;
     _prev.copy(s.pos);
     this.mover.step(s, input, dt);
+    if (this.softLanding && s.onGround) {
+      this.softLanding = false;
+      const up = upOf(s.frame, _up);
+      s.vel.addScaledVector(up, -s.vel.dot(up)).multiplyScalar(0.15);
+    }
 
     // portals: teleport + inherit the gravity of the exit face
     for (const p of this.portals) {
@@ -98,6 +107,9 @@ export class PlayerSim {
       s.pos.applyMatrix4(p.toPartner);
       s.vel.applyQuaternion(p.qToPartner);
       s.frame.premultiply(p.qToPartner).normalize();
+      // ground state belongs to the old frame: re-probe next tick (no jump / coyote carried through)
+      s.onGround = false;
+      s.airT = -1;
       this.mover.place(s);
       this.events.push({ type: 'teleport', matrix: p.toPartner, quat: p.qToPartner });
       break;
@@ -115,6 +127,7 @@ export class PlayerSim {
         _d.addScaledVector(pu, -h);
         if (_d.length() > pad.radius) continue;
         this.launch(pad.target, pad.apex, pu);
+        this.softLanding = pad.kind === 'geyser';
         break;
       }
     }

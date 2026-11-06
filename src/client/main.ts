@@ -6,7 +6,7 @@ import '@fontsource/inter/800.css';
 import './style.css';
 import { Quaternion, Vector3 } from 'three';
 import { BlockSystem } from '../shared/blocks';
-import { BotManager } from '../shared/bots';
+import { applyDifficulty, BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { generateMap } from '../shared/map';
@@ -46,12 +46,18 @@ import { buildPropView } from './render/propView';
 import { PortalView } from './render/portalView';
 import { ViewModel } from './render/viewmodel';
 import { setPixelTextures } from './render/texFilter';
+import { loadSettings, saveSettings } from './settings';
+import { formatTime, MatchStats } from './stats';
 
 async function main() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const overlay = document.getElementById('overlay')!;
 
   // --- simulation (shared with the future server)
+  const settings = loadSettings();
+  /** Difficulty of the running match (a change mid-match waits for the next one). */
+  let difficulty = settings.difficulty;
+  applyDifficulty(difficulty);
   const R = await initRapier();
   const map = generateMap();
   const world = buildPhysicsWorld(R, map);
@@ -87,6 +93,7 @@ async function main() {
   // --- player, UI
   const input = new Input(canvas, overlay);
   const audio = new GameAudio();
+  audio.volume = settings.volume;
   const hud = new Hud();
   const player = new PlayerCombat(sim, combat, hud, fx, audio, viewModel);
   const botView = new BotView(scene, bots, assets);
@@ -106,12 +113,14 @@ async function main() {
     input.pitch = Math.max(-1.55, Math.min(1.55, input.pitch + pitch));
     input.yaw -= yaw;
   };
+  const stats = new MatchStats(match);
+  player.onFrag = (killer, victim, head) => stats.frag(killer, victim, head);
   player.onKill = (tg) => {
     if (tg.npc) return; // city NPCs pay with what they drop
     match.wallet.cash += KILL_REWARD;
   };
 
-  const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: input.sensitivity, fov: 80, pixel: true };
+  const toggles: DebugToggles = { portals: true, bloom: true, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
   const applyToggles = () => {
     portalView.enabled = toggles.portals;
     gfx.bloom.enabled = toggles.bloom;
@@ -120,9 +129,21 @@ async function main() {
     camera.updateProjectionMatrix();
     setPixelTextures(toggles.pixel, [scene, viewModel.scene]);
   };
-  setupMenu(input, audio, camera, toggles, applyToggles);
-  const gui = createDebugGui(sim.cfg, sim.mover, toggles, applyToggles);
+  const statsHtml = () => stats.teamsHtml(player.me.alive) + stats.personalHtml();
+  const menu = setupMenu(input, audio, camera, toggles, settings, {
+    onToggles: applyToggles,
+    onDifficulty: (d) => { difficulty = d; applyDifficulty(d); bots.retime(); },
+    statsHtml,
+  });
+  // the debug panel (G) tunes the same values: keep them saved too
+  const gui = createDebugGui(sim.cfg, sim.mover, toggles, () => {
+    applyToggles();
+    Object.assign(settings, { sensitivity: toggles.sensitivity, fov: toggles.fov, pixel: toggles.pixel });
+    saveSettings(settings);
+  });
   applyToggles();
+  const scoreEl = document.getElementById('scoreboard')!;
+  let scoreT = 0;
 
   const local = new LocalPlayer(sim, input);
   local.onTick = () => {
@@ -140,6 +161,7 @@ async function main() {
       hud.toast(`Гравитация: ${t.name}`, teamHex(t.color));
     } else if (e.type === 'respawn' && e.reason === 'manual') player.reset();
     else if (e.type === 'respawn' && e.reason === 'void') {
+      stats.deaths++;
       hud.toast('Упал в пустоту', '#ff6b6b');
       if (match.onDeath()) player.reset();
       else player.me.alive = false;
@@ -222,6 +244,16 @@ async function main() {
     const reachable = match.breaking ? null : match.reachableBed(camera.position);
     for (const e of match.events.splice(0)) {
       ui.onEvent(e);
+      if (e.type === 'bedBroken' && e.byPlayer) stats.crystals++;
+      if (e.type === 'win' || e.type === 'lose') {
+        // let the banner play, then hand the mouse back for the summary and "New match"
+        const title = e.type === 'win' ? `Победа · ${formatTime(e.time)}` : 'Поражение';
+        setTimeout(() => {
+          menu.showResult(title);
+          if (document.pointerLockElement) document.exitPointerLock();
+          else input.setLocked(false);
+        }, 2500);
+      }
       if (e.type === 'bedBroken') {
         mapView.setBedAlive(e.team, false);
         fx.handle({ type: 'explode', pos: match.bed(e.team).pos.clone(), radius: 3 });
@@ -271,10 +303,27 @@ async function main() {
     gizmo.render(renderer, viewQ, teamByDown(sim.gravityDown()).id);
     hud.setSpread(build.active || pockets.rod ? null : player.nextSpread, camera.fov);
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
+    stats.trackCash(match.wallet.cash);
+    // scoreboard: hold Tab (in the shop Tab switches the tab)
+    const showScore = input.locked && !ui.shopOpen && input.down('Tab');
+    scoreEl.hidden = !showScore;
+    scoreT -= dt;
+    if (showScore && scoreT <= 0) {
+      scoreT = 0.25;
+      scoreEl.innerHTML = `<h3>Счёт<span>боты: ${DIFFICULTY_LABEL[difficulty].toLowerCase()}</span></h3>${statsHtml()}`;
+    }
     input.endFrame();
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
+  // the button stays disabled while wasm, models and fonts load: every handler is wired up by now
+  const start = document.getElementById('start-game') as HTMLButtonElement;
+  start.disabled = false;
+  start.textContent = 'Играть';
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error(err);
+  const start = document.getElementById('start-game') as HTMLButtonElement | null;
+  if (start) start.textContent = 'Не удалось загрузить игру — обнови страницу';
+});

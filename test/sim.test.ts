@@ -3,7 +3,7 @@ import { Quaternion, Vector3 } from 'three';
 import {
   BLOCK_MATERIALS, BlockSystem, PIECE_CELL, PIECE_COST, PIECE_HP_MUL, PIECE_LEVEL, PIECE_THICK, START_BLOCKS,
 } from '../src/shared/blocks';
-import { BOT, BotManager } from '../src/shared/bots';
+import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
 import { GENERATORS, Match } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, LADDER, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
 import { Fishing, FISHING } from '../src/shared/fishing';
@@ -110,11 +110,12 @@ run(64 * 10, (i) => {
   return i < 200 && !launched ? { forward: 1, yaw: -3 * Math.PI / 4 } : {};
 });
 check('geyser launches', launched);
-check('lands on the middle island', s.onGround && Math.abs(s.pos.y - (-WORLD.midDistance + 0.15 + 0.915)) < 0.15 && Math.abs(s.pos.x - 26) < 3, `pos=${s.pos.toArray().map((v) => v.toFixed(1))}`);
+const landing = Math.min(...map.pads.filter((p) => p.kind === 'geyser' && p.team === 'red').map((p) => s.pos.distanceTo(new Vector3(...p.target))));
+check('lands on a side island', s.onGround && Math.abs(s.pos.y - (-WORLD.midDistance + 0.15 + 0.915)) < 0.15 && landing < 3, `pos=${s.pos.toArray().map((v) => v.toFixed(1))} miss=${landing.toFixed(1)}`);
 
 // 7. middle island gate → own (far) core face; then the top face's opposite portal → bottom face (gravity flips)
-const throughPortal = (x: number, y: number, z: number) => {
-  place(x, y, z, 0); // facing -Z toward the portal
+const throughPortal = (x: number, y: number, z: number, yaw = 0) => {
+  place(x, y, z, yaw); // yaw 0: facing -Z toward the portal
   run(20, {});
   sim.events.length = 0;
   let teleported = false;
@@ -125,7 +126,9 @@ const throughPortal = (x: number, y: number, z: number) => {
   });
   return teleported;
 };
-check('mid gate teleports to the core', throughPortal(0, -WORLD.midDistance + 1.2, 4));
+// red's up is +Y, so the side-island nav frame is world XZ
+const [[gx, gz], [hx, hz]] = map.mid.red[0].portal;
+check('side island gate teleports to the core', throughPortal(gx, -WORLD.midDistance + 1.2, gz, Math.atan2(-(hx - gx), -(hz - gz))));
 run(30, {});
 check('stands on own core face', s.onGround && Math.abs(s.pos.y - (WORLD.coreHalf + 0.915)) < 0.15, `pos=${s.pos.toArray().map((v) => v.toFixed(1))}`);
 const teleported = throughPortal(0, WORLD.coreHalf + 1.2, -20);
@@ -134,6 +137,18 @@ const up = new Vector3(0, 1, 0).applyQuaternion(s.frame);
 check('portal teleports', teleported);
 check('stands on bottom face with flipped gravity', s.onGround && up.y < -0.99 && Math.abs(s.pos.y + WORLD.coreHalf + 0.915) < 0.15,
   `pos=${s.pos.toArray().map((v) => v.toFixed(1))} up=${up.toArray().map((v) => v.toFixed(2))}`);
+
+// 7b. side island crossing arch: red's face → the neighbour's face of the same island, gravity follows
+sim.team = TEAMS[0];
+sim.respawn();
+const onCoreP = (p: number[]) => Math.max(...p.map(Math.abs)) < WORLD.coreHalf + 6;
+const cross = map.portals.find((p) => !onCoreP(p.pos) && !onCoreP(map.portals[p.partner].pos) && Math.abs(p.pos[1] + WORLD.midDistance - 2.15) < 0.1)!;
+const cn = new Vector3(0, 0, 1).applyQuaternion(new Quaternion(...cross.quat));
+const crossed = throughPortal(cross.pos[0] + cn.x * 4, -WORLD.midDistance + 1.2, cross.pos[2] + cn.z * 4, Math.atan2(cn.x, cn.z));
+run(40, {});
+const downX = sim.gravityDown();
+check('crossing arch leads to the neighbour face', crossed && s.onGround && Math.abs(Math.abs(downX.x) - 1) < 0.01,
+  `down=${downX.toArray().map((v) => v.toFixed(2))} pos=${s.pos.toArray().map((v) => v.toFixed(1))}`);
 
 // 8. gravity switch to green (down +X)
 place(14, G + 1, 0, 0);
@@ -191,13 +206,14 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const eye = s.pos.clone().add(new Vector3(0, 0.71, 0));
   let hits = 0;
   let killed = false;
-  for (let i = 0; i < 6; i++) {
+  const toKill = Math.ceil(MAX_HP / WEAPONS.rifle.damage);
+  for (let i = 0; i < toKill + 2; i++) {
     const dir = dummy.center.clone().sub(eye).normalize();
     combat.fire('rifle', 0, eye, dir, s.vel, new Vector3(0, -1, 0));
     for (let k = 0; k < 20; k++) combat.tick(TICK_DT);
     for (const e of combat.events.splice(0)) if (e.type === 'hit' && e.target === 1) { hits++; killed ||= e.killed; }
   }
-  check('rifle hits dummy at 10 m: four rounds kill', hits === 4 && killed, `hits=${hits} killed=${killed}`);
+  check(`rifle hits dummy at 10 m: ${toKill} rounds kill`, hits === toKill && killed, `hits=${hits} killed=${killed}`);
   check('dead dummy respawns', (() => { for (let k = 0; k < 64 * 3.2; k++) combat.tick(TICK_DT); return dummy.alive && dummy.hp === MAX_HP; })());
 
   // ballistics over 100 m (in empty space off the ±Z core faces): drop with the shooter's gravity, drag
@@ -382,7 +398,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
     for (let k = 0; k < 6; k++) c.tick(TICK_DT);
   }
   check('three close rifle hits chip a wood block (+100 % HP)', fb.byCollider(wood.collider.handle) === wood
-    && wood.hp >= BLOCK_MATERIALS.wood.hp - 3 * WEAPONS.rifle.damage && wood.hp <= BLOCK_MATERIALS.wood.hp - 3 * (WEAPONS.rifle.damage - 1), `hp=${wood.hp}`);
+    && wood.hp >= BLOCK_MATERIALS.wood.hp - 3 * WEAPONS.rifle.blockDamage && wood.hp <= BLOCK_MATERIALS.wood.hp - 3 * (WEAPONS.rifle.blockDamage - 1), `hp=${wood.hp}`);
   check('building HP: wood ×2, stone ×3, metal ×4.5', BLOCK_MATERIALS.wood.hp === 120 && BLOCK_MATERIALS.stone.hp === 420 && BLOCK_MATERIALS.metal.hp === 1350);
   // penetration: a wooden wall piece (0.25 m) stops a pistol round but not a rifle round; stone stops both
   c.materialOf = (h) => fb.byCollider(h)?.material ?? null;
@@ -729,6 +745,19 @@ for (const deg of [20, 37, 45]) {
   const downR = walk(-Math.cos(a) * L + 2, Math.sin(a) * L + 1, Math.PI);
   check(`${deg}° ramp: full speed up and down, grounded`, upR.speed > 290 && downR.speed > 290 && upR.air + downR.air <= 2,
     `up ${upR.speed.toFixed(0)} u/s, down ${downR.speed.toFixed(0)} u/s, airborne ticks ${upR.air + downR.air}`);
+}
+
+// --- difficulty presets
+{
+  const normal = { ...BOT };
+  applyDifficulty('easy');
+  const easy = { ...BOT };
+  applyDifficulty('hard');
+  const hard = { ...BOT };
+  applyDifficulty('normal');
+  check('difficulty: easy is slower and less accurate than hard', easy.reaction > normal.reaction && normal.reaction > hard.reaction
+    && easy.spread > hard.spread && easy.firstAttack > hard.firstAttack && easy.pistolAt > hard.pistolAt);
+  check('difficulty: back to normal restores every value', JSON.stringify(BOT) === JSON.stringify(normal));
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

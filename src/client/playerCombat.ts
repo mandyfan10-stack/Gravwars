@@ -51,6 +51,8 @@ export class PlayerCombat {
   canRespawn: () => boolean = () => true;
   /** The local player killed someone. */
   onKill: (target: Target) => void = () => {};
+  /** Any kill (players, bots, NPCs): killer is undefined for falls and unknown sources. */
+  onFrag: (killer: Target | undefined, victim: Target, head: boolean) => void = () => {};
 
   constructor(private sim: PlayerSim, private combat: Combat, private hud: Hud, private fx: Fx,
     private audio: GameAudio, private viewModel: ViewModel) {
@@ -176,6 +178,7 @@ export class PlayerCombat {
     if (e.type === 'explode') this.audio.explosion();
     if (e.type === 'hit') {
       const tg = this.combat.target(e.target)!;
+      if (e.killed) this.onFrag(this.combat.target(e.owner), tg, e.head);
       if (e.owner === 0 && e.target !== 0) {
         hud.hitmarker(e.killed, e.head);
         if (e.killed) {

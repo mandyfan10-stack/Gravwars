@@ -11,7 +11,13 @@ export interface WeaponDef {
   gravityScale: number;
   /** Share of the wind applied to the projectile. */
   windScale: number;
+  /**
+   * Damage to players, bots and NPCs. Tuned for a time-to-kill of about 4–6 s in a real fight (~40 % of shots hit);
+   * a perfect spray kills in ~1.5 s.
+   */
   damage: number;
+  /** Damage to buildings: kept apart from `damage` so that the TTK tuning does not change how long walls hold. */
+  blockDamage: number;
   /** Seconds between shots / swings. */
   interval: number;
   /** Holding the trigger keeps firing (otherwise one shot per click). */
@@ -53,23 +59,23 @@ const base = { reloadEmpty: 0, drag: 0, minEnergy: 1, spread: 0, bloom: 0, moveS
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
   fists: {
-    ...base, id: 'fists', name: 'Кулаки', speed: 0, gravityScale: 0, windScale: 0, damage: 12, headMul: 1.25,
+    ...base, id: 'fists', name: 'Кулаки', speed: 0, gravityScale: 0, windScale: 0, damage: 10, blockDamage: 12, headMul: 1.25,
     interval: 0.42, auto: true, mag: 0, life: 0, reach: 2.3,
   },
   // 9×19 mm self-loading pistol: subsonic-ish, slows down fast, stopped by a wooden wall
   pistol: {
-    ...base, id: 'pistol', name: 'Пистолет', speed: 360, gravityScale: 1, windScale: 1, damage: 26, headMul: 2,
+    ...base, id: 'pistol', name: 'Пистолет', speed: 360, gravityScale: 1, windScale: 1, damage: 9, blockDamage: 26, headMul: 2,
     interval: 0.12, mag: 15, reload: 1.5, reloadEmpty: 1.9, life: 2.5, drag: 0.0019, minEnergy: 0.3,
     spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008,
   },
   // 5.45×39 mm assault rifle, 650 rounds per minute: flat and fast, goes through a wooden wall
   rifle: {
-    ...base, id: 'rifle', name: 'Автомат', speed: 880, gravityScale: 1, windScale: 1, damage: 28, headMul: 2,
+    ...base, id: 'rifle', name: 'Автомат', speed: 880, gravityScale: 1, windScale: 1, damage: 7, blockDamage: 28, headMul: 2,
     interval: 0.092, auto: true, mag: 30, reload: 2.1, reloadEmpty: 2.6, life: 2.5, drag: 0.0008, minEnergy: 0.3,
     spread: 0.0025, bloom: 0.0045, moveSpread: 0.035, recoil: 0.013, recoilYaw: 0.006,
   },
   grenade: {
-    ...base, id: 'grenade', name: 'Граната', speed: 22, gravityScale: 1, windScale: 0.6, damage: 75,
+    ...base, id: 'grenade', name: 'Граната', speed: 22, gravityScale: 1, windScale: 0.6, damage: 45, blockDamage: 75,
     interval: 0.7, mag: 4, life: 6, inherit: 0.6,
     fuse: 2.5, radius: 5.5, bounce: 0.45, knockback: 16, selfMul: 0.35,
   },

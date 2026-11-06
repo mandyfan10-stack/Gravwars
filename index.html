@@ -35,25 +35,29 @@
       <div id="weapon" class="panel"><span id="weapon-ic"></span><div><div id="weapon-name">Кулаки</div><div id="ammo"></div></div></div>
       <div id="shop" class="panel" hidden></div>
       <div id="result"></div>
+      <div id="scoreboard" class="panel" hidden></div>
     </div>
     <div id="overlay">
       <div class="menu-shell">
         <div id="menu-state" hidden>Пауза</div>
         <h1 class="logo" aria-label="Gravity Bedwars"><span class="logo-top"><i class="g-down" style="--c:var(--red)">G</i><i class="g-up" style="--c:var(--blue)">R</i><i class="g-right" style="--c:var(--green)">A</i><i class="g-left" style="--c:var(--yellow)">V</i><i class="g-down" style="--c:var(--aqua)">I</i><i class="g-up" style="--c:var(--pink)">T</i><i class="g-right" style="--c:var(--red)">Y</i></span><span class="logo-bottom">Bedwars</span></h1>
         <nav class="menu-list">
-          <button id="start-game" class="btn btn-play">Играть</button>
+          <button id="start-game" class="btn btn-play" disabled>Загрузка…</button>
           <button id="show-help" class="btn">Управление</button>
           <button id="show-settings" class="btn">Настройки</button>
+          <button id="new-match" class="btn" hidden>Новый матч</button>
         </nav>
-        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок, зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>удар / огонь / постройка / заброс удочки</span></div><div class="row"><span class="keys"><kbd>1</kbd>–<kbd>6</kbd></span><span>кулаки, пистолет, автомат, гранаты, строительство, удочка</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>подобрать; магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>F</kbd></span><span>съесть яблоко</span></div><div class="row"><span class="keys"><kbd>Q</kbd></span><span>следующее оружие; в магазине — вкладка</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Shift</kbd></span><span>тихий шаг — бандиты и бродяги замечают позже</span></div><div class="row"><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span><span>присесть — тише, точнее, но медленно</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–4</kbd></span><span>сменить гравитацию</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>пауза</span></div></div>
+        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок, зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>удар / огонь / постройка / заброс удочки</span></div><div class="row"><span class="keys"><kbd>1</kbd>–<kbd>6</kbd></span><span>кулаки, пистолет, автомат, гранаты, строительство, удочка</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>подобрать; магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>F</kbd></span><span>съесть яблоко</span></div><div class="row"><span class="keys"><kbd>Q</kbd></span><span>следующее оружие; в магазине — вкладка</span></div><div class="row"><span class="keys"><kbd>Tab</kbd></span><span>держать — счёт матча</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Shift</kbd></span><span>тихий шаг — бандиты и бродяги замечают позже</span></div><div class="row"><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span><span>присесть — тише, точнее, но медленно</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–4</kbd></span><span>сменить гравитацию</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>пауза</span></div></div>
         <div id="menu-settings" class="menu-details" hidden>
           <label>Громкость <input id="volume" type="range" min="0" max="1" step="0.05" value="0.45"><output id="volume-value">45%</output></label>
           <label>Чувствительность <input id="sensitivity" type="range" min="0.0008" max="0.005" step="0.0002" value="0.0022"><output id="sensitivity-value">100%</output></label>
           <label>Поле зрения <input id="fov" type="range" min="60" max="110" step="1" value="80"><output id="fov-value">80°</output></label>
           <label>Текстуры <select id="tex-filter"><option value="pixel" selected>Пиксельные</option><option value="smooth">Сглаженные</option></select><output></output></label>
+          <label>Боты <select id="difficulty"></select><output id="difficulty-note" class="note"></output></label>
         </div>
       </div>
-      <aside class="menu-roster panel">
+      <aside id="menu-match" class="menu-roster menu-match panel" hidden><h2>Матч</h2><div id="menu-match-body"></div></aside>
+      <aside id="menu-roster" class="menu-roster panel">
         <h2>Четыре острова — четыре гравитации</h2>
         <ul>
           <li style="--c:var(--red)">Красные <small>ты</small></li><li style="--c:var(--blue)">Синие</li>

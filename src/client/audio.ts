@@ -14,14 +14,19 @@ export class GameAudio {
     o.connect(g).connect(c.destination); o.start(t); o.stop(t+duration+.01);
   }
   private noiseBuf: AudioBuffer | null = null;
-  /** Filtered white noise burst; `delay` s from now; `type` of the sweeping filter. */
-  private noise(duration: number, volume: number, from: number, to: number, delay = 0, type: BiquadFilterType = 'lowpass', q = 0.7) {
-    const c = this.ctx; if (!c || !this.volume || volume <= 0.0005) return;
+  /** Shared 2 s white-noise buffer used by bursts and ambient loops. */
+  private ensureNoiseBuf(c: AudioContext): AudioBuffer {
     if (!this.noiseBuf) {
       this.noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
       const a = this.noiseBuf.getChannelData(0);
       for (let i = 0; i < a.length; i++) a[i] = Math.random() * 2 - 1;
     }
+    return this.noiseBuf;
+  }
+  /** Filtered white noise burst; `delay` s from now; `type` of the sweeping filter. */
+  private noise(duration: number, volume: number, from: number, to: number, delay = 0, type: BiquadFilterType = 'lowpass', q = 0.7) {
+    const c = this.ctx; if (!c || !this.volume || volume <= 0.0005) return;
+    this.ensureNoiseBuf(c);
     const src=c.createBufferSource(), f=c.createBiquadFilter(), g=c.createGain(), t=c.currentTime+delay;
     src.buffer=this.noiseBuf; f.type=type; f.Q.value=q; f.frequency.setValueAtTime(from,t);f.frequency.exponentialRampToValueAtTime(Math.max(20,to),t+duration);
     g.gain.setValueAtTime(volume*this.volume,t);g.gain.exponentialRampToValueAtTime(.0001,t+duration);
@@ -119,8 +124,7 @@ export class GameAudio {
     const c = this.ctx;
     if (!c || c.state !== 'running') return;
     if (!this.amb) {
-      this.noise(0.001, 0.0001, 100, 100); // creates the shared noise buffer
-      if (!this.noiseBuf) return;
+      this.ensureNoiseBuf(c);
       const loop = (type: BiquadFilterType, freq: number, q: number) => {
         const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
         src.buffer = this.noiseBuf; src.loop = true;

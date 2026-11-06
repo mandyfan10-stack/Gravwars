@@ -44,12 +44,32 @@ export const BOT = {
   rifleAt: 150,
 };
 
+export type Difficulty = 'easy' | 'normal' | 'hard';
+export const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Лёгкая', normal: 'Обычная', hard: 'Сложная' };
+/** Bot tuning per difficulty, on top of the normal values above (the team size stays the same). */
+const NORMAL = { ...BOT };
+const DIFFICULTY: Record<Difficulty, Partial<typeof BOT>> = {
+  easy: {
+    sightRange: 24, reaction: 0.8, spread: 0.06, burst: 3, burstPause: 0.9,
+    firstAttack: 120, attackStagger: 45, reattack: 50, targetPlayerChance: 0.4, pistolAt: 45, rifleAt: 240,
+  },
+  normal: {},
+  hard: {
+    sightRange: 36, reaction: 0.3, spread: 0.02, burst: 6, burstPause: 0.45,
+    firstAttack: 40, attackStagger: 18, reattack: 15, targetPlayerChance: 0.7, pistolAt: 15, rifleAt: 110, respawnDelay: 3,
+  },
+};
+/** Set the bot tuning for a difficulty. Call before the match starts. */
+export function applyDifficulty(level: Difficulty) {
+  Object.assign(BOT, NORMAL, DIFFICULTY[level]);
+}
+
 /** Closer to the face edge than this (local |x| or |z|) = slow down for the drop. */
 const EDGE_SLOW = 54;
 
 type XZ = [number, number];
 export type Loc =
-  | { kind: 'face' | 'island' | 'mid'; team: TeamId; x: number; z: number; h: number; roof: boolean }
+  | { kind: 'face' | 'island' | 'mid'; team: TeamId; x: number; z: number; h: number; roof: boolean; /** index in map.mid[team] */ mid?: number }
   | { kind: 'air' };
 
 export type BotRole = 'defend' | 'attack';
@@ -161,6 +181,12 @@ export class BotManager {
         this.bots.push(bot);
       }
     }
+  }
+
+  /** Re-plan the attack waves from the current BOT tuning (difficulty changed before the match started). */
+  retime() {
+    let wave = 0;
+    for (const b of this.bots) if (b.role === 'attack') b.departAt = BOT.firstAttack + BOT.attackStagger * wave++;
   }
 
   // --- setup ------------------------------------------------------------------------------------
@@ -282,8 +308,10 @@ export class BotManager {
     if (Math.abs(face.y - PLAYER_HEIGHT / 2) < 0.7 && Math.max(Math.abs(face.x), Math.abs(face.z)) < this.map.coreHalf + 0.6)
       return { kind: 'face', team, x: face.x, z: face.z, h: face.y, roof: false };
     const mid = _v.copy(sim.state.pos).addScaledVector(up, this.map.midDistance).applyQuaternion(_inv);
-    if (mid.y > -1 && mid.y < 20 && Math.max(Math.abs(mid.x), Math.abs(mid.z)) < this.map.midHalf + 1)
-      return { kind: 'mid', team, x: mid.x, z: mid.z, h: mid.y, roof: false };
+    if (mid.y > -1 && mid.y < 20) {
+      const i = (this.map.mid[team] ?? []).findIndex((m) => Math.max(Math.abs(mid.x - m.center[0]), Math.abs(mid.z - m.center[1])) < m.half + 1);
+      if (i >= 0) return { kind: 'mid', team, x: mid.x, z: mid.z, h: mid.y, roof: false, mid: i };
+    }
     const isl = _v.copy(sim.state.pos).addScaledVector(up, this.map.islandDistance).applyQuaternion(_inv);
     const nav = this.map.nav[team];
     if (nav && isl.y > -1 && isl.y < nav.roofHeight + 10 && Math.max(Math.abs(isl.x), Math.abs(isl.z)) < this.map.islandHalf + 1)
@@ -352,8 +380,12 @@ export class BotManager {
   private heading(bot: Bot): TeamId {
     const ownBed = this.match.bed(bot.team).alive;
     const attacking = bot.role === 'attack' || !ownBed;
-    if (!attacking || this.match.time < bot.departAt) return bot.team;
-    if (!bot.goal || (bot.goal !== this.playerTeam && !this.match.bed(bot.goal).alive)) bot.goal = this.chooseGoal(bot);
+    // defenders have no departure time: they leave as soon as their own crystal is gone
+    if (!attacking || (bot.role === 'attack' && this.match.time < bot.departAt)) return bot.team;
+    // a goal without a crystal is dropped once another base is worth attacking (the player's team included:
+    // a bot must not camp the player's roof forever while enemy crystals still stand)
+    const enemyBeds = TEAMS.some((t) => t.id !== bot.team && this.match.bed(t.id).alive);
+    if (!bot.goal || (!this.match.bed(bot.goal).alive && (enemyBeds || this.match.isOut(bot.goal)))) bot.goal = this.chooseGoal(bot);
     return bot.goal;
   }
 
@@ -362,8 +394,8 @@ export class BotManager {
     const goal = this.heading(bot);
     const N = this.map.nav[loc.team];
     if (loc.kind === 'mid') {
-      const [a, c] = this.map.mid[loc.team].portal;
-      return { key: `mid:${loc.team}`, pts: [a, c], end: 'go' };
+      const [a, c] = this.map.mid[loc.team][loc.mid ?? 0].portal;
+      return { key: `mid:${loc.team}:${loc.mid ?? 0}`, pts: [a, c], end: 'go' };
     }
     if (loc.kind === 'face') {
       if (loc.team === goal) {
@@ -378,7 +410,11 @@ export class BotManager {
     if (!loc.roof) {
       return { key: `lift:${loc.team}`, pts: [...roadPath(N, [loc.x, loc.z]), N.lift], end: 'go' };
     }
-    if (loc.team !== goal) return { key: `geyser:${loc.team}`, pts: [N.roofMid, N.geyser], end: 'go' };
+    if (loc.team !== goal) {
+      // both geysers lead to own core face (via a side island): bots split between them
+      const k = bot.slot % N.geysers.length;
+      return { key: `geyser:${loc.team}:${k}`, pts: [N.roofMid, N.geysers[k]], end: 'go' };
+    }
     if (goal !== bot.team && this.match.bed(goal).alive) return { key: `bed:${goal}:${bot.stand}`, pts: [N.bedStands[bot.stand % N.bedStands.length]], end: 'bed' };
     return { key: `patrol:${loc.team}:${bot.patrol}`, pts: [N.patrol[bot.patrol % N.patrol.length]], end: 'hold' };
   }

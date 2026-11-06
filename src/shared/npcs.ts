@@ -120,6 +120,8 @@ export interface Npc {
   pauseT: number;
   progressT: number;
   bestDist: number;
+  /** Stuck events since the last reached waypoint. */
+  stuckN: number;
   jumpT: number;
   patrol: number;
   prevPos: Vector3;
@@ -221,7 +223,7 @@ export class NpcManager {
       id, kind, island: isl.team, slot, sim, target, weapons, state: kind === 'bum' ? 'wander' : 'patrol', stateT: 0,
       route: [], wp: 0, foe: null, suspicion: new Map(), grudge: new Map(), lastSeen: null, lostT: 0, seenT: 0, searchAt: null,
       lookAt: null, lookUntil: 0, drinkAt: this.rng.range(...NPC.bum.drinkEvery), respawnT: 0, scanT: this.rng.range(0, 0.2), shots: 0,
-      shotsTotal: 0, pauseT: 0, progressT: 0, bestDist: Infinity, jumpT: 0, patrol: slot, prevPos: new Vector3(), status: '',
+      shotsTotal: 0, pauseT: 0, progressT: 0, bestDist: Infinity, stuckN: 0, jumpT: 0, patrol: slot, prevPos: new Vector3(), status: '',
     };
     target.onHit = (owner) => this.onHit(npc, owner);
     this.combat.targets.push(target);
@@ -298,6 +300,7 @@ export class NpcManager {
     n.state = n.kind === 'bum' ? 'wander' : 'patrol';
     n.stateT = 0;
     n.route = [];
+    n.stuckN = 0;
     n.searchAt = null;
     n.lookAt = null;
     n.drinkAt = this.time + this.rng.range(...NPC.bum.drinkEvery);
@@ -543,6 +546,7 @@ export class NpcManager {
         const last = n.wp >= n.route.length - 1;
         const dist = _v.copy(w).sub(s.pos).addScaledVector(up, -_v.dot(up)).length();
         if (dist < 1.2) {
+          n.stuckN = 0;
           if (!last) n.wp++;
           else if (n.kind === 'gang') {
             // wait at the patrol point, looking around
@@ -566,7 +570,17 @@ export class NpcManager {
       if (d > 0.3) wish.divideScalar(d); else wish.set(0, 0, 0);
       // stuck (a parked car, a bench): hop, then take the road
       if (d < n.bestDist - 0.3) { n.bestDist = d; n.progressT = 0; } else n.progressT += dt;
-      if (n.progressT > 1.5) { n.jumpT = 0.2; n.progressT = 0; n.bestDist = Infinity; if (n.state === 'wander' || n.state === 'patrol') n.route = []; }
+      if (n.progressT > 1.5) {
+        n.jumpT = 0.2; n.progressT = 0; n.bestDist = Infinity;
+        if (n.state === 'wander' || n.state === 'patrol') {
+          n.route = [];
+          n.stuckN++;
+          // the gang's patrol route is fixed: a blocked point would be retried forever, so skip it
+          if (n.kind === 'gang' && n.stuckN >= 2) n.patrol++;
+          // still wedged (nothing helped): back to the start, like bots do
+          if (n.stuckN >= 6) this.spawn(n);
+        }
+      }
     } else { n.bestDist = Infinity; n.progressT = 0; }
     const lookDir = face ? face.clone().sub(eye) : wish.lengthSq() > 0 ? wish.clone() : null;
     if (lookDir && lookDir.lengthSq() > 1e-6) {

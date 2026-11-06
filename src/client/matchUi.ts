@@ -6,10 +6,10 @@ import { WEAPONS } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
 import { icon, IconName } from './icons';
+import { formatTime } from './stats';
 
 const $ = (id: string) => document.getElementById(id)!;
 
-const formatTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 
 export type ShopTab = 'buy' | 'sell';
 

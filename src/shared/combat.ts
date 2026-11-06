@@ -226,7 +226,7 @@ export class Combat {
     }
     if (wh) {
       const pos = eye.clone().lerp(to, wh.t);
-      this.onWorldDamage(wh.handle, Math.round(def.damage * 0.5));
+      this.onWorldDamage(wh.handle, Math.round(def.blockDamage * 0.5));
       this.events.push({ type: 'melee', owner, pos, target: null });
       return;
     }
@@ -283,7 +283,7 @@ export class Combat {
     p.alive = false;
     this.events.push({ type: 'explode', pos: p.pos.clone(), radius: def.radius });
     this.noises.push({ pos: p.pos.clone(), radius: NOISE.grenade, owner: p.owner });
-    this.onExplosion(p.pos.clone(), def.radius, def.damage);
+    this.onExplosion(p.pos.clone(), def.radius, def.blockDamage);
     for (const tg of this.targets) {
       if (!tg.alive || (tg.team === p.team && tg.id !== p.owner)) continue;
       const d = tg.center.distanceTo(p.pos);
@@ -316,7 +316,7 @@ export class Combat {
     const cos = -dir.dot(normal);
     // measure the wall before the damage can remove it
     const thick = material && material !== 'metal' ? this.thickness(handle, end, dir) : null;
-    this.onWorldDamage(handle, Math.max(1, Math.round(def.damage * energyLeft(def, speed))));
+    this.onWorldDamage(handle, Math.max(1, Math.round(def.blockDamage * energyLeft(def, speed))));
     this.events.push({ type: 'impact', pos: end.clone(), normal: normal.clone(), material: material ?? undefined });
     if (material !== 'wood' && cos < RICOCHET.cos && p.ricochets === 0) {
       p.ricochets++;

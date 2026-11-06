@@ -52,12 +52,17 @@ export interface IslandNav {
   liftNode: number;
   roofHeight: number;
   roofMid: XZ;
-  geyser: XZ;
+  /** Roof geysers, one per neighbouring side island. */
+  geysers: XZ[];
   bedStands: XZ[];
   patrol: XZ[];
 }
-/** Middle island: walk from portal[0] to portal[1] to pass through the gate to the team's core face. */
-export interface MidNav { portal: [XZ, XZ] }
+/**
+ * One walkable face of a side island, for the team whose gravity it is level with. Coordinates are in the frame of
+ * that team's up (like `IslandNav`), origin = the point `midDistance` along its down: `center` ± `half` is the face,
+ * walk from portal[0] to portal[1] to pass through the gate to the team's core face.
+ */
+export interface MidNav { center: XZ; half: number; portal: [XZ, XZ] }
 
 export interface MapData {
   seed: number;
@@ -77,7 +82,7 @@ export interface MapData {
   faces: FaceDef[];
   ponds: PondDef[];
   nav: Record<string, IslandNav>;
-  mid: Record<string, MidNav>;
+  mid: Record<string, MidNav[]>;
   coreHalf: number;
   islandDistance: number;
   midDistance: number;
@@ -323,7 +328,7 @@ function houseRow(b: Builder, f: Frame, rng: Rng, axis: 'x' | 'z', a0: number, a
 
 // --- city tiles --------------------------------------------------------------------------------
 
-type TileKind = 'base' | 'park' | 'houses' | 'office' | 'plaza' | 'parking' | 'construction' | 'playground' | 'gate' | 'landing';
+type TileKind = 'base' | 'park' | 'houses' | 'office' | 'plaza' | 'parking' | 'construction' | 'playground' | 'gate' | 'landing' | 'crossing';
 interface Tile { i: number; j: number; kind: TileKind }
 
 /** Pond of a park tile, relative to the tile centre: centre offset and half size. */
@@ -348,7 +353,7 @@ const key = (i: number, j: number) => `${i},${j}`;
  * A torn-out chunk of city: present tiles on a grid, their ground slabs, roads with markings, kerbs, broken edges
  * and the rock mass underneath. Returns the set of present tiles.
  */
-function cityGround(b: Builder, f: Frame, rng: Rng, tiles: Tile[], team: TeamDef | null) {
+function cityGround(b: Builder, f: Frame, rng: Rng, tiles: Tile[], team: TeamDef | null, seam: (i: number, j: number, di: number, dj: number) => boolean = () => false) {
   const has = new Set(tiles.map((t) => key(t.i, t.j)));
   const H = TILE / 2;
   for (const t of tiles) {
@@ -371,6 +376,7 @@ function cityGround(b: Builder, f: Frame, rng: Rng, tiles: Tile[], team: TeamDef
     if (rng.chance(0.6)) b.hull(f, rockChunk(cx + rng.range(-8, 8), -2.7, cz + rng.range(-8, 8), rng.range(2, 5), rng.range(6, 14), rng), 0x7a6553, 'rock');
 
     for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as XZ[]) {
+      if (seam(t.i, t.j, di, dj)) continue; // the edge where two faces of a side island meet stays clean
       const open = !has.has(key(t.i + di, t.j + dj));
       // side frame: local +z points out of the tile through this side, x runs along it
       const yaw = Math.atan2(di, dj);
@@ -514,7 +520,7 @@ function tileConstruction(b: Builder, f: Frame, rng: Rng, cx: number, cz: number
 function tilePark(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, team: TeamDef) {
   const px = cx + POND.dx, pz = cz + POND.dz, phx = POND.hx, phz = POND.hz;
   // grass around a sunken pond (4 slabs leave a hole), pond bottom + water surface
-  b.block(f, cx, 0, cz - (BLOCK + pz - phz) / 2 + (pz - cz) / 2 - 0, BLOCK, SW / 2, (BLOCK + (pz - cz) - phz) / 2, 0x6f9a45, 'grass');
+  b.block(f, cx, 0, (cz - BLOCK + pz - phz) / 2, BLOCK, SW / 2, (BLOCK + (pz - cz) - phz) / 2, 0x6f9a45, 'grass');
   b.block(f, cx, 0, (pz + phz + cz + BLOCK) / 2, BLOCK, SW / 2, (cz + BLOCK - (pz + phz)) / 2, 0x6f9a45, 'grass');
   b.block(f, (cx - BLOCK + px - phx) / 2, 0, pz, (px - phx - (cx - BLOCK)) / 2, SW / 2, phz, 0x6f9a45, 'grass');
   b.block(f, (px + phx + cx + BLOCK) / 2, 0, pz, (cx + BLOCK - (px + phx)) / 2, SW / 2, phz, 0x6f9a45, 'grass');
@@ -586,7 +592,9 @@ function genBaseIsland(b: Builder, team: TeamDef, rng: Rng, playground: boolean)
     tiles.push({ i, j, kind });
   }
   const has = cityGround(b, f, rng, tiles, team);
-  streets(b, f, rng, tiles, has, (x, z) => Math.abs(x - LIFT[0]) < 6 && Math.abs(z - LIFT[1]) < 9);
+  // no parked cars at the lift, nor in the road lane in front of the playground stairs
+  streets(b, f, rng, tiles, has, (x, z) => Math.abs(x - LIFT[0]) < 6 && Math.abs(z - LIFT[1]) < 9
+    || playground && Math.abs(x - (PLAYGROUND[0] - 5)) < 5 && Math.abs(z - (PLAYGROUND[1] - 9.5)) < 6);
   for (const t of tiles) {
     const cx = t.i * TILE, cz = t.j * TILE;
     if (t.kind === 'houses') tileHouses(b, f, rng, cx, cz);
@@ -625,7 +633,7 @@ function genBaseIsland(b: Builder, team: TeamDef, rng: Rng, playground: boolean)
   const g = TOWER_HW - 2.2;
   b.data.nav[team.id] = {
     nodes, edges, lift: LIFT, liftNode, roofHeight: R,
-    roofMid: [BASE_C[0] + 3.5, BASE_C[1]], geyser: [BASE_C[0] + g, BASE_C[1] + g],
+    roofMid: [BASE_C[0] + 3.5, BASE_C[1]], geysers: GEYSER_CORNERS.map(([x, z]) => [BASE_C[0] + x * g, BASE_C[1] + z * g] as XZ),
     bedStands: [[BASE_C[0] - 1, BASE_C[1] + 0.6], [BASE_C[0] + 2.6, BASE_C[1] + 4]],
     patrol: [[BASE_C[0] - 3.5, BASE_C[1] - 0.5], [BASE_C[0] + 3, BASE_C[1] - 0.5]],
   };
@@ -674,8 +682,8 @@ function genBase(b: Builder, f: Frame, team: TeamDef) {
       if (Math.abs(i) === 2 || Math.abs(j) === 2) fort.push({ pos: r.p(sx + i, R + 0.5 + y, sz + j), material });
   });
   b.data.statues.push({ team: team.id, pos: r.p(sx, cy + 3.6, sz), bed: r.p(sx, cy, sz), up: f.up(), color: team.color, fort });
-  // columns in two corners (the geyser and descent corners stay free), team banners along the parapet
-  for (const [x, z] of [[-8.9, 8.9], [8.9, -8.9]]) {
+  // a column in the free corner (geysers and descent take the other three), team banners along the parapet
+  for (const [x, z] of [[-8.9, 8.9]]) {
     b.prop(r, 'column', x, R, z, 2.3);
     b.solid(r, x, R, z, 0.6, 1.15, 0.6);
   }
@@ -725,35 +733,77 @@ function genBase(b: Builder, f: Frame, team: TeamDef) {
   b.block(dsc, 0, R, 0, 1.3, 0.04, 1.3, 0x4ad8ff, 'glow', false);
   b.data.pads.push({ kind: 'descent', team: team.id, pos: dsc.p(0, R + 0.08, 0), up: f.up(), radius: 1.3,
     target: f.p(LIFT[0] - 1, PLAYER_HEIGHT / 2 + 0.05, LIFT[1] - 9), apex: 4 });
-  // geyser: roof corner → middle island landing plaza
+  // geysers: two roof corners → the landing plazas of the two side islands shared with the neighbours
   const g = hw - 2.2;
-  b.block(r, g, R, g, 1.3, 0.04, 1.3, 0xb05cff, 'glow', false);
-  const mf = new Frame(new Vector3(...team.down).multiplyScalar(WORLD.midDistance), f.q.clone());
-  b.data.pads.push({ kind: 'geyser', team: team.id, pos: r.p(g, R + 0.08, g), up: f.up(), radius: 1.3,
-    target: mf.p(MID_LANDING[0], PLAYER_HEIGHT / 2 + 0.05 + SW, MID_LANDING[1]), apex: 16 });
+  neighbours(team).forEach((other, k) => {
+    const [gx, gz] = GEYSER_CORNERS[k];
+    b.block(r, gx * g, R, gz * g, 1.3, 0.04, 1.3, 0xb05cff, 'glow', false);
+    b.data.pads.push({ kind: 'geyser', team: team.id, pos: r.p(gx * g, R + 0.08, gz * g), up: f.up(), radius: 1.3,
+      target: sideFace(team, other).p(MID_LANDING[0], PLAYER_HEIGHT / 2 + 0.05 + SW, MID_LANDING[1]), apex: GEYSER_APEX });
+  });
 
   b.data.spawns[team.id] = { pos: r.p(-2.5, R + PLAYER_HEIGHT / 2 + 0.05, -2.5), quat: f.rot(0), yaw: spawnYaw };
 }
 
-// --- middle islands ----------------------------------------------------------------------------
+// --- side islands ------------------------------------------------------------------------------
+//
+// Between every two neighbouring bases (their gravities at 90°), closer to the core, floats an L-shaped chunk of
+// city: two faces meeting at a convex edge that points at the core. Each face is level for one of the two
+// neighbours: their geysers land there, its gate leads to that team's core face, and a crossing arch near the
+// shared edge leads to the other face (and so into the other team's gravity). Falling off: the void.
 
 const MID_LANDING: XZ = [26, 6];
+/**
+ * Roof corners (× the corner offset) of the geysers to `neighbours(team)[0]` and `[1]`. They stay on the +x side of
+ * the roof whatever the direction (the -x side has the crystal fort, the shop and the descent; bots walk there
+ * from the roof middle): the far island just gets a longer arc.
+ */
+const GEYSER_CORNERS: XZ[] = [[1, -1], [1, 1]];
+/** Geyser arc height above the landing: the arc has to clear the houses of the island it flies over. */
+const GEYSER_APEX = 40;
+/** Gate arches on a core face: one per side island of that team, at (±x, z). */
+const CORE_GATE: XZ = [14, 36];
+/** Crossing arch to the other face, island-face local x (the shared edge is at -midHalf). */
+const CROSSING_X = -33;
 
-/** Stepping stone between a base and the core: a smaller torn chunk with a gate to the team's core face. */
-function genMidIsland(b: Builder, team: TeamDef, rng: Rng, faceFrame: Frame, addPortalPair: (a: Frame, bF: Frame, colorA: number, colorB: number) => void) {
-  const up = new Vector3(...team.down).negate();
-  const f = new Frame(new Vector3(...team.down).multiplyScalar(WORLD.midDistance), frameForUp(up));
+const isNeighbour = (a: TeamDef, c: TeamDef) => a !== c && a.down[0] * c.down[0] + a.down[1] * c.down[1] + a.down[2] * c.down[2] === 0;
+/** The two teams whose bases are at 90° from this one (fixed order: TEAMS order). */
+function neighbours(team: TeamDef) {
+  return TEAMS.filter((t) => isNeighbour(team, t));
+}
+
+/**
+ * Frame of the face of the (team, other) side island that is level for `team`: up = team's up, +x points away from
+ * the shared edge (along other's down), origin = face centre on the ground.
+ */
+function sideFace(team: TeamDef, other: TeamDef): Frame {
+  const K = WORLD.midDistance, H = WORLD.midHalf;
+  const dA = new Vector3(...team.down), dB = new Vector3(...other.down);
+  const X = dB.clone(), Yv = dA.clone().negate(), Z = X.clone().cross(Yv);
+  const q = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(X, Yv, Z));
+  const origin = dA.clone().add(dB).multiplyScalar(K).addScaledVector(dB, H);
+  return new Frame(origin, q);
+}
+
+/** Dative plural of a team name for signs: «Зелёные» → «ЗЕЛЁНЫМ». */
+const toTeam = (t: TeamDef) => `${t.name.slice(0, -1)}м`.toUpperCase();
+
+/** One face of a side island (see above). `coreGate` = the arch on this team's core face it is paired with. */
+function genSideFace(b: Builder, team: TeamDef, other: TeamDef, rng: Rng, coreGate: Frame,
+  addPortalPair: (a: Frame, bF: Frame, colorA: number, colorB: number) => void) {
+  const f = sideFace(team, other);
   const tiles: Tile[] = [];
   for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
-    const corner = i !== 0 && j !== 0;
-    if (corner && !rng.chance(0.55)) continue;
+    // the row along the shared edge (i = -1) is whole so that the two faces meet; the far corners are torn at random
+    if (i === 1 && j !== 0 && !rng.chance(0.55)) continue;
     let kind: TileKind = rng.pick(['construction', 'parking', 'houses']);
     if (i === 0 && j === 0) kind = 'gate';
     else if (i === 1 && j === 0) kind = 'landing';
+    else if (i === -1) kind = j === 0 ? 'crossing' : 'parking'; // low stuff near the edge: the geyser arcs pass over it
     tiles.push({ i, j, kind });
   }
-  const has = cityGround(b, f, rng, tiles, null);
-  streets(b, f, rng, tiles, has, (x, z) => Math.abs(x) < 16 && Math.abs(z) < 16);
+  const has = cityGround(b, f, rng, tiles, null, (i, _j, di) => i === -1 && di === -1);
+  streets(b, f, rng, tiles, has, (x, z) => Math.abs(x) < 16 && Math.abs(z) < 16 || Math.abs(x - CROSSING_X) < 8 && Math.abs(z) < 8);
   for (const t of tiles) {
     const cx = t.i * TILE, cz = t.j * TILE;
     if (t.kind === 'construction') tileConstruction(b, f, rng, cx, cz);
@@ -767,10 +817,29 @@ function genMidIsland(b: Builder, team: TeamDef, rng: Rng, faceFrame: Frame, add
       // gate square: a portal to this team's face of the core
       for (const s of [-1, 1]) for (const k of [-1, 1]) barrier(b, f, s * 4.5, k * 10, 0, SW); // frame the gate, keep the lane free
       b.floorDecal(f, 'text', 0, SW, 5.5, 5, 1.1, 0, team.color, 'К ЦЕНТРУ');
+    } else if (t.kind === 'crossing') {
+      b.floorDecal(f, 'text', CROSSING_X + 5.5, SW, 0, 5, 1.1, -Math.PI / 2, other.color, `К ${toTeam(other)}`);
     }
   }
-  addPortalPair(f.sub(0, SW + 2, 0), faceFrame.sub(0, 2, 36), 0xf4efe4, team.color);
-  b.data.mid[team.id] = { portal: [[0, 6], [0, -6]] };
+  addPortalPair(f.sub(0, SW + 2, 0), coreGate, 0xf4efe4, team.color);
+
+  // bot data, in the frame of the team's up with its origin midDistance along its down
+  const up = new Vector3(...team.down).negate();
+  const inv = frameForUp(up).invert();
+  const toNav = (v: V3): XZ => {
+    _v.set(...v).addScaledVector(up, WORLD.midDistance).applyQuaternion(inv);
+    return [_v.x, _v.z];
+  };
+  (b.data.mid[team.id] ??= []).push({ center: toNav(f.p(0, 0, 0)), half: WORLD.midHalf, portal: [toNav(f.p(0, 0, 6)), toNav(f.p(0, 0, -6))] });
+  return f;
+}
+
+function genSideIsland(b: Builder, A: TeamDef, B: TeamDef, rng: Rng, gateA: Frame, gateB: Frame,
+  addPortalPair: (a: Frame, bF: Frame, colorA: number, colorB: number) => void) {
+  const fa = genSideFace(b, A, B, rng, gateA, addPortalPair);
+  const fb = genSideFace(b, B, A, rng, gateB, addPortalPair);
+  // crossing arches near the shared edge: A's face ↔ B's face (each shows the colour of the side it leads to)
+  addPortalPair(fa.sub(CROSSING_X, SW + 2, 0, Math.PI / 2), fb.sub(CROSSING_X, SW + 2, 0, Math.PI / 2), B.color, A.color);
 }
 
 // --- core --------------------------------------------------------------------------------------
@@ -822,7 +891,7 @@ function genCore(b: Builder, rng: Rng) {
   for (let i = 0; i < 4; i++) link(ring[i], 30, 21, ring[(i + 1) % 4], -30, 21);
 
   // cover: walls, pillars, crates and ruins on a jittered grid; the axes stay clear (drop runs + portal lanes)
-  const keepOut: XZ[] = [[0, -24], [30, 21], [-30, 21], [0, 36], [0, 6]];
+  const keepOut: XZ[] = [[0, -24], [30, 21], [-30, 21], [CORE_GATE[0], CORE_GATE[1]], [-CORE_GATE[0], CORE_GATE[1]], [0, 6]];
   for (const { f, team } of faces) {
     if (!team) continue;
     for (let gx = -48; gx <= 48; gx += 12) for (let gz = -48; gz <= 48; gz += 12) {
@@ -863,10 +932,11 @@ export function generateMap(seed = 1337, spawnTeam = 'red'): MapData {
   const b = new Builder(seed);
   const rng = new Rng(seed);
   const { faces, pair } = genCore(b, rng);
-  for (const team of TEAMS) {
-    genBaseIsland(b, team, rng, team.id === spawnTeam);
-    const face = faces.find((x) => x.team === team)!;
-    genMidIsland(b, team, rng, face.f, pair);
-  }
+  for (const team of TEAMS) genBaseIsland(b, team, rng, team.id === spawnTeam);
+  // the core face of a team has one gate per side island of that team: (-x, z) for its first neighbour, (+x, z) for the second
+  const gate = (team: TeamDef, other: TeamDef) =>
+    faces.find((x) => x.team === team)!.f.sub(neighbours(team).indexOf(other) ? CORE_GATE[0] : -CORE_GATE[0], 2, CORE_GATE[1]);
+  for (const [i, A] of TEAMS.entries()) for (const B of TEAMS.slice(i + 1))
+    if (isNeighbour(A, B)) genSideIsland(b, A, B, rng, gate(A, B), gate(B, A), pair);
   return b.data;
 }

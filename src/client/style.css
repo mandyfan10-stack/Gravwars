@@ -212,6 +212,7 @@ body.debug #info, body.debug #speed { display: block; }
 .btn:hover, .btn:focus-visible { color: #fff; background: rgba(255, 255, 255, .06); border-left-color: rgba(255, 255, 255, .6); }
 .btn-play { margin-bottom: 10px; padding: 14px 18px; border: 0; border-radius: 3px; background: #fff; color: #111318; font-size: 17px; font-weight: 700; text-align: center; }
 .btn-play:hover, .btn-play:focus-visible { background: #e6e8ee; color: #111318; }
+.btn-play:disabled { cursor: progress; background: rgba(255, 255, 255, .55); }
 .menu-details { margin-top: 24px; padding: 14px 0; border-top: 1px solid var(--line); color: rgba(255, 255, 255, .85); font-size: 13px; }
 .menu-details[hidden] { display: none; }
 .menu-details label { display: grid; grid-template-columns: 130px 1fr 44px; align-items: center; gap: 12px; min-height: 34px; font-weight: 500; }
@@ -233,3 +234,30 @@ body.debug #info, body.debug #speed { display: block; }
 #grav, #wallet, #wind, #objective { height: 28px; padding: 0 10px; border-radius: 3px; background: var(--ink); text-shadow: none; }
 #objective { line-height: 28px; top: 56px; }
 #hud #grav .ic, #hud #wallet .ic, #hud #wind .ic, #hud #objective .ic { filter: none; }
+
+/* ---------------- scoreboard (hold Tab) and the match panel in the menu */
+.menu-list .btn-play { order: -1; }
+.menu-details output.note { grid-column: 2 / 4; margin-top: -10px; text-align: left; color: var(--muted); font-size: 11px; }
+.menu-details output.note:empty { display: none; }
+.menu-match { width: 380px; }
+#scoreboard { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); width: 440px; padding: 14px 16px; border-radius: 4px;
+  background: rgba(10, 11, 16, .78); text-shadow: none; }
+#scoreboard h3 { display: flex; justify-content: space-between; margin: 0 0 10px; font: 600 13px var(--display); }
+#scoreboard h3 span { color: var(--muted); font-weight: 500; }
+.score { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.score th { padding: 0 0 6px; color: var(--muted); font: 500 11px var(--display); text-align: right; }
+.score th:first-child, .score td:first-child { text-align: left; }
+.score td { padding: 6px 0; border-top: 1px solid var(--line); text-align: right; color: rgba(255, 255, 255, .85); }
+.score td.team { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #fff; }
+.score td.team i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.score td.team small { color: var(--muted); font: 500 10px var(--display); }
+.score tr.mine td { background: rgba(255, 255, 255, .04); }
+.score tr.out td { color: var(--muted); }
+.score tr.out td.team { color: var(--muted); text-decoration: line-through; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; margin: 14px 0 0; }
+.stats div { min-width: 0; }
+.stats dt { color: var(--muted); font: 500 11px var(--display); }
+.stats dd { margin: 2px 0 0; font: 600 18px var(--display); font-variant-numeric: tabular-nums; color: #fff; }
+.stats dd small { display: block; color: var(--muted); font: 500 10px var(--display); }
+.btn[hidden] { display: none; }
+#menu-state.over { color: #fff; font-size: 13px; }

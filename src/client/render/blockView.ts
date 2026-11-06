@@ -247,19 +247,14 @@ export class BlockView {
   private readonly ghostMat = new MeshBasicMaterial({ color: 0x55eecb, transparent: true, opacity: 0.3, depthWrite: false });
   private readonly outlineMat = new LineBasicMaterial({ color: 0xbaffea });
 
-  constructor(scene: Scene) {
+  constructor(private readonly scene: Scene) {
     const cracks = crackTexture();
     for (const m of BLOCK_ORDER) {
       const map = texture(m);
       map.wrapS = map.wrapT = RepeatWrapping;
       const mat = withDamage(new MeshStandardMaterial({ map, roughness: m === 'metal' ? 0.5 : 0.88, metalness: m === 'metal' ? 0.55 : 0 }), cracks);
       for (const k of KINDS) {
-        const mesh = new InstancedMesh(tiledBox(...PIECE_SIZE[k]), mat, k === 'block' ? MAX_PER_MATERIAL : 512);
-        mesh.count = 0;
-        mesh.castShadow = mesh.receiveShadow = true;
-        mesh.frustumCulled = false;
-        mesh.setColorAt(0, _c.set(0xffffff));
-        scene.add(mesh);
+        const mesh = this.makeMesh(tiledBox(...PIECE_SIZE[k]), mat, k === 'block' ? MAX_PER_MATERIAL : 512);
         this.meshes.set(`${m}:${k}`, mesh);
       }
     }
@@ -268,14 +263,40 @@ export class BlockView {
     scene.add(this.ghost);
   }
 
+  private makeMesh(geometry: InstancedMesh['geometry'], material: InstancedMesh['material'], capacity: number) {
+    const mesh = new InstancedMesh(geometry, material, capacity);
+    mesh.count = 0;
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
+    mesh.setColorAt(0, _c.set(0xffffff));
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  /** Instance capacity is fixed per mesh: rebuild it twice as large (same geometry and material) when it runs out. */
+  private grow(key: string, need: number) {
+    const old = this.meshes.get(key)!;
+    let cap = old.instanceMatrix.count;
+    if (need <= cap) return;
+    while (cap < need) cap *= 2;
+    this.scene.remove(old);
+    old.dispose(); // instance buffers only: geometry and material are shared with the new mesh
+    this.meshes.set(key, this.makeMesh(old.geometry, old.material, cap));
+  }
+
   /** `preview` = the piece that would be placed; `ok` = it can be placed. */
   update(system: BlockSystem, preview: PiecePlan | null, ok: boolean) {
     if (system.version !== this.version) {
       this.version = system.version;
+      const need = new Map<string, number>();
+      for (const b of system.blocks.values()) {
+        const key = `${b.material}:${b.kind}`;
+        need.set(key, (need.get(key) ?? 0) + 1);
+      }
+      for (const [key, n] of need) this.grow(key, n);
       for (const mesh of this.meshes.values()) mesh.count = 0;
       for (const b of system.blocks.values()) {
         const mesh = this.meshes.get(`${b.material}:${b.kind}`)!;
-        if (mesh.count >= mesh.instanceMatrix.count) continue;
         const i = mesh.count++;
         mesh.setMatrixAt(i, _m.compose(b.center, b.quat, _s.set(1, 1, 1)));
         // health → the shader: darker and more cracked as it is damaged

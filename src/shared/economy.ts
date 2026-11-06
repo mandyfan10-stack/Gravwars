@@ -263,7 +263,7 @@ export class Economy {
     if (!this.unlocked(item)) return 'locked';
     if (this.wallet[item.currency] < item.price) return 'money';
     const ws = this.weapons;
-    if (item.kind === 'weapon' && item.weapon === 'grenade' && ws.ammo.grenade >= WEAPONS.grenade.mag) return 'full';
+    if (item.kind === 'weapon' && item.weapon === 'grenade' && ws.ammo.grenade + item.count > WEAPONS.grenade.mag) return 'full';
     this.wallet[item.currency] -= item.price;
     if (item.step) this.done.add(item.step);
     if (item.kind === 'blocks') this.blocks.inventory[item.material] += item.count;

@@ -38,9 +38,9 @@ export class Guide {
     if (loc.kind === 'air') return [this.tipKey, this.tip.innerHTML];
     const mine = loc.team === m.team;
     if (loc.kind === 'island' && mine && loc.roof)
-      return ['home-roof', '<b class="geyser">Фиолетовый гейзер</b> в углу крыши — на промежуточный остров. <b class="lift">Голубая площадка</b> в другом углу — вниз в город'];
+      return ['home-roof', '<b class="geyser">Фиолетовые гейзеры</b> в углах крыши — на острова между базами. <b class="lift">Голубая площадка</b> — вниз в город'];
     if (loc.kind === 'island' && mine) return ['home-street', '<b class="lift">Голубой лифт</b> у входа в небоскрёб — обратно на крышу'];
-    if (loc.kind === 'mid') return [`mid-${loc.team}`, 'Арка в центре острова ведёт на грань центрального куба. Упадёшь с края — вернёшься на базу'];
+    if (loc.kind === 'mid') return [`mid-${loc.team}`, 'Арка в центре острова — на грань центрального куба, арка у ребра — на сторону соседей. С края не прыгай: внизу пустота'];
     if (loc.kind === 'face' && mine) return ['home-face', 'Арки-порталы ведут на грани других команд. Цвет арки — чья грань за ней'];
     if (loc.kind === 'face') {
       if (m.isOut(loc.team)) return ['out-face', `${team(loc.team)} уже выбыли — иди через портал к другим`];

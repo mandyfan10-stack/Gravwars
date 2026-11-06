@@ -23,7 +23,7 @@ export interface Bed { team: TeamId; pos: Vector3; up: Vector3; alive: boolean }
 
 export type MatchEvent =
   | { type: 'pickup'; currency: 'crystal'; amount: number }
-  | { type: 'bedBroken'; team: TeamId }
+  | { type: 'bedBroken'; team: TeamId; byPlayer: boolean }
   | { type: 'win'; time: number }
   | { type: 'lose' };
 
@@ -152,16 +152,16 @@ export class Match {
     this.breaking.progress += dt / BED_BREAK_TIME;
     if (this.breaking.progress >= 1) {
       this.breaking = null;
-      this.destroyBed(bed.team);
+      this.destroyBed(bed.team, true);
     }
     return bed;
   }
 
-  destroyBed(team: TeamId) {
+  destroyBed(team: TeamId, byPlayer = false) {
     const bed = this.bed(team);
     if (!bed.alive) return;
     bed.alive = false;
-    this.events.push({ type: 'bedBroken', team });
+    this.events.push({ type: 'bedBroken', team, byPlayer });
     this.checkWin();
   }
 

@@ -71,7 +71,8 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     if (input.take('KeyF')) pockets.eat();
     if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
     if (input.take('KeyR')) player.pendingReload = true;
-    if (input.take('KeyK')) sim.respawn('manual');
+    // eliminated players stay out: K is a debug respawn for the living only
+    if (input.take('KeyK') && player.me.alive) sim.respawn('manual');
     if (input.take('KeyN')) {
       sim.state.noclip = !sim.state.noclip;
       hud.toast(sim.state.noclip ? 'Noclip: вкл' : 'Noclip: выкл', '#8af5ff', 1);
