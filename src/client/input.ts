@@ -6,7 +6,8 @@ export class Input {
   sensitivity = 0.0022;
   locked = false;
   private wheelJump = 0;
-  onMouseMove: (dx: number, dy: number) => boolean = () => false;
+  /** Mouse-move hooks, in order: the first that returns true takes the move (the view does not turn). */
+  readonly mouseHooks: ((dx: number, dy: number) => boolean)[] = [];
   onWheel: (delta: number) => boolean = () => false;
 
   /** A match exists: the menu button and a click on the canvas take the mouse (before that the menu is the lobby). */
@@ -26,7 +27,7 @@ export class Input {
     window.addEventListener('blur', () => this.keys.clear());
     document.addEventListener('mousemove', (e) => {
       if (!this.locked) return;
-      if (this.onMouseMove(e.movementX, e.movementY)) return;
+      for (const hook of this.mouseHooks) if (hook(e.movementX, e.movementY)) return;
       this.yaw -= e.movementX * this.sensitivity;
       this.pitch -= e.movementY * this.sensitivity;
       const lim = Math.PI / 2 - 0.01;

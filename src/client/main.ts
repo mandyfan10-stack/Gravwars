@@ -38,7 +38,6 @@ import { MatchUi } from './matchUi';
 import { setupMenu } from './menu';
 import { Lobby } from './lobby';
 import { Intro } from './intro';
-import { INTRO_MUSIC_LENGTH, playIntroMusic } from './music';
 import { PlayerCombat } from './playerCombat';
 import { Pockets } from './pockets';
 import { Fx } from './render/fx';
@@ -58,8 +57,8 @@ import { setPixelTextures } from './render/texFilter';
 import { loadSettings, saveSettings } from './settings';
 import { formatTime, MatchStats } from './stats';
 
-/** Seconds from the start of the intro to the camera landing in the player's eyes (the music's big hit). */
-const INTRO_LENGTH = INTRO_MUSIC_LENGTH - 5;
+/** Seconds of the start flight: from above the base into the player's eyes. */
+const INTRO_LENGTH = 2.6;
 
 async function main() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -208,6 +207,7 @@ async function main() {
     match.tick(TICK_DT, sim.state.pos);
   };
   local.onEvent = (e) => {
+    if (e.type === 'land') { if (player.me.alive) combat.fall(player.me, e.speed); return; }
     if (e.type === 'gravity') {
       const down = sim.gravityDown();
       if (Math.abs(down.z) > 0.9) hud.toast('Гравитация: центр', '#e8e2d0');
@@ -246,7 +246,6 @@ async function main() {
     /** Skip the match intro (screenshots, tests). */
     skipIntro() {
       intro.skip();
-      music?.stop(0.2);
     },
     look(yaw: number, pitch: number) {
       input.yaw = yaw;
@@ -268,28 +267,24 @@ async function main() {
     return Math.sqrt(best);
   };
   const STEP_LEN = 2.3;
+  // sprint feel: wider view, speed lines at the edges, wind in the ears
+  const speedEl = document.getElementById('speedlines')!;
+  let sprintT = 0;
+  let wasSprinting = false;
+  let fovNow = 0;
 
-  // --- the intro: a flight over the map to the player's eyes, with music
+  // --- the start: the camera drops from above the base into the player's eyes
   local.applyCamera(camera);
   const eye = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
-  const roster = botRoster(cfg);
-  const botsWord = (n: number) => (n === 1 ? 'бот' : n < 5 ? 'бота' : 'ботов');
-  const about = (t: TeamId) => {
-    const n = roster[t]?.length ?? 0;
-    const who = t === myTeam ? (n ? `ты и ${n} ${botsWord(n)}` : 'ты') : `${n} ${botsWord(n)}`;
-    return `${getTeam(t).name} · ${who}`;
-  };
-  const music = audio.context ? playIntroMusic(audio.context, audio.volume) : null;
-  const intro = new Intro(map, activeTeams(cfg), myTeam, eye, about, INTRO_LENGTH);
-  const ctx = audio.context;
-  if (ctx && ctx.state === 'running') { const t0 = ctx.currentTime + 0.1; intro.clock = () => ctx.currentTime - t0; }
+  const intro = new Intro(eye, upOf(sim.state.frame), INTRO_LENGTH);
+  audio.whoosh();
   const fog = scene.fog as FogExp2;
   const FOG = fog.density;
   document.body.classList.remove('building');
   gfx.updateLighting(local.renderFrame);
   /** Intro frame: only the world moves (nothing is simulated), the camera flies. */
   const introFrame = (dt: number, t: number) => {
-    if (input.take('Space') || input.take('Enter') || input.take('Mouse0')) { intro.skip(); music?.stop(1.5); }
+    if (input.take('Space') || input.take('Enter') || input.take('Mouse0')) intro.skip();
     intro.update(dt, camera);
     CHAR_LOD.eye.copy(camera.position);
     mapView.cull(camera.position, intro.active ? Infinity : settings.drawDistance);
@@ -318,7 +313,8 @@ async function main() {
     time += dt;
     if (intro.active) { introFrame(dt, time); requestAnimationFrame(frame); return; }
     handleKeys();
-    local.update(input.locked ? dt : 0);
+    // the world never stops: with the menu open the player just stands (no input), everything else goes on
+    local.update(dt);
     // footsteps and landings
     if (local.landed) { audio.land(local.landed); local.landed = 0; local.stride = 0; }
     if (local.stride > STEP_LEN) {
@@ -344,7 +340,22 @@ async function main() {
       ambient.city = Math.max(isl.id === 'center' ? 0.7 : 0, clamp01(1 - (nearest(cityPts, pos) - 15) / 60)) * (1 - base * 0.7);
       ambient.water = clamp01(1 - nearest(map.ponds, pos) / 16);
     }
-    if (input.locked) ambience.update(ambient, dt);
+    ambience.update(ambient, dt);
+    {
+      const st = sim.state, upv = upOf(st.frame);
+      const planar = Math.sqrt(Math.max(0, st.vel.lengthSq() - st.vel.dot(upv) ** 2));
+      const fast = st.sprinting && planar > sim.cfg.maxSpeed * 1.1 ? Math.min(1, (planar - sim.cfg.maxSpeed) / (sim.cfg.maxSpeed * 0.5)) : 0;
+      sprintT += (fast - sprintT) * Math.min(1, dt * (fast > sprintT ? 6 : 3));
+      if (st.sprinting && !wasSprinting && player.me.alive) audio.sprint();
+      wasSprinting = st.sprinting;
+      const fall = Math.max(0, -st.vel.dot(upv));
+      audio.loop('wind', Math.max(sprintT * 0.75, Math.min(1, Math.max(0, fall - 9) / 18)));
+      audio.loop('scrape', st.wallSlide ? 1 : 0);
+      const fov = toggles.fov + 12 * sprintT;
+      if (Math.abs(fov - fovNow) > 0.05) { fovNow = fov; camera.fov = fov; camera.updateProjectionMatrix(); }
+      speedEl.style.opacity = (sprintT * 0.9).toFixed(3);
+      if (sprintT > 0.01) speedEl.style.transform = `rotate(${(Math.random() * 6).toFixed(2)}deg) scale(${(1.02 + Math.random() * 0.04).toFixed(3)})`;
+    }
     local.applyCamera(camera);
     CHAR_LOD.eye.copy(camera.position);
     mapView.cull(camera.position, settings.drawDistance);
@@ -434,6 +445,7 @@ async function main() {
     gizmo.render(renderer, viewQ, Math.abs(gDown.z) > 0.9 ? '' : teamByDown(gDown).id);
     hud.setSpread(hands.tool ? null : player.nextSpread, camera.fov);
     hud.setGuard(player.me.guard && player.me.alive ? player.me.guard.t : null);
+    hud.setHp(player.me.hp); // regen ticks it up between hits
     hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
     stats.trackCash(match.wallet.cash);
     // scoreboard: hold Tab (in the shop Tab switches the tab)

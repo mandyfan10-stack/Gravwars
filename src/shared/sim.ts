@@ -12,7 +12,9 @@ export type RespawnReason = 'void' | 'manual' | 'spawn' | 'killed';
 export type SimEvent =
   | { type: 'gravity' }
   | { type: 'respawn'; reason: RespawnReason }
-  | { type: 'launch' };
+  | { type: 'launch' }
+  /** Touched the ground after falling at `speed` m/s (fall damage, landing thud). */
+  | { type: 'land'; speed: number };
 
 const _up = new Vector3();
 const _fwd = new Vector3();
@@ -95,9 +97,12 @@ export class PlayerSim {
 
   tick(input: MoveInput, dt: number) {
     const s = this.state;
+    const wasGround = s.onGround;
+    const fall = -s.vel.dot(upOf(s.frame, _up));
     this.mover.step(s, input, dt);
     if (s.noclip) return;
     const up = upOf(s.frame, _up);
+    if (s.onGround && !wasGround && fall > 3) this.events.push({ type: 'land', speed: fall });
 
     // walked onto a surface of another gravity (bridge stub, built floor): turn onto it
     if (this.surfaces) {

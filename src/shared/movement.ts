@@ -8,11 +8,21 @@ export const WALK_SPEED = 0.45;
 /** Crouched speed, share of maxSpeed (CS: 0.34). */
 export const CROUCH_SPEED = 0.34;
 /** Sprint (Shift) speed, share of maxSpeed. */
-export const SPRINT_SPEED = 1.3;
+export const SPRINT_SPEED = 1.65;
 /** Sprint stamina: seconds of sprinting when full; refills at REGEN per second after REGEN_DELAY s of rest. */
 export const STAMINA = { max: 8, regen: 1.6, regenDelay: 1, /** an empty bar lets you sprint again from this much */ restart: 1.5 };
 /** A jump still works this long after running off an edge, s. */
 export const COYOTE_TIME = 0.1;
+/**
+ * Hold-to-extend jump: a tap jumps ~1.3 m; holding Space keeps gravity at `gravityMul` while rising for up to `time` s,
+ * which lifts the feet ~3.2 m: enough to climb onto a piece one build level (3 m) higher.
+ */
+export const JUMP_HOLD = { time: 0.38, gravityMul: 0.2 };
+/**
+ * Wall slide: falling while pushing into a wall brakes the fall to `speed` m/s (the old "stuck in the wall" bug as a
+ * mechanic): slide down a building instead of breaking your legs. `grip` = how fast the fall speed is braked, 1/s.
+ */
+export const WALL_SLIDE = { speed: 3, grip: 30 };
 
 export interface PlayerState {
   pos: Vector3;
@@ -38,6 +48,12 @@ export interface PlayerState {
   exhausted: boolean;
   /** Time since the last sprint, s (regen starts after STAMINA.regenDelay). */
   restT: number;
+  /** Jump extension left while Space stays held, s (JUMP_HOLD). */
+  jumpHold: number;
+  /** Airborne and pushing into a wall: the fall is braked (WALL_SLIDE). */
+  wallSlide: boolean;
+  /** Wall normal of the last wall touched in the air (world), for the slide check. */
+  wallNormal: Vector3;
 }
 
 export interface MoveInput {
@@ -60,7 +76,7 @@ export function createPlayerState(): PlayerState {
   return {
     pos: new Vector3(), vel: new Vector3(), frame: new Quaternion(), yaw: 0, pitch: 0,
     onGround: false, groundNormal: new Vector3(0, 1, 0), jumpReleased: true, noclip: false, airT: -1, crouched: false,
-    sprinting: false, stamina: STAMINA.max, exhausted: false, restT: 0,
+    sprinting: false, stamina: STAMINA.max, exhausted: false, restT: 0, jumpHold: 0, wallSlide: false, wallNormal: new Vector3(),
   };
 }
 
@@ -120,6 +136,8 @@ const _right = new Vector3();
 const _wish = new Vector3();
 const _delta = new Vector3();
 const _moved = new Vector3();
+const _step = new Vector3();
+const _p1 = new Vector3();
 const _n = new Vector3();
 const _view = new Quaternion();
 
@@ -131,6 +149,8 @@ const _view = new Quaternion();
 export class Mover {
   readonly collider;
   readonly kcc;
+  /** The last move touched something walkable. */
+  private floorHit = false;
 
   constructor(R: Rapier, readonly world: PhysicsWorld, public cfg: MovementConfig) {
     this.collider = world.createCollider(R.ColliderDesc.capsule(PLAYER_HALF_SEGMENT, PLAYER_RADIUS));
@@ -198,7 +218,10 @@ export class Mover {
       onGround = false;
       s.jumpReleased = false;
       s.airT = -1;
+      s.jumpHold = JUMP_HOLD.time;
     }
+    // let go of Space or started falling: the extension is over
+    if (!input.jump || s.vel.dot(up) <= 0) s.jumpHold = 0;
 
     if (onGround) {
       s.vel.addScaledVector(up, -s.vel.dot(up));
@@ -206,8 +229,17 @@ export class Mover {
       accelerate(s.vel, _wish, wishSpeed, cfg.accelerate, dt);
     } else {
       airAccelerate(s.vel, _wish, wishSpeed, cfg.airAccelerate, cfg.airSpeedCap, dt);
-      s.vel.addScaledVector(up, -cfg.gravity * dt);
+      const g = s.jumpHold > 0 ? JUMP_HOLD.gravityMul : 1;
+      s.jumpHold = Math.max(0, s.jumpHold - dt);
+      s.vel.addScaledVector(up, -cfg.gravity * g * dt);
+      // wall slide: touching a wall last tick, still pushing into it and falling → brake the fall
+      s.wallSlide = s.wallNormal.lengthSq() > 0 && _wish.lengthSq() > 0 && _wish.dot(s.wallNormal) < -0.35 && s.vel.dot(up) < 0;
+      if (s.wallSlide) {
+        const v = s.vel.dot(up);
+        if (v < -WALL_SLIDE.speed) s.vel.addScaledVector(up, (-WALL_SLIDE.speed - v) * Math.min(1, WALL_SLIDE.grip * dt));
+      }
     }
+    if (onGround) s.wallSlide = false;
     if (s.vel.length() > cfg.maxVelocity) s.vel.setLength(cfg.maxVelocity);
 
     // move with collide & slide
@@ -226,24 +258,16 @@ export class Mover {
         _delta.addScaledVector(up, -_delta.dot(s.groundNormal) / nUp).setLength(len);
       }
     }
-    this.kcc.computeColliderMovement(this.collider, _delta);
-    const mv = this.kcc.computedMovement();
-    _moved.set(mv.x, mv.y, mv.z);
-    s.pos.add(_moved);
-
-    // clip velocity against everything we hit (ClipVelocity, overbounce 1)
-    const planarWanted = _delta.clone().addScaledVector(up, -_delta.dot(up)).length();
-    const planarMoved = _moved.clone().addScaledVector(up, -_moved.dot(up)).length();
-    const stepped = onGround && planarMoved >= planarWanted * 0.9;
-    const n = this.kcc.numComputedCollisions();
-    for (let i = 0; i < n; i++) {
-      const c = this.kcc.computedCollision(i);
-      if (!c) continue;
-      _n.set(c.normal1.x, c.normal1.y, c.normal1.z);
-      if (stepped && Math.abs(_n.dot(up)) < 0.3) continue; // went up a stair, keep speed
-      if (onGround && _n.dot(up) >= this.cfg.groundCos) continue; // walkable ground is not a wall
-      const d = s.vel.dot(_n);
-      if (d < 0) s.vel.addScaledVector(_n, -d);
+    _moved.set(0, 0, 0);
+    s.wallNormal.set(0, 0, 0);
+    const vert = _delta.dot(up);
+    this.pass(s, _delta, up, onGround, true);
+    // Falling into a wall: Rapier's slope handling may treat the wall as an unclimbable slope and cancel the fall
+    // too (you hung in the wall). Nothing under the feet and most of the fall eaten → finish the fall on its own.
+    const fell = _moved.dot(up);
+    if (!onGround && vert < 0 && fell > vert * 0.5 && !this.floorHit) {
+      _delta.copy(up).multiplyScalar(vert - fell);
+      this.pass(s, _delta, up, onGround, false);
     }
 
     this.sync(s);
@@ -252,6 +276,34 @@ export class Mover {
     if (s.onGround) s.airT = 0;
     else if (wasGround && s.airT === 0) s.airT = dt; // just walked off
     else if (s.airT > 0) s.airT += dt;
+  }
+
+  /** One collide-and-slide move; clips the velocity against what it hit (ClipVelocity, overbounce 1). */
+  private pass(s: PlayerState, delta: Vector3, up: Vector3, onGround: boolean, stepCheck: boolean) {
+    // on the ground even a zero move runs: it snaps the capsule down onto the ground
+    if (!onGround && delta.lengthSq() < 1e-12) return;
+    this.sync(s);
+    this.kcc.computeColliderMovement(this.collider, delta);
+    const mv = this.kcc.computedMovement();
+    _step.set(mv.x, mv.y, mv.z);
+    s.pos.add(_step);
+    _moved.add(_step);
+    const planarWanted = _p1.copy(delta).addScaledVector(up, -delta.dot(up)).length();
+    const planarMoved = _p1.copy(_step).addScaledVector(up, -_step.dot(up)).length();
+    const stepped = stepCheck && onGround && planarMoved >= planarWanted * 0.9;
+    const n = this.kcc.numComputedCollisions();
+    this.floorHit = false;
+    for (let i = 0; i < n; i++) {
+      const c = this.kcc.computedCollision(i);
+      if (!c) continue;
+      _n.set(c.normal1.x, c.normal1.y, c.normal1.z);
+      if (_n.dot(up) >= this.cfg.groundCos) this.floorHit = true;
+      if (stepped && Math.abs(_n.dot(up)) < 0.3) continue; // went up a stair, keep speed
+      if (onGround && _n.dot(up) >= this.cfg.groundCos) continue; // walkable ground is not a wall
+      if (!onGround && Math.abs(_n.dot(up)) < 0.3) s.wallNormal.copy(_n).addScaledVector(up, -_n.dot(up)).normalize();
+      const d = s.vel.dot(_n);
+      if (d < 0) s.vel.addScaledVector(_n, -d);
+    }
   }
 
   /** Ground check: short probe along gravity. */

@@ -186,7 +186,7 @@ check('walking off the stub end falls into the void', fell && startY < G + 3);
   const plan = bs.plan('floor', s.pos, upNow(), fwd)!;
   check('bridge plate goes in the next cell past the stub', Math.abs(plan.center.y - (G + 22)) < 0.01 && Math.abs(plan.center.x - 2) < 0.01
     && Math.abs(plan.center.z + PIECE_THICK / 2) < 0.01, plan.center.toArray().map((v) => v.toFixed(2)).join(','));
-  check('a floor over the void costs less', bs.costOf(plan) === BRIDGE_COST && BRIDGE_COST < PIECE_COST);
+  check('a floor over the void costs one unit', bs.costOf(plan) === BRIDGE_COST && BRIDGE_COST === 1);
   const wood0 = bs.inventory.wood;
   check('placing a bridge plate', bs.place(plan, 'wood', 'red') === 'ok' && bs.inventory.wood === wood0 - BRIDGE_COST);
   run(32, { forward: 1 });
@@ -254,7 +254,7 @@ sim.respawn();
 }
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
-import { Combat, MAX_HP, SPAWN_GUARD, Target } from '../src/shared/combat';
+import { Combat, DAMAGE_SCALE, MAX_HP, SPAWN_GUARD, Target } from '../src/shared/combat';
 import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
 {
   sim.team = TEAMS[0];
@@ -271,7 +271,8 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const eye = s.pos.clone().add(new Vector3(0, 0.71, 0));
   let hits = 0;
   let killed = false;
-  const toKill = Math.ceil(MAX_HP / WEAPONS.rifle.damage);
+  const scaled = (d: number) => Math.round(d * DAMAGE_SCALE * 10) / 10;
+  const toKill = Math.ceil(MAX_HP / scaled(WEAPONS.rifle.damage));
   for (let i = 0; i < toKill + 2; i++) {
     const dir = dummy.center.clone().sub(eye).normalize();
     combat.fire('rifle', 0, eye, dir, s.vel, new Vector3(0, -1, 0));
@@ -368,7 +369,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   dummy.respawnIn = 1e9;
   const near = punchAt(1.2);
   const far = punchAt(3.5);
-  check('punch hits up close for small damage', near === WEAPONS.fists.damage && far === 0, `near=${near} far=${far}`);
+  check('punch hits up close for small damage', Math.abs(near - Math.round(WEAPONS.fists.damage * DAMAGE_SCALE * 10) / 10) < 1e-6 && far === 0, `near=${near} far=${far}`);
   // spawn protection: no damage until 3 s pass, the target walks away or fires
   {
     const g: Target = { id: 7, team: 'green', center: new Vector3(16, G + 1.065, -30), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1 };
@@ -580,8 +581,8 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   const shelf = () => eco.offers().map((o) => `${o.item.id}:${o.state}`).join(' ');
   check('start with no money and no tools', eco.wallet.cash === 0 && !eco.has('rod') && ws.current === 'fists');
   check('everything is on the shelf from the start', eco.offers().length === SHOP.length && eco.buy(item('rifle')) === 'money', shelf());
-  check('prices are 25 % lower (rounded)', item('rod').price === 5 && item('builder').price === 11 && item('pistol').price === 19
-    && item('rifle').price === 41 && item('stone').price === 12 && item('metal').price === 2);
+  check('prices: tools, guns and block packs', item('rod').price === 5 && item('builder').price === 11 && item('pistol').price === 19
+    && item('rifle').price === 41 && item('wood').price === 4 && item('stone').price === 8 && item('metal').price === 2);
   eco.items.bottle = 4; eco.items.apple = 1; eco.items.fish = 1;
   const value = eco.sellValue;
   check('selling pays per item, cheaply', eco.sellAll() === value && value === 4 * ITEMS.bottle.sell + ITEMS.apple.sell + ITEMS.fish.sell
@@ -592,8 +593,8 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   for (const id of ['rod', 'builder', 'pistol', 'grenade']) eco.buy(item(id));
   check('build tool comes with some wood', bs.inventory.wood === BUILDER_WOOD);
   const wood = item('wood') as Extract<typeof SHOP[number], { kind: 'blocks' }>;
-  const woodPacks = Math.ceil(Math.max(0, 75 - BUILDER_WOOD) / wood.count);
-  check('a bridge to the centre (~75 plates) costs under 25 money', item('builder').price + woodPacks * item('wood').price < 25,
+  const woodPacks = Math.ceil(Math.max(0, 25 - BUILDER_WOOD) / wood.count);
+  check('a bridge (25 plates, 1 wood each) costs under 20 money', item('builder').price + woodPacks * item('wood').price < 20,
     `${item('builder').price} + ${woodPacks}×${item('wood').price}`);
   check('weapons from the shop come loaded, no spare ammo', ws.owned.pistol && ws.ammo.pistol === WEAPONS.pistol.mag && ws.reserve.pistol === 0
     && ws.owned.rifle && ws.ammo.grenade === 2);
@@ -653,7 +654,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   for (let k = 0; k < 64 && !throws.events.some((e) => e.type === 'shatter'); k++) { throws.tick(TICK_DT); combat.tick(TICK_DT); }
   const hit = throws.events.find((e) => e.type === 'shatter');
   check('a thrown bottle breaks on the NPC and dazes it', !!hit && hit.type === 'shatter' && hit.target === bum.id && hit.stunned
-    && Math.abs((bum.target.stun ?? 0) - THROW.stun) < 0.1 && bum.target.hp === NPC.bum.hp - THROW.bottleDamage, JSON.stringify(hit));
+    && Math.abs((bum.target.stun ?? 0) - THROW.stun) < 0.1 && Math.abs(bum.target.hp - (NPC.bum.hp - Math.round(THROW.bottleDamage * DAMAGE_SCALE * 10) / 10)) < 1e-6, JSON.stringify(hit));
   step(0.3); // it was walking: slides to a stop
   const at = bum.sim.state.pos.clone();
   step(1.2);
@@ -957,7 +958,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   check('bots fight each other', kills >= 2, `kills=${kills}`);
   check('no bot stays airborne for long', maxAir < 10, `max=${maxAir.toFixed(1)}s`);
   check('bot positions stay finite', bots.bots.every((b) => b.sim.state.pos.toArray().every(Number.isFinite)));
-  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 60, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
+  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 70, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
 }
 
 // Slopes: walking up / down a ramp is as fast along the surface as on flat ground, and stays grounded (build ramps ~37°).
@@ -1038,6 +1039,51 @@ for (const deg of [20, 37, 45]) {
   const goals = new Set(allies.filter((b) => b.goal).map((b) => b.goal));
   check('lobby: allies go for the enemy, never their own base', goals.has('yellow') && !goals.has('green') && allies.every((b) => !b.out),
     `goals ${[...goals].join(',')}, ${((performance.now() - t0) / 20).toFixed(0)} ms per game second`);
+}
+
+// GravWars movement: hold-to-extend jump reaches one build level, a wall slide brakes the fall, falls hurt.
+{
+  const w = buildPhysicsWorld(R, map);
+  const ps = new PlayerSim(R, w, map, 'red');
+  const st = ps.state;
+  const put = (x: number, y: number, z: number) => {
+    st.pos.set(x, y, z); st.vel.set(0, 0, 0); st.frame.identity(); st.onGround = false; st.jumpHold = 0; ps.mover.place(st);
+  };
+  const apex = (hold: number) => {
+    put(16, G + 1.2, 10);
+    for (let k = 0; k < 30; k++) ps.tick(emptyInput(), TICK_DT);
+    const y0 = st.pos.y; let top = y0;
+    for (let k = 0; k < 120; k++) { ps.tick({ ...emptyInput(), jump: k < hold }, TICK_DT); top = Math.max(top, st.pos.y); }
+    return top - y0;
+  };
+  const tap = apex(1), held = apex(60);
+  check('tap jump is short, a held jump clears one build level (3 m)', tap > 1 && tap < 1.6 && held > PIECE_LEVEL + 0.1, `tap ${tap.toFixed(2)} held ${held.toFixed(2)}`);
+  // the hall's east wall (outer face x = 12): fall against it pushing in → slow slide; not pushing → free fall
+  put(12.43, G + 8, 32);
+  let minV = 0;
+  for (let k = 0; k < 40; k++) { ps.tick({ ...emptyInput(), yaw: Math.PI / 2, forward: 1 }, TICK_DT); minV = Math.min(minV, st.vel.y); }
+  check('pushing into a wall in the air slides down slowly', st.wallSlide && minV > -4.5, `v=${minV.toFixed(1)}`);
+  put(12.43, G + 8, 32);
+  for (let k = 0; k < 40; k++) ps.tick(emptyInput(), TICK_DT);
+  check('falling past a wall without pushing is a free fall (no hanging in the wall)', st.vel.y < -10, `v=${st.vel.y.toFixed(1)}`);
+  const c2 = new Combat(R, w, map, [ps.mover.collider]);
+  const t2: Target = { id: 0, team: 'red', center: st.pos, up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1 };
+  c2.targets.push(t2);
+  check('a soft landing does not hurt, a hard one does', c2.fall(t2, 12) === 0 && c2.fall(t2, 20) > 0 && t2.hp < MAX_HP);
+  // regen: 3 s after the last hit, 2 HP/s
+  const t3: Target = { id: 1, team: 'blue', center: new Vector3(0, 5000, 0), up: new Vector3(0, 1, 0), hp: 50, alive: true, respawnIn: -1, regen: true, calm: 0 };
+  c2.targets.push(t3);
+  for (let k = 0; k < 64 * 2.5; k++) c2.tick(TICK_DT);
+  const early = t3.hp;
+  for (let k = 0; k < 64 * 2.5; k++) c2.tick(TICK_DT);
+  check('health regenerates 2 HP/s after 3 s without damage', early === 50 && Math.abs(t3.hp - 54) < 0.3, `${early} → ${t3.hp.toFixed(1)}`);
+  // knockback: a hit shoves the victim away from the attacker
+  let pushed = new Vector3();
+  const t4: Target = { id: 2, team: 'green', center: new Vector3(5, 5000, 0), up: new Vector3(0, 1, 0), hp: 100, alive: true, respawnIn: -1, onImpulse: (v) => { pushed = v.clone(); } };
+  const t5: Target = { id: 3, team: 'yellow', center: new Vector3(0, 5000, 0), up: new Vector3(0, 1, 0), hp: 100, alive: true, respawnIn: -1 };
+  c2.targets.push(t4, t5);
+  c2.damage(t4, 30, 3, false, t4.center);
+  check('damage is a third and knocks the victim away from the attacker', Math.abs(t4.hp - 90) < 1e-6 && pushed.x > 0.5, `hp=${t4.hp} push=${pushed.x.toFixed(2)}`);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

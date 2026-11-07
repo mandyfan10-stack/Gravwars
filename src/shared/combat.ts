@@ -39,6 +39,10 @@ export interface Target {
   guard?: { from: Vector3; t: number } | null;
   /** Stunned (hit by a bottle): NPCs stand dazed and do nothing for this many seconds. */
   stun?: number;
+  /** Fighters (players, bots) heal REGEN.rate HP/s once nobody has hurt them for REGEN.delay s. */
+  regen?: boolean;
+  /** Seconds since the last damage taken (regen). */
+  calm?: number;
 }
 
 export interface Projectile {
@@ -68,7 +72,7 @@ export type CombatEvent =
   | { type: 'bounce'; pos: Vector3; speed: number }
   | { type: 'fizzle'; pos: Vector3 }
   | { type: 'explode'; pos: Vector3; radius: number }
-  | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3 }
+  | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3; cause?: DamageCause }
   /** A punch: `pos` = what it landed on (null = swung at the air). */
   | { type: 'melee'; owner: number; pos: Vector3 | null; target: number | null }
   /** A hit on a target under spawn protection: no damage. */
@@ -89,6 +93,24 @@ const PIERCE_MIN_SPEED = 120;
 const PIERCE_PROBE = 1.2;
 
 export const MAX_HP = 100;
+/** Every weapon, punch and explosion hurts living things this much of its listed damage (GravWars: fights last longer). */
+export const DAMAGE_SCALE = 1 / 3;
+/** Out of a fight for `delay` s → heal `rate` HP/s (players and bots, not city NPCs). */
+export const REGEN = { delay: 3, rate: 2 };
+/** Every hit shoves the victim away from the attacker: m/s per HP of damage taken, capped. */
+export const HIT_PUSH = { perHp: 0.45, min: 0.8, max: 6, lift: 0.25 };
+/** Falls: landing faster than `safe` m/s hurts `perMs` HP for every m/s above it (not scaled by DAMAGE_SCALE). */
+export const FALL = { safe: 14, perMs: 5 };
+export type DamageCause = 'fall';
+export interface DamageOpts {
+  /** Already final: no DAMAGE_SCALE. */
+  raw?: boolean;
+  /** No knockback (falls, explosions push by themselves). */
+  noPush?: boolean;
+  /** Where the blow came from, for the knockback (default: the attacker's centre, else the hit point). */
+  from?: Vector3;
+  cause?: DamageCause;
+}
 /** Spawn protection: seconds, and how far from the spawn point it holds. */
 export const SPAWN_GUARD = { time: 3, radius: 6 };
 /** Share of a grenade's sliding speed lost on each floor bounce. */
@@ -106,6 +128,8 @@ const _p = new Vector3();
 const _q = new Vector3();
 const _rel = new Vector3();
 const _dir = new Vector3();
+const _push = new Vector3();
+const _push2 = new Vector3();
 
 /** Closest points between segments p0p1 and q0q1. Returns squared distance, s/t written to out. */
 function segSeg(p0: Vector3, p1: Vector3, q0: Vector3, q1: Vector3, out: { s: number; t: number }): number {
@@ -243,7 +267,7 @@ export class Combat {
       this.events.push({ type: 'melee', owner, pos: pos.clone(), target: th.target.id });
       const push = to.clone().sub(eye).normalize().addScaledVector(th.target.up, 0.3).multiplyScalar(2.2);
       th.target.onImpulse?.(push);
-      this.damage(th.target, Math.round(def.damage * (th.head ? def.headMul : 1)), owner, th.head, pos);
+      this.damage(th.target, Math.round(def.damage * (th.head ? def.headMul : 1)), owner, th.head, pos, { noPush: true });
       return;
     }
     if (wh) {
@@ -288,20 +312,45 @@ export class Combat {
     return best;
   }
 
-  damage(tg: Target, amount: number, owner: number, head: boolean, pos: Vector3) {
+  /**
+   * Hurt a target. `amount` is the listed damage (scaled by DAMAGE_SCALE unless `opts.raw`); the hit also shoves the
+   * target away from the attacker (HIT_PUSH).
+   */
+  damage(tg: Target, amount: number, owner: number, head: boolean, pos: Vector3, opts: DamageOpts = {}) {
     if (!tg.alive) return;
     if (tg.guard) {
       this.events.push({ type: 'guarded', target: tg.id, pos: pos.clone() });
       return;
     }
-    tg.hp = Math.max(0, tg.hp - amount);
-    const killed = tg.hp <= 0;
-    tg.onHit?.(owner, amount);
+    const dmg = opts.raw ? amount : Math.round(amount * DAMAGE_SCALE * 10) / 10;
+    tg.hp = Math.max(0, tg.hp - dmg);
+    tg.calm = 0;
+    const killed = tg.hp <= 0.05;
+    if (killed) tg.hp = 0;
+    tg.onHit?.(owner, dmg);
+    if (!opts.noPush && owner !== tg.id && tg.onImpulse) {
+      const from = opts.from ?? this.target(owner)?.center ?? pos;
+      const dir = _push.copy(tg.center).sub(from);
+      dir.addScaledVector(tg.up, -dir.dot(tg.up));
+      if (dir.lengthSq() < 1e-6) dir.copy(tg.center).sub(pos).addScaledVector(tg.up, -_push.dot(tg.up));
+      if (dir.lengthSq() > 1e-6) {
+        const v = Math.min(HIT_PUSH.max, Math.max(HIT_PUSH.min, dmg * HIT_PUSH.perHp));
+        tg.onImpulse(dir.normalize().addScaledVector(tg.up, HIT_PUSH.lift).multiplyScalar(v));
+      }
+    }
     if (killed) {
       tg.alive = false;
       if (tg.respawnIn >= 0) tg.respawnIn = DUMMY_RESPAWN;
     }
-    this.events.push({ type: 'hit', target: tg.id, owner, damage: amount, head, killed, pos: pos.clone() });
+    this.events.push({ type: 'hit', target: tg.id, owner, damage: dmg, head, killed, pos: pos.clone(), cause: opts.cause });
+  }
+
+  /** Fall damage for a landing at `speed` m/s (FALL); returns the damage dealt. */
+  fall(tg: Target, speed: number): number {
+    const dmg = Math.round((speed - FALL.safe) * FALL.perMs);
+    if (dmg <= 0 || !tg.alive || tg.guard) return 0;
+    this.damage(tg, dmg, tg.id, false, tg.center, { raw: true, noPush: true, cause: 'fall' });
+    return dmg;
   }
 
   private explode(p: Projectile) {
@@ -326,7 +375,7 @@ export class Combat {
         dir.normalize().addScaledVector(tg.up, 0.35).normalize();
         tg.onImpulse(dir.multiplyScalar(def.knockback * (0.35 + 0.65 * k)));
       }
-      this.damage(tg, dmg, p.owner, false, tg.center);
+      this.damage(tg, dmg, p.owner, false, tg.center, { noPush: true });
     }
   }
 
@@ -380,6 +429,10 @@ export class Combat {
     this.time += dt;
     for (const tg of this.targets) {
       if (tg.stun) tg.stun = tg.alive ? Math.max(0, tg.stun - dt) : 0;
+      if (tg.regen && tg.alive) {
+        tg.calm = (tg.calm ?? REGEN.delay) + dt;
+        if (tg.calm >= REGEN.delay && tg.hp < MAX_HP) tg.hp = Math.min(MAX_HP, tg.hp + REGEN.rate * dt);
+      }
       if (tg.guard && ((tg.guard.t -= dt) <= 0 || !tg.alive || tg.center.distanceTo(tg.guard.from) > SPAWN_GUARD.radius)) tg.guard = null;
       if (!tg.alive && tg.respawnIn > 0) {
         tg.respawnIn -= dt;
@@ -422,7 +475,8 @@ export class Combat {
         p.alive = false;
         p.pos.copy(end);
         const energy = energyLeft(def, p.vel.length());
-        this.damage(th.target, Math.max(1, Math.round(def.damage * energy * (th.head ? def.headMul : 1))), p.owner, th.head, end);
+        this.damage(th.target, Math.max(1, Math.round(def.damage * energy * (th.head ? def.headMul : 1))), p.owner, th.head, end,
+          { from: _push2.copy(end).addScaledVector(p.vel, -1 / Math.max(1, p.vel.length())) });
         continue;
       }
       if (wh) {

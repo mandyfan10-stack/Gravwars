@@ -40,9 +40,11 @@ export const DEFAULT_MOVEMENT: MovementConfig = {
   accelerate: 10,
   airAccelerate: 12,
   airSpeedCap: 30 * HU,
-  friction: 5,
+  // stops in ~0.25 s from a run (Source: 4–6; GravWars is snappier)
+  friction: 9,
   stopSpeed: 80 * HU,
-  jumpSpeed: 301.993 * HU,
+  // a tap: ~1.3 m; held: ~3.3 m (JUMP_HOLD in movement.ts)
+  jumpSpeed: 286 * HU,
   stepHeight: 18 * HU,
   groundCos: 0.7,
   nonJumpVelocity: 140 * HU,

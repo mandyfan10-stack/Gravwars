@@ -158,6 +158,22 @@ body.debug #info, body.debug #speed { display: block; }
 #build-hud .mat.on { border-color: rgba(255, 255, 255, .7); color: #fff; }
 #build-hud .hint { color: var(--muted); font-weight: 500; font-size: 11px; }
 
+/* sprint: thin streaks rushing in from the screen edges (opacity and jitter set per frame) */
+#speedlines { position: absolute; inset: -10%; opacity: 0; pointer-events: none;
+  background: repeating-conic-gradient(from 0deg at 50% 50%, transparent 0 2.2deg, rgba(255, 255, 255, .22) 2.4deg 2.7deg, transparent 2.9deg 5.1deg, rgba(255, 255, 255, .1) 5.3deg 5.5deg, transparent 5.7deg 7.4deg);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 50%, transparent 0 38%, #000 70%); mask-image: radial-gradient(ellipse at 50% 50%, transparent 0 38%, #000 70%); }
+/* hold Q with the shovel: shapes around the crosshair, the mouse picks one */
+#build-radial { position: absolute; left: 50%; top: 50%; width: 0; height: 0; text-shadow: none; }
+#build-radial::before { content: ''; position: absolute; left: -118px; top: -118px; width: 236px; height: 236px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(10, 12, 16, .25) 0 34%, rgba(10, 12, 16, .62) 35% 100%); border: 1px solid var(--line); }
+#build-radial .sector { position: absolute; left: calc(var(--x) * 78px - 38px); top: calc(var(--y) * 78px - 30px); width: 76px; height: 60px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 1px solid transparent; border-radius: 4px;
+  color: var(--muted); font: 600 12px var(--display); }
+#build-radial .sector .ic { font-size: 22px; }
+#build-radial .sector.on { color: #fff; }
+#build-radial .sector.hover { color: #fff; border-color: rgba(255, 255, 255, .75); background: rgba(255, 255, 255, .06); }
+#build-radial .dot { position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+
 #toast { position: absolute; left: 50%; top: 24%; transform: translateX(-50%) translateY(-6px); padding: 0 2px 6px; border-bottom: 2px solid var(--c, #fff);
   font: 600 18px var(--display); white-space: nowrap; opacity: 0; transition: opacity .2s, transform .2s; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
@@ -255,6 +271,8 @@ button.x.hover { background: rgba(255, 255, 255, .12); color: #fff; }
 /* every letter has its own gravity: a thin team-coloured edge on the side it falls toward */
 .g-down { --dx: 0; --dy: 1; } .g-up { --dx: 0; --dy: -1; } .g-right { --dx: 1; --dy: 0; } .g-left { --dx: -1; --dy: 0; }
 .logo-top i { text-shadow: calc(var(--dx) * 3px) calc(var(--dy) * 3px) 0 var(--c); }
+.logo-top i.w { --dx: 0; --dy: 0; text-shadow: none; color: rgba(255, 255, 255, .55); }
+.logo-top i:nth-child(8) { animation-delay: .28s }
 @keyframes fall { from { opacity: 0; transform: translate(calc(var(--dx) * -14px), calc(var(--dy) * -14px)); } }
 .logo-bottom { display: block; margin-top: 12px; font-size: 15px; font-weight: 600; letter-spacing: .5em; color: var(--muted); }
 .menu-list { display: flex; flex-direction: column; align-items: stretch; gap: 2px; max-width: 280px; }

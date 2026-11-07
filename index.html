@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Gravity Bedwars — прототип</title>
+    <title>GravWars</title>
   </head>
   <body>
     <canvas id="game"></canvas>
@@ -30,6 +30,8 @@
       <div id="fish-bar"><div class="zone"></div><div class="mark"></div></div>
       <div id="hp" class="panel"><span class="hp-ic"></span><span id="hp-val">100</span><div class="bars"><span id="guard" hidden>Защита после спавна</span><div class="bar"><div id="hp-bar"></div></div><div class="bar st" id="st"><div id="st-bar"></div></div></div></div>
       <div id="build-hud" class="panel" style="display:none"></div>
+      <div id="build-radial" hidden></div>
+      <div id="speedlines"></div>
       <div id="hotbar"></div>
       <div id="weapon" class="panel"><span id="weapon-ic"></span><div><div id="weapon-name">Кулаки</div><div id="ammo"></div></div></div>
       <div id="shop" class="panel" hidden></div>
@@ -42,15 +44,15 @@
     <div id="building">Строим острова…</div>
     <div id="overlay">
       <div class="menu-shell">
-        <div id="menu-state" hidden>Пауза</div>
-        <h1 class="logo" aria-label="Gravity Bedwars"><span class="logo-top"><i class="g-down" style="--c:var(--red)">G</i><i class="g-up" style="--c:var(--blue)">R</i><i class="g-right" style="--c:var(--green)">A</i><i class="g-left" style="--c:var(--yellow)">V</i><i class="g-down" style="--c:var(--aqua)">I</i><i class="g-up" style="--c:var(--pink)">T</i><i class="g-right" style="--c:var(--red)">Y</i></span><span class="logo-bottom">Bedwars</span></h1>
+        <div id="menu-state" hidden>Матч идёт</div>
+        <h1 class="logo" aria-label="GravWars"><span class="logo-top"><i class="g-down" style="--c:var(--red)">G</i><i class="g-up" style="--c:var(--blue)">R</i><i class="g-right" style="--c:var(--green)">A</i><i class="g-left" style="--c:var(--yellow)">V</i><i class="w">W</i><i class="w">A</i><i class="w">R</i><i class="w">S</i></span></h1>
         <nav class="menu-list">
           <button id="start-game" class="btn btn-play" disabled>Загрузка…</button>
           <button id="show-help" class="btn">Управление</button>
           <button id="show-settings" class="btn">Настройки</button>
           <button id="new-match" class="btn" hidden>Новый матч</button>
         </nav>
-        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок, зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>то, что в руке: удар, огонь, постройка, удочка, съесть, бросить бутылку</span></div><div class="row"><span class="keys"><kbd>1</kbd>–<kbd>9</kbd></span><span>слоты пояса; та же цифра ещё раз — кулаки</span></div><div class="row"><span class="keys"><kbd>Q</kbd></span><span>следующий слот; в магазине — вкладка</span></div><div class="row"><span class="keys"><kbd>G</kbd></span><span>бросить предмет из руки (бутылка оглушает жителя)</span></div><div class="row"><span class="keys"><kbd>I</kbd></span><span>инвентарь — разложить пояс мышью</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>подобрать; магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>F</kbd></span><span>съесть яблоко</span></div><div class="row"><span class="keys"><kbd>Tab</kbd></span><span>держать — счёт матча</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Shift</kbd></span><span>бег — быстрее, хватает на 8 секунд</span></div><div class="row"><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span><span>присесть — тихо (бандиты замечают позже), точнее, но медленно</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–4</kbd></span><span>стоя на месте — сменить гравитацию (отладка)</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>пауза</span></div></div>
+        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок: держать — выше (до 3 м), зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>то, что в руке: удар, огонь, постройка, удочка, съесть, бросить бутылку</span></div><div class="row"><span class="keys"><kbd>1</kbd>–<kbd>9</kbd></span><span>слоты пояса; та же цифра ещё раз — кулаки</span></div><div class="row"><span class="keys"><kbd>Q</kbd></span><span>следующий слот; с лопаткой держать — форма постройки; в магазине — вкладка</span></div><div class="row"><span class="keys"><kbd>G</kbd></span><span>бросить предмет из руки (бутылка оглушает жителя)</span></div><div class="row"><span class="keys"><kbd>I</kbd></span><span>инвентарь — разложить пояс мышью</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>подобрать; магазин; держать у чужого кристалла — сломать</span></div><div class="row"><span class="keys"><kbd>F</kbd></span><span>съесть яблоко</span></div><div class="row"><span class="keys"><kbd>Tab</kbd></span><span>держать — счёт матча</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Shift</kbd></span><span>бег — намного быстрее, хватает на 8 секунд</span></div><div class="row"><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span><span>присесть — тихо (бандиты замечают позже), точнее, но медленно</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–4</kbd></span><span>стоя на месте — сменить гравитацию (отладка)</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>меню (игра не останавливается)</span></div></div>
         <div id="menu-settings" class="menu-details" hidden>
           <label>Громкость <input id="volume" type="range" min="0" max="1" step="0.05" value="0.45"><output id="volume-value">45%</output></label>
           <label>Чувствительность <input id="sensitivity" type="range" min="0.0008" max="0.005" step="0.0002" value="0.0022"><output id="sensitivity-value">100%</output></label>

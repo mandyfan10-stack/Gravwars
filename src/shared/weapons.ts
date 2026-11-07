@@ -53,9 +53,11 @@ export interface WeaponDef {
   /** Recoil per shot: view climb and sideways wobble, rad. */
   recoil: number;
   recoilYaw: number;
+  /** Shooting in the air pushes the shooter back this hard, m/s per shot. */
+  airPush: number;
 }
 
-const base = { reloadEmpty: 0, drag: 0, minEnergy: 1, spread: 0, bloom: 0, moveSpread: 0, recoil: 0, recoilYaw: 0, headMul: 1, fuse: 0, radius: 0, bounce: 0, knockback: 0, selfMul: 0, reach: 0, auto: false, reload: 0, inherit: 0 };
+const base = { reloadEmpty: 0, drag: 0, minEnergy: 1, spread: 0, bloom: 0, moveSpread: 0, recoil: 0, recoilYaw: 0, airPush: 0, headMul: 1, fuse: 0, radius: 0, bounce: 0, knockback: 0, selfMul: 0, reach: 0, auto: false, reload: 0, inherit: 0 };
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
   fists: {
@@ -66,13 +68,13 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   pistol: {
     ...base, id: 'pistol', name: 'Пистолет', speed: 360, gravityScale: 1, windScale: 1, damage: 9, blockDamage: 26, headMul: 2,
     interval: 0.12, mag: 15, reload: 1.5, reloadEmpty: 1.9, life: 2.5, drag: 0.0019, minEnergy: 0.3,
-    spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008,
+    spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008, airPush: 1.6,
   },
   // 5.45×39 mm assault rifle, 650 rounds per minute: flat and fast, goes through a wooden wall
   rifle: {
     ...base, id: 'rifle', name: 'Автомат', speed: 880, gravityScale: 1, windScale: 1, damage: 7, blockDamage: 28, headMul: 2,
     interval: 0.092, auto: true, mag: 30, reload: 2.1, reloadEmpty: 2.6, life: 2.5, drag: 0.0008, minEnergy: 0.3,
-    spread: 0.0025, bloom: 0.0045, moveSpread: 0.035, recoil: 0.013, recoilYaw: 0.006,
+    spread: 0.0025, bloom: 0.0045, moveSpread: 0.035, recoil: 0.013, recoilYaw: 0.006, airPush: 0.7,
   },
   grenade: {
     ...base, id: 'grenade', name: 'Граната', speed: 22, gravityScale: 1, windScale: 0.6, damage: 45, blockDamage: 75,

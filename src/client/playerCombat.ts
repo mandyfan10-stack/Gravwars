@@ -59,7 +59,7 @@ export class PlayerCombat {
   constructor(private sim: PlayerSim, private combat: Combat, private hud: Hud, private fx: Fx,
     private audio: GameAudio, private viewModel: ViewModel) {
     this.me = {
-      id: 0, team: sim.team.id, center: sim.state.pos, up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1,
+      id: 0, team: sim.team.id, center: sim.state.pos, up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
       onImpulse: (v) => sim.applyImpulse(v),
     };
     combat.targets.push(this.me);
@@ -146,6 +146,8 @@ export class PlayerCombat {
         this.recoilDebt += climb * RECOIL_RETURN;
         this.sinceShot = 0;
       }
+      // in the air a shot pushes you back (on the ground the legs take it)
+      if (!sim.state.onGround && def.airPush) sim.applyImpulse(dir.clone().multiplyScalar(-def.airPush));
       const p = this.combat.use(fired, 0, eye, dir, sim.state.vel, sim.gravityDown());
       if (p && isGun(fired)) {
         const muzzle = this.viewModel.muzzleCameraSpace().applyQuaternion(_vq).add(eye);
@@ -193,14 +195,15 @@ export class PlayerCombat {
       // street fights between city NPCs are not news: the feed is about players and bots
       if (e.killed && e.owner !== 0 && e.target !== 0 && !(tg.npc && this.combat.target(e.owner)?.npc)) {
         const killer = this.combat.target(e.owner);
-        hud.killfeed(e.owner === e.target || !killer ? `${SELF}${teamSpan(tg.team)} подорвался` : `${teamSpan(killer.team)}${KILL}${teamSpan(tg.team)}`);
+        hud.killfeed(e.owner === e.target || !killer ? `${SELF}${teamSpan(tg.team)} ${e.cause === 'fall' ? 'разбился' : 'подорвался'}` : `${teamSpan(killer.team)}${KILL}${teamSpan(tg.team)}`);
       }
       if (e.target === 0) {
         hud.hurt(e.damage);
+        if (e.cause === 'fall') this.audio.fallHurt();
         hud.setHp(me.hp);
         if (e.killed) {
           this.onDeath(this.sim.state.pos.clone(), me.up.clone());
-          hud.killfeed(e.owner === 0 ? `${SELF}${teamSpan(me.team, 'Ты')} подорвался` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')}${KILL}${teamSpan(me.team, 'Ты')}`);
+          hud.killfeed(e.owner === 0 ? `${SELF}${teamSpan(me.team, 'Ты')} ${e.cause === 'fall' ? 'разбился' : 'подорвался'}` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')}${KILL}${teamSpan(me.team, 'Ты')}`);
           if (this.canRespawn()) {
             this.sim.respawn('killed');
             this.reset();

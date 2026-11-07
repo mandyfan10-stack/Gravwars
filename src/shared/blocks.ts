@@ -28,10 +28,10 @@ export const PIECE_CELL = 4;
 /** Height of one building level (wall height, ramp rise), m. */
 export const PIECE_LEVEL = 3;
 export const PIECE_THICK = 0.25;
-/** Material units one piece costs. */
-export const PIECE_COST = 3;
-/** A floor piece laid over the void (a bridge) costs only this: bridges to the centre are ~75 pieces long. */
-export const BRIDGE_COST = 1;
+/** Material units one piece costs: a resource is a piece (1 wood = 1 wall / floor / ramp). */
+export const PIECE_COST = 1;
+/** Bridge plates cost the same as any piece (kept for the tests and the bots). */
+export const BRIDGE_COST = PIECE_COST;
 /** Piece HP = material HP × this. */
 export const PIECE_HP_MUL = 2.5;
 
@@ -177,13 +177,9 @@ export class BlockSystem {
     return { kind, center, half, quat, key, level };
   }
 
-  /** Material a piece costs: a floor with nothing under it is a bridge plate. */
-  costOf(plan: PiecePlan): number {
-    if (plan.kind !== 'floor') return PIECE_COST;
-    const down = axisOf(new Vector3(0, 1, 0).applyQuaternion(plan.quat)).negate();
-    const hit = this.world.castRay(new this.R.Ray(plan.center, down), 4, true, undefined, undefined, undefined, undefined,
-      (c) => !this.isCharacter(c));
-    return hit ? PIECE_COST : BRIDGE_COST;
+  /** Material a piece costs: one unit, whatever the piece (1 wood = 1 piece; bridges too). */
+  costOf(_plan: PiecePlan): number {
+    return PIECE_COST;
   }
 
   /** `free`: bots build without an inventory. */

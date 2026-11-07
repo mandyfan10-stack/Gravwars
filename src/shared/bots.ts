@@ -187,7 +187,7 @@ export class BotManager {
         blocks.characters.push(sim.mover.collider); // building must not trap it (nor measure the ground on it)
         combat.addCharacter(sim.mover.collider);
         const target: Target = {
-          id: id++, team: t.id, center: sim.state.pos, up: upOf(sim.state.frame), hp: MAX_HP, alive: true, respawnIn: -1,
+          id: id++, team: t.id, center: sim.state.pos, up: upOf(sim.state.frame), hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
           onImpulse: (v) => sim.applyImpulse(v),
         };
         combat.targets.push(target);
@@ -423,6 +423,7 @@ export class BotManager {
       const { input, fire, aim } = this.think(bot, dt);
       bot.sim.tick(input, dt);
       for (const e of bot.sim.events.splice(0)) {
+        if (e.type === 'land') this.combat.fall(bot.target, e.speed);
         if (e.type === 'respawn' && e.reason === 'void') {
           bot.prevPos.copy(bot.sim.state.pos);
           if (this.match.bed(bot.team).alive) this.placeAtSpawn(bot);
@@ -439,6 +440,7 @@ export class BotManager {
       const fired = weaponTick(bot.weapons, { fire: pull, reload: false, select }, dt);
       if (fired && aim) {
         const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
+        if (!bot.sim.state.onGround && WEAPONS[fired].airPush) bot.sim.applyImpulse(aim.clone().normalize().multiplyScalar(-WEAPONS[fired].airPush));
         this.combat.use(fired, bot.id, eye, aim, bot.sim.state.vel, bot.target.up.clone().negate());
         bot.shotsTotal++;
         if (++bot.shots >= bot.tune.burst) {

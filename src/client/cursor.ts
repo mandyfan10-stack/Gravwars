@@ -13,11 +13,11 @@ export class Cursor {
   private on = false;
 
   constructor(private input: Input) {
-    input.onMouseMove = (dx, dy) => {
+    input.mouseHooks.push((dx, dy) => {
       if (!this.on) return false;
       this.moveTo(this.x + dx, this.y + dy);
       return true;
-    };
+    });
   }
 
   get active() {

@@ -163,5 +163,43 @@ export class GameAudio {
     this.tone('sine', 70, 38, .12, .14 * v);
   }
 
+  /** The start flight: air rushing past, rising then falling. */
+  whoosh() {
+    const c = this.ctx; if (!c || !this.volume) return;
+    this.ensureNoiseBuf(c);
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), t = c.currentTime;
+    src.buffer = this.noiseBuf; src.loop = true; f.type = 'bandpass'; f.Q.value = 0.9;
+    f.frequency.setValueAtTime(300, t); f.frequency.exponentialRampToValueAtTime(1800, t + 1.6); f.frequency.exponentialRampToValueAtTime(400, t + 2.6);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.16 * this.volume, t + 1.4); g.gain.exponentialRampToValueAtTime(0.0001, t + 2.7);
+    src.connect(f).connect(g).connect(c.destination); src.start(t); src.stop(t + 2.8);
+  }
+  /** Sprint kicks in: a short gust and a breath. */
+  sprint() { this.noise(.35,.07,500,2200,0,'bandpass',1.1); this.noise(.25,.03,900,500,.05); }
+  /** Hard landing that hurt. */
+  fallHurt() { this.noise(.18,.22,900,120); this.tone('sine',120,40,.25,.2); this.noise(.06,.1,3200,1500,.02,'bandpass',3); }
+  private loops = new Map<string, { g: GainNode; f: BiquadFilterNode }>();
+  /**
+   * A continuous noise layer at `level` 0..1 (0 = silent): 'wind' while running fast / falling, 'scrape' while
+   * sliding down a wall. Created on first use, then only its gain and filter move.
+   */
+  loop(name: 'wind' | 'scrape', level: number) {
+    const c = this.ctx; if (!c || c.state !== 'running') return;
+    let l = this.loops.get(name);
+    if (!l) {
+      if (level <= 0.001) return;
+      this.ensureNoiseBuf(c);
+      const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+      src.buffer = this.noiseBuf; src.loop = true;
+      f.type = name === 'wind' ? 'bandpass' : 'highpass'; f.Q.value = name === 'wind' ? 0.6 : 0.8;
+      f.frequency.value = name === 'wind' ? 600 : 1800;
+      g.gain.value = 0;
+      src.connect(f).connect(g).connect(c.destination); src.start();
+      l = { g, f };
+      this.loops.set(name, l);
+    }
+    const t = c.currentTime, v = Math.max(0, Math.min(1, level));
+    l.g.gain.setTargetAtTime(v * (name === 'wind' ? 0.09 : 0.06) * this.volume, t, 0.08);
+    if (name === 'wind') l.f.frequency.setTargetAtTime(450 + v * 1400, t, 0.1);
+  }
   explosion() { this.noise(.55,.23,1600,100);this.tone('sine',100,34,.4,.20); }
 }

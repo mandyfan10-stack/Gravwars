@@ -188,7 +188,7 @@ export const CURRENCY_LABEL: Record<Currency, string> = { cash: 'деньги', 
 export type Step = 'rod' | 'builder';
 
 /** Wood that comes with the build tool, so that it is usable right away (a bridge to the centre is ~75 plates). */
-export const BUILDER_WOOD = 32;
+export const BUILDER_WOOD = 16;
 
 export type ShopItem = {
   id: string;
@@ -223,9 +223,9 @@ export const SHOP: ShopItem[] = [
   { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 19, currency: 'cash', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
   { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 41, currency: 'cash', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
   { id: 'grenade', label: 'Гранаты ×2', price: 14, currency: 'cash', kind: 'weapon', weapon: 'grenade', count: 2 },
-  { id: 'wood', label: 'Дерево ×32', note: 'мост: 1 за плиту', price: 5, currency: 'cash', kind: 'blocks', material: 'wood', count: 32 },
-  { id: 'stone', label: 'Камень ×12', price: 12, currency: 'cash', kind: 'blocks', material: 'stone', count: 12 },
-  { id: 'metal', label: 'Металл ×6', price: 2, currency: 'crystal', kind: 'blocks', material: 'metal', count: 6 },
+  { id: 'wood', label: 'Дерево ×16', note: '1 дерево = 1 постройка', price: 4, currency: 'cash', kind: 'blocks', material: 'wood', count: 16 },
+  { id: 'stone', label: 'Камень ×8', price: 8, currency: 'cash', kind: 'blocks', material: 'stone', count: 8 },
+  { id: 'metal', label: 'Металл ×4', price: 2, currency: 'crystal', kind: 'blocks', material: 'metal', count: 4 },
   { id: 'ammo-pistol', label: 'Патроны: пистолет ×15', price: 3, currency: 'cash', kind: 'ammo', weapon: 'pistol', count: 15 },
   { id: 'ammo-rifle', label: 'Патроны: автомат ×30', price: 6, currency: 'cash', kind: 'ammo', weapon: 'rifle', count: 30 },
   { id: 'medkit', label: 'Аптечка', note: 'в руку, ЛКМ — полное здоровье', price: 8, currency: 'cash', kind: 'item', item: 'medkit', count: 1 },

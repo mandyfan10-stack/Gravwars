@@ -67,10 +67,9 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.assign(i - 1);
     } else {
       for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.select(i - 1);
-      if (input.take('KeyQ')) {
-        if (build.active) build.cycleMaterial(1);
-        else hands.cycle(1);
-      }
+      // Q: next hotbar slot; with the shovel in hand Q is held for the radial menu (a tap still switches the slot)
+      if (input.take('KeyQ') && !build.active) hands.cycle(1);
+      if (build.tapped) { build.tapped = false; hands.cycle(1); }
       if (input.take('KeyG')) hands.throwHeld(ctx.camera);
     }
     if (input.take('KeyF')) pockets.eat();

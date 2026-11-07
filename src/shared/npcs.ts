@@ -37,6 +37,8 @@ export const NPC = {
     giveUp: 14,
     respawn: 35,
     bottleDrop: 0.4,
+    /** Pocket change: 0–2 $ (often nothing). */
+    cash: [0, 2] as [number, number],
   },
   gang: {
     hp: 70,
@@ -379,6 +381,10 @@ export class NpcManager {
     const isl = this.island(n.island);
     if (n.kind === 'bum' && this.rng.chance(NPC.bum.bottleDrop)) this.pickups.drop('bottle', s.pos, isl.up);
     if (n.kind === 'gang') this.pickups.drop('cash', s.pos, isl.up, this.rng.int(...NPC.gang.loot));
+    if (n.kind === 'bum') {
+      const cash = this.rng.int(...NPC.bum.cash);
+      if (cash > 0) this.pickups.drop('cash', s.pos, isl.up, cash);
+    }
     n.state = 'dead';
     n.respawnT = NPC[n.kind].respawn;
     n.target.aggro = null;
