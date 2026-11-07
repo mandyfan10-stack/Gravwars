@@ -1,5 +1,5 @@
 import { Quaternion, Vector3 } from 'three';
-import { BlockMaterial, BlockSystem } from './blocks';
+import type { BlockMaterial } from './blocks';
 import type { MapData } from './map';
 import { Rng } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
@@ -248,7 +248,8 @@ export class Economy {
   readonly items: Record<ItemId, number> = { bottle: 0, apple: 0, fish: 0, medkit: 0 };
   readonly done = new Set<Step>();
 
-  constructor(readonly wallet: Record<Currency, number>, readonly blocks: BlockSystem, readonly weapons: WeaponState) {}
+  /** `blocks`: where bought material goes (the player's BlockSystem, or a bot's own pockets). */
+  constructor(readonly wallet: Record<Currency, number>, readonly blocks: { inventory: Record<BlockMaterial, number> }, readonly weapons: WeaponState) {}
 
   has(step: Step) {
     return this.done.has(step);

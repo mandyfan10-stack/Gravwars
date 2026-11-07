@@ -32,8 +32,8 @@ await g('__game.play()');
 await page.waitForTimeout(2500);
 await page.screenshot({ path: `${out}/2-hud.png` });
 
-// look at an enemy bot from 4 m: same gravity, facing it
-await g(`(() => {
+// look at an enemy bot from 2.4 m: same gravity, facing it (it is busy and walks on: placed again right before the shot)
+const faceBot = () => g(`(() => {
   const G = __game, b = G.bots.bots.find((b) => b.team === 'blue' && b.role === 'defend');
   const up = b.target.up.clone();
   G.sim.setGravity(up.clone().negate());
@@ -46,13 +46,16 @@ await g(`(() => {
   const d = b.sim.state.pos.clone().sub(G.sim.state.pos).applyQuaternion(G.sim.state.frame.clone().invert());
   G.look(Math.atan2(-d.x, -d.z), -0.12);
   G.combat.targets.find((t) => t.id === 0).hp = 1e9;
-  // a rifle in its hands (bots get it later in the match)
+  // a rifle in its hands (bots buy it later in the match)
   Object.assign(b.weapons, { current: 'rifle' });
   b.weapons.owned.rifle = true; b.weapons.ammo.rifle = 30;
-  G.match.time = Math.max(G.match.time, 200);
 })()`);
+// a portrait: the bots hold still for the shot (they are always busy and would walk out of the frame)
+await g(`(() => { const B = __game.bots; B.__tick = B.tick; B.tick = () => {}; for (const b of B.bots) b.sim.state.vel.set(0, 0, 0); })()`);
+await faceBot();
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/3-bot.png` });
+await g(`(() => { const B = __game.bots; B.tick = B.__tick; })()`);
 
 // back home; buy the rod, the build tool and a pistol, fill the pockets
 const home = async (dx: number, dz: number, yaw: number, pitch = 0) => {

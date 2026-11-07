@@ -355,6 +355,8 @@ button.x.hover { background: rgba(255, 255, 255, .12); color: #fff; }
 .score tr.mine td { background: rgba(255, 255, 255, .04); }
 .score tr.out td { color: var(--muted); }
 .score tr.out td.team { color: var(--muted); text-decoration: line-through; }
+.score.allies { margin-top: 14px; }
+.score.allies td.task { color: #fff; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; margin: 14px 0 0; }
 .stats div { min-width: 0; }
 .stats dt { color: var(--muted); font: 500 11px var(--display); }

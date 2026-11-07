@@ -136,12 +136,23 @@ export class Match {
           g.stored++;
         }
       }
-      if (g.stored > 0 && playerPos.distanceTo(g.pos) < PICKUP_RADIUS) {
-        this.wallet[g.currency] += g.stored;
-        this.events.push({ type: 'pickup', currency: g.currency, amount: g.stored });
-        g.stored = 0;
-      }
     }
+    const n = this.collect(playerPos);
+    if (n > 0) {
+      this.wallet.crystal += n;
+      this.events.push({ type: 'pickup', currency: 'crystal', amount: n });
+    }
+  }
+
+  /** Take everything the generators within reach of `pos` hold (the player through `tick`, bots directly). */
+  collect(pos: Vector3): number {
+    let n = 0;
+    for (const g of this.generators) {
+      if (g.stored <= 0 || pos.distanceTo(g.pos) >= PICKUP_RADIUS) continue;
+      n += g.stored;
+      g.stored = 0;
+    }
+    return n;
   }
 
   /**

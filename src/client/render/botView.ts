@@ -1,4 +1,7 @@
-import { AdditiveBlending, Color, Mesh, MeshBasicMaterial, Quaternion, Scene, SphereGeometry, Vector3 } from 'three';
+import {
+  AdditiveBlending, BufferGeometry, Color, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Scene,
+  SphereGeometry, Vector3,
+} from 'three';
 import type { BotManager } from '../../shared/bots';
 import { isGun } from '../../shared/weapons';
 import { upOf } from '../../shared/math';
@@ -8,6 +11,13 @@ import { PlayerModel } from './playerModel';
 
 const _p = new Vector3();
 const _up = new Vector3();
+const _f = new Vector3();
+const _tip = new Vector3();
+/** Where a fishing bot's bobber floats: this far ahead of its feet, on the water (which sits below the ground). */
+const BOBBER_OUT = 2.6;
+const WATER_DROP = 0.25;
+/** The last moments before a catch: the bobber jerks under (s). */
+const BITE = 1.3;
 /** A killed bot bursts: its body is hidden this long after (the blood covers the moment), s. */
 const CORPSE_TIME = 0.05;
 
@@ -23,9 +33,17 @@ interface View {
   lastYaw: number;
   /** Spawn protection shell (visible while the bot is protected). */
   shell: Mesh;
+  /** Line from the rod tip and the bobber (fishing). */
+  line: Line;
+  bobber: Group;
 }
 
 const shellGeo = new SphereGeometry(1, 24, 16);
+const bobberRed = new MeshStandardMaterial({ color: 0xd8382e, roughness: 0.4 });
+const bobberWhite = new MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.4 });
+const bobberTop = new SphereGeometry(0.09, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+const bobberBottom = new SphereGeometry(0.09, 10, 6, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+const lineMat = new LineBasicMaterial({ color: 0xf4f1ea, transparent: true, opacity: 0.7 });
 
 /** Draws bots with the animated character, interpolated between simulation ticks. */
 export class BotView {
@@ -43,7 +61,13 @@ export class BotView {
       shell.scale.set(0.7, 1.12, 0.7);
       shell.visible = false;
       model.group.add(shell);
-      return { model, hp: b.target.hp, shots: 0, kicks: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, shell };
+      const bobber = new Group();
+      bobber.add(new Mesh(bobberTop, bobberRed), new Mesh(bobberBottom, bobberWhite));
+      const line = new Line(new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]), lineMat);
+      line.frustumCulled = false;
+      bobber.visible = line.visible = false;
+      scene.add(bobber, line);
+      return { model, hp: b.target.hp, shots: 0, kicks: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, shell, line, bobber };
     });
   }
 
@@ -53,6 +77,8 @@ export class BotView {
       const v = this.views[i];
       const m = v.model;
       const alive = b.target.alive && !b.out;
+      const fishing = alive && b.fishing && !b.enemy;
+      v.line.visible = v.bobber.visible = fishing;
       if (!alive) {
         // just died: play the death animation where it happened (the bot itself is parked far away)
         if (v.hp > 0) {
@@ -78,7 +104,7 @@ export class BotView {
       v.hp = b.target.hp;
       m.group.visible = true;
       const w = b.weapons.current;
-      const held = w === 'pistol' ? 'pistol' : isGun(w) ? 'rifle' : 'fists';
+      const held = fishing ? 'rod' : w === 'pistol' ? 'pistol' : isGun(w) ? 'rifle' : 'fists';
       if (held !== m.held) m.setHeld(held);
       const s = b.sim.state;
       // big jumps (portal, respawn) are not interpolated
@@ -94,6 +120,20 @@ export class BotView {
       v.shots = b.shotsTotal;
       if (b.kicksTotal !== v.kicks) { v.kicks = b.kicksTotal; m.kick(); }
       m.update(dt, { speed: Math.sqrt(Math.max(0, s.vel.lengthSq() - vUp * vUp)), grounded: s.onGround, vUp, fired });
+      if (fishing) this.fishLine(v, b.fishAt - b.fishT, _p, s.frame, s.yaw);
     });
+  }
+
+  /** The line from the rod tip to the bobber floating ahead on the water; it jerks under just before a catch. */
+  private fishLine(v: View, toCatch: number, pos: Vector3, frame: Quaternion, yaw: number) {
+    upOf(frame, _up);
+    _f.set(-Math.sin(yaw), 0, -Math.cos(yaw)).applyQuaternion(frame);
+    const t = performance.now() / 1000;
+    const dip = toCatch < BITE ? (Math.sin(t * 22) > 0.2 ? -0.07 : -0.02) : Math.sin(t * 2.2) * 0.008;
+    const b = v.bobber.position;
+    b.copy(pos).addScaledVector(_up, -1.83 / 2 - WATER_DROP + dip).addScaledVector(_f, BOBBER_OUT);
+    v.bobber.quaternion.copy(frame);
+    v.model.rodTip.getWorldPosition(_tip);
+    v.line.geometry.setFromPoints([_tip, b]);
   }
 }

@@ -7,6 +7,9 @@ export const formatTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.fl
 
 const isTeam = (f: string): f is TeamId => TEAMS.some((t) => t.id === f);
 
+/** A bot of the player's team as the scoreboard shows it. */
+export interface Ally { name: string; role: string; status: string; weapon: string; cash: number; alive: boolean }
+
 /** What happened in this match: the player's record and team kills (scoreboard on Tab, summary at the end). */
 export class MatchStats {
   kills = 0;
@@ -49,6 +52,14 @@ export class MatchStats {
         + `<td>${out ? 'выбыли' : bed}</td><td>${alive}</td><td>${this.teamKills[t.id]}</td></tr>`;
     }).join('');
     return `<table class="score"><thead><tr><th>Команда</th><th>Кристалл</th><th>Бойцов</th><th>Убийств</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  /** The player's team mates (bots): what each of them is busy with right now. */
+  alliesHtml(allies: Ally[]) {
+    if (!allies.length) return '';
+    const rows = allies.map((a) => `<tr class="${a.alive ? '' : 'out'}"><td class="team">${a.name}<small>${a.role}</small></td>`
+      + `<td class="task">${a.status}</td><td>${a.weapon}</td><td>${a.cash} $</td></tr>`).join('');
+    return `<table class="score allies"><thead><tr><th>Союзник</th><th>Занят</th><th>Оружие</th><th>Деньги</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   /** The player's own numbers. */

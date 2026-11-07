@@ -960,7 +960,7 @@ import { HOOK } from '../src/shared/sim';
     `touchdown ${touch?.d?.toFixed(1)} m, blast ${boom?.d?.toFixed(1)} m`);
 }
 
-// Bots: a full headless match (player parked out of reach): crystals fall, nobody gets lost.
+// Bots: a full headless match (player parked out of reach): they earn, shop, build, defend and raid; crystals fall.
 {
   const w = buildPhysicsWorld(R, map);
   const ps = new PlayerSim(R, w, map, 'red');
@@ -974,13 +974,18 @@ import { HOOK } from '../src/shared/sim';
   ps.mover.place(ps.state);
   combat.targets.push(me);
   const bots = new BotManager(R, w, map, combat, m, bs, 'red');
-  // the city lives on: bots cross the streets past bums and gangs
-  const npcs = new NpcManager(R, w, map, combat, new Pickups(R, w, map));
+  // the city lives on: bots cross the streets past bums and gangs and pick up what lies around, like the player
+  const pk = new Pickups(R, w, map);
+  bots.pickups = pk;
+  const npcs = new NpcManager(R, w, map, combat, pk);
   check('two bots per enemy team', bots.bots.length === (TEAMS.length - 1) * 2 && !bots.bots.some((b) => b.team === 'red'));
-  check('bots start with fists like the player', bots.bots.every((b) => b.weapons.current === 'fists' && !b.weapons.owned.pistol));
+  check('bots start with fists and no money like the player', bots.bots.every((b) => b.weapons.current === 'fists'
+    && !b.weapons.owned.pistol && b.wallet.cash === 0 && b.kit.wood === 0));
   let kills = 0;
-  let pistolAt = -1;
   let maxAir = 0;
+  let idle = 0, samples = 0;
+  const kinds = new Set<string>();
+  let defended = false;
   const air = new Map<number, number>();
   const t0 = performance.now();
   const MATCH_T = 360; // attackers set off after a minute, a lane over a cube edge takes about another one
@@ -989,8 +994,16 @@ import { HOOK } from '../src/shared/sim';
     npcs.tick(TICK_DT);
     combat.tick(TICK_DT);
     m.tick(TICK_DT, ps.state.pos);
+    pk.tick(TICK_DT);
     for (const e of combat.events.splice(0)) if (e.type === 'hit' && e.killed && !combat.target(e.target)?.npc && !combat.target(e.owner)?.npc) kills++;
-    if (pistolAt < 0 && bots.bots.every((b) => b.weapons.current === 'pistol')) pistolAt = m.time;
+    if (k % 64 === 0) for (const b of bots.bots) {
+      if (b.out || !b.target.alive) continue;
+      samples++;
+      kinds.add(b.task.kind);
+      if (b.task.kind === 'defend') defended = true;
+      // "always busy": patrolling around the hall is the fallback, it must stay rare
+      if (b.task.kind === 'patrol') idle++;
+    }
     for (const b of bots.bots) {
       const a = b.target.alive && !b.sim.state.onGround ? (air.get(b.id) ?? 0) + TICK_DT : 0;
       air.set(b.id, a);
@@ -998,14 +1011,47 @@ import { HOOK } from '../src/shared/sim';
     }
   }
   const broken = m.beds.filter((b) => !b.alive).map((b) => b.team);
-  check('bots get a pistol on a timer, then a rifle', pistolAt >= BOT.pistolAt && pistolAt < BOT.pistolAt + 1
-    && bots.bots.every((b) => b.out || b.weapons.current === 'rifle'), `pistol at ${pistolAt.toFixed(1)} s`);
+  const all = bots.bots;
+  check('bots earn money and spend it at the counters', all.every((b) => b.earned > 0 && b.spent > 0 && b.bought.length > 0),
+    all.map((b) => `${b.team}${b.role[0]} +${b.earned}/-${b.spent}`).join(' '));
+  check('every bot buys a gun; raiders buy the build tool and pay wood for their bridges',
+    all.every((b) => b.bought.includes('pistol')) && all.some((b) => b.bought.includes('builder') && b.built > 0)
+    && all.every((b) => b.kit.wood >= 0 && b.wallet.cash >= 0));
+  check('bots pick up loot and fish for money', all.some((b) => b.taken > 0) && kinds.has('fish') && kinds.has('shop'),
+    [...kinds].join(','));
+  check('bots defend their base when it is attacked, and raid', defended && kinds.has('raid'));
+  check('bots are always busy (patrol is a rare fallback)', idle / samples < 0.1, `patrol ${((100 * idle) / samples).toFixed(1)} %`);
   check('bots break crystals within 6 minutes', broken.length > 0, `broken=${broken.join(',')}`);
   check('bots fight each other', kills >= 2, `kills=${kills}`);
   check('no bot stays airborne for long', maxAir < 10, `max=${maxAir.toFixed(1)}s`);
   check('bot positions stay finite', bots.bots.every((b) => b.sim.state.pos.toArray().every(Number.isFinite)));
   // six city faces: 62 NPCs (the island map had 47); the cost per character is the same as before
   check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 80, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
+}
+
+// Bots: a hit on their crystal sends the defender home at once; a fist fight with a bum is not an alarm.
+{
+  const w = buildPhysicsWorld(R, map);
+  const ps = new PlayerSim(R, w, map, 'red');
+  const combat = new Combat(R, w, map, [ps.mover.collider]);
+  const bs = new BlockSystem(R, w, ps.mover.collider);
+  const m = new Match(R, w, map, bs, 'red', ps.mover.collider);
+  ps.state.pos.set(0, -3000, 0);
+  ps.mover.place(ps.state);
+  const bots = new BotManager(R, w, map, combat, m, bs, 'red');
+  const run = (sec: number) => { for (let i = 0; i < 64 * sec; i++) { m.time += TICK_DT; bots.tick(TICK_DT); } };
+  run(5);
+  const green = bots.bots.filter((b) => b.team === 'green');
+  const def = green.find((b) => b.role === 'defend')!;
+  const task = () => def.task.kind as string; // read afresh (no narrowing across the ticks)
+  const calm = task();
+  m.damageBed('green', 10);
+  run(1.5);
+  check('bots: the defender drops its task and defends the crystal when it is hit', calm !== 'defend' && task() === 'defend',
+    `${calm} -> ${task()}`);
+  m.beds.find((b) => b.team === 'green')!.hp = BED_HP;
+  run(10);
+  check('bots: the alarm passes, the defender goes back to work', task() !== 'defend', task());
 }
 
 // Slopes: walking up / down a ramp is as fast along the surface as on flat ground, and stays grounded (build ramps ~37°).
@@ -1046,7 +1092,7 @@ for (const deg of [20, 37, 45]) {
   const hard = { ...BOT };
   applyDifficulty('normal');
   check('difficulty: easy is slower and less accurate than hard', easy.reaction > normal.reaction && normal.reaction > hard.reaction
-    && easy.spread > hard.spread && easy.firstAttack > hard.firstAttack && easy.pistolAt > hard.pistolAt);
+    && easy.spread > hard.spread && easy.firstAttack > hard.firstAttack && easy.mistakes > hard.mistakes && easy.fishSkill < hard.fishSkill);
   check('difficulty: back to normal restores every value', JSON.stringify(BOT) === JSON.stringify(normal));
 }
 

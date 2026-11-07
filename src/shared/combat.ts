@@ -214,6 +214,8 @@ export class Combat {
   /** Team crystals (match beds) and what to do when one is hurt (`damage` already final). */
   crystals: Crystal[] = [];
   onCrystal: (c: Crystal, damage: number, owner: number) => void = () => {};
+  /** Somebody was killed by `owner` (bots get their reward here). */
+  onKill: (victim: Target, owner: number) => void = () => {};
   /** Every projectile of the last shot (a shotgun fires several). */
   readonly volley: Projectile[] = [];
   /** Handles of character-controller colliders: rays pass through them (capsules are tested analytically). */
@@ -527,6 +529,7 @@ export class Combat {
     if (killed) {
       tg.alive = false;
       if (tg.respawnIn >= 0) tg.respawnIn = DUMMY_RESPAWN;
+      this.onKill(tg, owner);
     }
     this.events.push({ type: 'hit', target: tg.id, owner, damage: dmg, head, killed, pos: pos.clone(), cause: opts.cause, weapon: opts.weapon });
   }

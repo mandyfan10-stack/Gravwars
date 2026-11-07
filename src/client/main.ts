@@ -21,7 +21,7 @@ import { Props } from '../shared/props';
 import { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
 import { Throws } from '../shared/throwables';
-import { isGun, WeaponId } from '../shared/weapons';
+import { isGun, WeaponId, WEAPONS } from '../shared/weapons';
 import { Ambience, Area } from './ambience';
 import { GameAudio } from './audio';
 import { BlockController } from './blockController';
@@ -139,6 +139,7 @@ async function main() {
   match.attach(combat); // crystals take damage from shots / blows (only from close up)
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id, 0, botRoster(cfg));
   const pickups = new Pickups(R, world, map);
+  bots.pickups = pickups; // bots pick up and sell what lies around, like the player
   const npcs = new NpcManager(R, world, map, combat, pickups);
   const throws = new Throws(combat, pickups);
   blocks.characters.push(...npcs.colliders);
@@ -207,7 +208,13 @@ async function main() {
     match.wallet.cash += KILL_REWARD;
   };
 
-  statsHtml = () => stats.teamsHtml(player.me.alive) + stats.personalHtml();
+  // the bots of the player's team: what they are up to (Tab)
+  const allies = bots.bots.filter((b) => b.team === myTeam);
+  const alliesNow = () => allies.map((b, i) => ({
+    name: `Бот ${i + 1}`, role: b.role === 'defend' ? 'защитник' : 'рейдер', status: b.status || '—',
+    weapon: WEAPONS[b.weapons.current].name, cash: b.wallet.cash, alive: b.target.alive && !b.out,
+  }));
+  statsHtml = () => stats.teamsHtml(player.me.alive) + stats.alliesHtml(alliesNow()) + stats.personalHtml();
   // the debug panel (G) tunes the same values: keep them saved too
   const gui = createDebugGui(sim.cfg, sim.mover, toggles, () => {
     applyToggles();

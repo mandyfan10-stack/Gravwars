@@ -83,7 +83,7 @@ export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0)
 }
 
 /** fists / none: empty hands (punching / standing behind a counter); grenade: the right arm up, about to throw. */
-export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none' | 'grenade';
+export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none' | 'grenade' | 'rod';
 export type { Outfit } from './human';
 
 export interface ModelState {
@@ -113,6 +113,10 @@ const POLE_L = new Vector3(1, -0.9, -0.2).normalize();
 /** Where the guns sit (chest space, metres): rifle butt in the right shoulder, pistol out in both hands. */
 const RIFLE_AT = new Vector3(-0.1, 0.22, 0.3);
 const PISTOL_AT = new Vector3(-0.03, 0.27, 0.46);
+/** Fishing rod: butt in both hands in front of the belly, the rod up and out over the water. */
+const ROD_AT = new Vector3(-0.08, -0.12, 0.3);
+const ROD_LEN = 1.9;
+const ROD_TILT = 0.75; // from straight ahead, upward (rad)
 const smooth = (x: number) => x * x * (3 - 2 * x);
 const KICK_TIME = 0.45;
 /** Shared by every third-person gun and grenade (vertex colours carry the parts' colours). */
@@ -130,6 +134,9 @@ export class PlayerModel {
   private readonly body = new Group();
   private readonly guns: Record<'rifle' | 'pistol', Object3D>;
   private readonly grenade: Group;
+  private readonly rod = new Group();
+  /** Tip of the rod (the line hangs from it). */
+  readonly rodTip = new Object3D();
   private readonly glint: Sprite;
   private phase = Math.random() * 6;
   /** Smoothed planar speed and air state (poses blend instead of snapping). */
@@ -177,6 +184,15 @@ export class PlayerModel {
     this.grenade.position.set(0, -0.09, 0.03);
     this.grenade.visible = false;
     this.rig.hand[RIGHT].add(this.grenade);
+    // the fishing rod: cork grip, then a thin dark blank (local +Y = along the rod)
+    const grip = new Mesh(new CylinderGeometry(0.022, 0.024, 0.34, 6).translate(0, 0.17, 0), new MeshStandardMaterial({ color: 0x9a6b3e, roughness: 0.9 }));
+    const blank = new Mesh(new CylinderGeometry(0.005, 0.014, ROD_LEN - 0.34, 5).translate(0, 0.34 + (ROD_LEN - 0.34) / 2, 0),
+      new MeshStandardMaterial({ color: 0x23262b, roughness: 0.5, metalness: 0.3 }));
+    this.rodTip.position.set(0, ROD_LEN, 0);
+    this.rod.add(grip, blank, this.rodTip);
+    this.rod.position.copy(ROD_AT);
+    this.rod.rotation.x = Math.PI / 2 - ROD_TILT; // +Y tipped forward (+Z), then up by the tilt
+    chest.add(this.rod);
     this.setHeld(held);
   }
 
@@ -185,6 +201,7 @@ export class PlayerModel {
     this.guns.rifle.visible = held === 'rifle';
     this.guns.pistol.visible = held === 'pistol';
     this.grenade.visible = held === 'grenade';
+    this.rod.visible = held === 'rod';
     if (held !== this.held) { this.punchT = 0; this.throwT = 0; }
     this.held = held;
   }
@@ -361,6 +378,12 @@ export class PlayerModel {
       solveArm(uR, fR, _t, POLE_R);
       solveArm(uL, fL, _t2.set(0.2, 0.32, 0.42).lerp(_p.set(0.22, 0.05, 0.05), k), POLE_L);
       r.chest.rotation.y += 0.35 - 0.7 * k;
+    } else if (this.held === 'rod') {
+      // both hands on the grip, right one lower; a slow bob of the rod tip
+      this.rod.rotation.x = Math.PI / 2 - ROD_TILT + Math.sin(this.breath * 1.3) * 0.03;
+      _gq.copy(this.rod.quaternion);
+      solveArm(uR, fR, _t.set(0, 0.05, 0).applyQuaternion(_gq).add(this.rod.position), POLE_R);
+      solveArm(uL, fL, _t2.set(0, 0.3, 0).applyQuaternion(_gq).add(this.rod.position), POLE_L);
     } else if (this.held === 'none') {
       // standing at ease: arms hang a bit forward, hands loosely together in front
       if (move < 0.2) {
