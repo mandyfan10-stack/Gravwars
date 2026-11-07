@@ -4,6 +4,7 @@ import {
   PointLight, Points, PointsMaterial, Quaternion, Scene, SphereGeometry, Sprite, SpriteMaterial, Vector3,
 } from 'three';
 import type { Combat, CombatEvent } from '../../shared/combat';
+import { pixelDot, pixelPuff, pixelSplat } from './pixelart';
 import { getTeam, TeamId } from '../../shared/teams';
 import type { WeaponId } from '../../shared/weapons';
 
@@ -35,57 +36,10 @@ const TRACER: Partial<Record<WeaponId, { core: Color; glow: Color; len: number; 
   shotgun: { core: new Color(8, 5, 2.2), glow: new Color(3, 1.1, 0.25), len: 1.4, width: 0.03 },
 };
 
-/** Soft round dot for particles (plain points are squares). */
-function dotTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 32;
-  const g = c.getContext('2d')!;
-  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
-  grad.addColorStop(0, '#fff');
-  grad.addColorStop(0.4, '#ffffffaa');
-  grad.addColorStop(1, '#fff0');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 32, 32);
-  return new CanvasTexture(c);
-}
-
-/** Puff of smoke / mist: a soft blob with a ragged edge. */
-function puffTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d')!;
-  for (let i = 0; i < 9; i++) {
-    const x = 32 + (Math.random() - 0.5) * 18, y = 32 + (Math.random() - 0.5) * 18, r = 12 + Math.random() * 10;
-    const grad = g.createRadialGradient(x, y, 0, x, y, r);
-    grad.addColorStop(0, 'rgba(255,255,255,.55)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, 64, 64);
-  }
-  return new CanvasTexture(c);
-}
-
-/** A blood splat seen from above: a dark blot with droplets thrown out around it. */
-function splatTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 128;
-  const g = c.getContext('2d')!;
-  g.fillStyle = '#fff';
-  g.beginPath();
-  for (let i = 0; i <= 24; i++) {
-    const a = (i / 24) * Math.PI * 2;
-    const r = 30 + Math.random() * 14;
-    g.lineTo(64 + Math.cos(a) * r, 64 + Math.sin(a) * r);
-  }
-  g.fill();
-  for (let i = 0; i < 26; i++) {
-    const a = Math.random() * Math.PI * 2, d = 38 + Math.random() * 22, r = 1.5 + Math.random() * 4.5;
-    g.beginPath();
-    g.arc(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, r, 0, Math.PI * 2);
-    g.fill();
-  }
-  return new CanvasTexture(c);
-}
+/** Particle dot, smoke puff and blood splat: pixel sprites (pixelart.ts). */
+const dotTexture = () => pixelDot(8);
+const puffTexture = () => pixelPuff(16);
+const splatTexture = () => pixelSplat(32);
 
 /**
  * Tracers, rockets, grenades, explosions, sparks, blood, all driven by combat events. Sparks are additive (they

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GravWars</title>
   </head>
-  <body>
+  <body class="boot">
     <canvas id="game"></canvas>
     <div id="hud">
       <div id="crosshair"><i></i><i></i><i></i><i></i></div>
@@ -63,7 +63,8 @@
           <label>Дальность <input id="draw-distance" type="range" min="150" max="1200" step="50" value="700"><output id="draw-distance-value">700 м</output></label>
           <label>Тени <select id="shadows"><option value="high" selected>Чёткие</option><option value="low">Простые</option><option value="off">Нет</option></select><output></output></label>
           <label>Свечение <select id="bloom"><option value="on" selected>Вкл</option><option value="off">Выкл</option></select><output></output></label>
-          <label>Разрешение <input id="render-scale" type="range" min="0.4" max="1" step="0.05" value="1"><output id="render-scale-value">100%</output></label>
+          <label>Пиксели <select id="pixels"><option value="360">Крупные</option><option value="480" selected>Средние</option><option value="720">Мелкие</option><option value="0">Нет</option></select><output></output></label>
+          <label>Палитра <select id="palette"><option value="on" selected>Ретро</option><option value="off">Полная</option></select><output></output></label>
         </div>
       </div>
       <aside id="menu-match" class="menu-roster menu-match panel" hidden><h2>Матч</h2><div id="menu-match-body"></div></aside>

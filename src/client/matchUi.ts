@@ -1,9 +1,9 @@
 import { BLOCK_MATERIALS } from '../shared/blocks';
-import { CURRENCY_LABEL, Economy, ITEMS, MAX_MEDKITS, SELLABLE, SHOP_GROUPS, ShopItem, shopGroup } from '../shared/economy';
+import { CURRENCY_LABEL, Economy, ITEMS, MAX_MEDKITS, SELLABLE, SHOP, SHOP_ROWS, SHOP_SHORT, ShopItem } from '../shared/economy';
 import { Bed, BED_HP, Match, MatchEvent } from '../shared/match';
 import { CRYSTAL } from '../shared/combat';
 import { getTeam, TEAMS } from '../shared/teams';
-import { WEAPONS } from '../shared/weapons';
+import { isGun, WEAPONS } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import type { Cursor } from './cursor';
 import { Hud, teamHex } from './hud';
@@ -25,6 +25,15 @@ function shopIcon(item: ShopItem): string {
   return icon(item.id === 'rod' ? 'rod' : item.id === 'hook' ? 'hook' : 'shovel');
 }
 
+const SHOP_ITEM = new Map(SHOP.map((i) => [i.id, i]));
+/** Russian plural: 1 монета, 2 монеты, 5 монет. */
+const plural = (n: number, one: string, few: string, many: string) => {
+  const m10 = n % 10, m100 = n % 100;
+  return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
+};
+const lack = (n: number, cur: 'cash' | 'crystal') =>
+  `Не хватает ${n} ${cur === 'cash' ? plural(n, 'монеты', 'монет', 'монет') : plural(n, 'кристалла', 'кристаллов', 'кристаллов')}`;
+
 /** Bedwars UI: wallet, bed status row, interaction prompt, bed-break progress, shop (buy / sell), result banner. */
 export class MatchUi {
   shopOpen = false;
@@ -38,6 +47,8 @@ export class MatchUi {
   private readonly resultEl = $('result');
   private bedsKey = '';
   private shopKey = '';
+  /** Shop item whose details are shown (under the cursor), '' = none. */
+  private shopHover = '-';
   /** When the "your crystal is under attack" warning last went off (it repeats at most every few seconds). */
   private alarmAt = -1e9;
   /** The crystal you hit last and when (its HP bar stays up for a moment after). */
@@ -179,46 +190,93 @@ export class MatchUi {
     if (this.shopOpen) this.renderShop();
   }
 
+  /** Where an item stands for the player: tile class, the tile's status line, the details' verdict. */
+  private itemState(item: ShopItem) {
+    const eco = this.eco, ws = eco.weapons;
+    const cur = eco.wallet[item.currency];
+    let status = '';
+    if (item.kind === 'weapon' && item.weapon === 'grenade') status = `есть ${ws.ammo.grenade} из ${WEAPONS.grenade.mag}`;
+    else if (item.kind === 'weapon') {
+      const w = WEAPONS[item.weapon];
+      status = (w.pellets ?? 1) > 1 ? `${w.pellets} дробин` : w.radius ? `взрыв ${w.radius} м` : `магазин ${w.mag}`;
+    } else if (item.kind === 'ammo') status = ws.owned[item.weapon] ? `запас ${ws.reserve[item.weapon]}` : 'нет оружия';
+    else if (item.kind === 'blocks') status = `есть ${eco.blocks.inventory[item.material]}`;
+    else if (item.kind === 'item' && item.item === 'medkit') status = `есть ${eco.items.medkit} из ${MAX_MEDKITS}`;
+    else if (item.id === 'builder') status = item.note ?? '';
+    else if (item.id === 'hook') status = 'до 30 м';
+    else if (item.id === 'rod') status = 'рыбалка';
+    const owned = item.step ? eco.has(item.step) : item.kind === 'weapon' && isGun(item.weapon) && ws.owned[item.weapon];
+    if (owned) return { cls: 'owned', status: 'куплено', why: 'Уже есть' };
+    const full = (item.kind === 'weapon' && item.weapon === 'grenade' && ws.ammo.grenade + item.count > WEAPONS.grenade.mag)
+      || (item.kind === 'item' && item.item === 'medkit' && eco.items.medkit + item.count > MAX_MEDKITS);
+    if (full) return { cls: 'full', status, why: 'Больше не унести' };
+    if (cur < item.price) return { cls: 'poor', status, why: lack(item.price - cur, item.currency) };
+    if (item.kind === 'ammo' && !ws.owned[item.weapon]) return { cls: 'na', status, why: `Клик — купить (${WEAPONS[item.weapon].name.toLowerCase()} ещё не куплен)` };
+    return { cls: '', status, why: 'Клик — купить' };
+  }
+
   private renderShop() {
     const eco = this.eco;
     const ws = eco.weapons;
-    const offers = this.tab === 'buy' ? eco.offers() : [];
-    const key = [this.tab, eco.wallet.cash, eco.wallet.crystal, ...SELLABLE.map((i) => eco.items[i]), eco.items.medkit, offers.map((o) => o.item.id + o.state).join(),
-      ...Object.values(ws.reserve), ws.ammo.grenade, eco.has('hook'), ...Object.values(eco.blocks.inventory)].join('|');
-    if (key === this.shopKey) return;
-    this.shopKey = key;
-    const tab = (id: ShopTab, label: string) => `<button class="${this.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}">${label}</button>`;
-    const money = `<span class="money"><span class="cash">${icon('coins')}${eco.wallet.cash}</span>`
-      + `<span class="crystal">${icon('crystal')}${eco.wallet.crystal}</span></span>`;
-    const head = `<h3>${icon('shop')}Магазин<nav>${tab('buy', 'Купить')}${tab('sell', 'Продать')}</nav>${money}`
-      + `<button class="x" data-act="close" title="Закрыть (E)">×</button></h3>`;
-    let body = '';
-    if (this.tab === 'buy') {
-      body = '<div class="groups">' + SHOP_GROUPS.map((g) => {
-        const cards = offers.filter((o) => shopGroup(o.item) === g.id).map(({ item, state }) => {
-          let have = '';
-          if (item.kind === 'blocks') have = `есть ${eco.blocks.inventory[item.material]}`;
-          else if (item.kind === 'ammo') have = ws.owned[item.weapon] ? `запас ${ws.reserve[item.weapon]}` : 'сначала нужно оружие';
-          else if (item.kind === 'weapon' && item.weapon === 'grenade') have = `есть ${ws.ammo.grenade} из ${WEAPONS.grenade.mag}`;
-          else if (item.kind === 'item' && item.item === 'medkit') have = `есть ${eco.items.medkit} из ${MAX_MEDKITS}`;
-          const note = [item.note, have].filter(Boolean).join(' · ');
-          const look = item.kind === 'blocks' ? `style="--c:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : '';
-          const cur = icon(item.currency === 'cash' ? 'coins' : 'crystal');
-          return `<div class="card${state === 'money' ? ' poor' : ''}" data-act="buy" data-id="${item.id}" ${look}>${shopIcon(item)}`
-            + `<span class="label">${item.label}${note ? `<em>${note}</em>` : ''}</span><span class="price ${item.currency}">${cur}${item.price}</span></div>`;
-        }).join('');
-        return cards ? `<section><h5>${g.label}</h5>${cards}</section>` : '';
-      }).join('') + '</div>';
-    } else {
-      body = '<div class="sell">' + SELLABLE.map((id) => {
-        const n = eco.items[id];
-        return `<div class="card${n ? '' : ' poor'}" data-act="sell" data-id="${id}">${icon(ITEM_ICON[id])}<span class="label">${ITEMS[id].plural}`
-          + `<em>${n} шт. · по ${ITEMS[id].sell}</em></span><span class="price cash">+${n * ITEMS[id].sell}</span></div>`;
-      }).join('') + `<div class="card total${eco.sellValue ? '' : ' poor'}" data-act="sell" data-id="all"><span class="label">Продать всё</span>`
-        + `<span class="price cash">${icon('coins')}+${eco.sellValue}</span></div></div>`;
+    const key = [this.tab, eco.wallet.cash, eco.wallet.crystal, ...SELLABLE.map((i) => eco.items[i]), eco.items.medkit,
+      ...Object.values(ws.owned), ...Object.values(ws.reserve), ws.ammo.grenade, eco.has('hook'), eco.has('rod'), eco.has('builder'),
+      ...Object.values(eco.blocks.inventory)].join('|');
+    if (key !== this.shopKey) {
+      this.shopKey = key;
+      this.shopHover = '-';
+      const tab = (id: ShopTab, label: string) => `<button class="${this.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}">${label}</button>`;
+      const money = `<span class="money"><span class="cash">${icon('coins')}${eco.wallet.cash}</span>`
+        + `<span class="crystal">${icon('crystal')}${eco.wallet.crystal}</span></span>`;
+      const head = `<h3>${icon('shop')}Магазин<nav>${tab('buy', 'Купить')}${tab('sell', 'Продать')}</nav>${money}`
+        + `<button class="x" data-act="close" title="Закрыть (E)">×</button></h3>`;
+      const price = (cur: 'cash' | 'crystal', n: number | string) => `<span class="price ${cur}">${icon(cur === 'cash' ? 'coins' : 'crystal')}${n}</span>`;
+      let body = '';
+      if (this.tab === 'buy') {
+        const cols = Math.max(...SHOP_ROWS.map((r) => r.ids.length));
+        const pad = (ids: (string | null)[]) => [...ids, ...Array<null>(cols - ids.length).fill(null)];
+        body = '<div class="rows">' + SHOP_ROWS.map((row) => `<h5>${row.label}</h5>` + pad(row.ids).map((id) => {
+          const item = id ? SHOP_ITEM.get(id) : undefined;
+          if (!item) return '<i class="slot"></i>';
+          const st = this.itemState(item);
+          const count = 'count' in item && item.count > 1 && !(item.kind === 'weapon' && isGun(item.weapon)) ? `<small>×${item.count}</small>` : '';
+          const look = item.kind === 'blocks' ? ` style="--c:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : '';
+          return `<div class="tile ${st.cls}" data-act="buy" data-id="${item.id}"${look}>${shopIcon(item)}${price(item.currency, item.price)}`
+            + `<b>${SHOP_SHORT[item.id] ?? item.label}${count}</b><em>${st.status}</em></div>`;
+        }).join('')).join('') + '</div>';
+      } else {
+        body = '<div class="rows sell">' + SELLABLE.map((id) => {
+          const n = eco.items[id];
+          return `<div class="tile${n ? '' : ' poor'}" data-act="sell" data-id="${id}">${icon(ITEM_ICON[id])}${price('cash', `+${n * ITEMS[id].sell}`)}`
+            + `<b>${ITEMS[id].plural}</b><em>${n} шт. · по ${ITEMS[id].sell}</em></div>`;
+        }).join('') + `<div class="tile all${eco.sellValue ? '' : ' poor'}" data-act="sell" data-id="all"><b>Продать всё</b>${price('cash', `+${eco.sellValue}`)}</div></div>`;
+      }
+      const foot = `<footer><span class="details"></span><span class="keys"><kbd>Q</kbd> вкладка<kbd>E</kbd> закрыть</span></footer>`;
+      this.shopEl.className = `panel ${this.tab}`;
+      this.shopEl.innerHTML = head + body + foot;
     }
-    const foot = `<footer>${this.tab === 'buy' ? 'Клик — купить' : 'Клик — продать'}<kbd>Q</kbd> вкладка<kbd>E</kbd> закрыть</footer>`;
-    this.shopEl.className = `panel ${this.tab}`;
-    this.shopEl.innerHTML = head + body + foot;
+    // the details line: what the item under the cursor is, and whether it can be bought now
+    const t = this.cursor.target;
+    const hover = t && t.dataset.act === this.tab ? t.dataset.id ?? '' : '';
+    if (hover === this.shopHover) return;
+    this.shopHover = hover;
+    const el = this.shopEl.querySelector<HTMLElement>('.details');
+    if (!el) return;
+    if (this.tab === 'sell') {
+      const id = SELLABLE.find((i) => i === hover);
+      el.innerHTML = id ? `<b>${ITEMS[id].plural}</b><span>${this.eco.items[id]} шт. × ${ITEMS[id].sell}</span><span class="why">Клик — продать</span>`
+        : hover === 'all' ? '<b>Вся добыча</b><span class="why">Клик — продать</span>' : 'Бутылки, яблоки и рыба — с улиц, деревьев и прудов';
+      return;
+    }
+    const item = SHOP_ITEM.get(hover);
+    if (!item) {
+      el.innerHTML = 'Клик — купить. Наведи на предмет — подробности';
+      return;
+    }
+    const st = this.itemState(item);
+    const w = item.kind === 'weapon' ? WEAPONS[item.weapon] : null;
+    const stats = !w ? '' : w.radius ? (item.note ? '' : `взрыв ${w.radius} м, ${w.damage} урона`)
+      : isGun(w.id) ? `урон ${w.damage}${(w.pellets ?? 1) > 1 ? ` × ${w.pellets}` : ''}` : '';
+    const text = [stats, item.note].filter(Boolean).join(' · ');
+    el.innerHTML = `<b>${item.label}</b>${text ? `<span>${text}</span>` : ''}<span class="why ${st.cls}">${st.why}</span>`;
   }
 }

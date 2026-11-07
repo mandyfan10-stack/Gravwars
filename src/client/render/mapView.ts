@@ -5,7 +5,7 @@ import {
 } from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import type { HouseDef, MapData, MatKind } from '../../shared/map';
+import type { DecorDef, HouseDef, MapData, MatKind } from '../../shared/map';
 import { Rng } from '../../shared/math';
 import {
   glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture, windowTexture, woodTexture,
@@ -14,6 +14,7 @@ import { crystalCluster, CrystalCluster, crystalGeometry, crystalMaterials } fro
 import { withRooms } from './rooms';
 import { waterMaterial } from './water';
 import { trackTexture } from './texFilter';
+import { canopyGeometry, decorModel, pineGeometry, treeSpecies } from './models';
 
 /**
  * World-space triplanar detail map (multiplied into the color). Works for instanced boxes of any size and
@@ -370,37 +371,63 @@ export function buildMapView(map: MapData): MapView {
     region(b.pos, Math.max(hx, hy, hz)).group.add(shadowy(mesh));
   }
 
-  // --- trees and bushes (instanced trunks + low-poly canopy blobs), batched per region
+  // --- trees and bushes, batched per region: round crowns of blobs, pines of stacked cones, slim poplars
   const trunkGeo = new CylinderGeometry(0.11, 0.17, 1, 6).translate(0, 0.5, 0);
-  const trunkMat = new MeshStandardMaterial({ color: 0x6b4f37, roughness: 1 });
-  const blobGeo = new IcosahedronGeometry(1, 1);
-  const blobMat = new MeshStandardMaterial({ roughness: 0.95, flatShading: true });
-  const forest = new Map<string, { trunks: Matrix4[]; blobs: { pos: Vector3; r: number; color: number }[] }>();
+  const trunkMat = new MeshStandardMaterial({ color: 0x6b4f37, roughness: 1, flatShading: true });
+  const blobGeo = canopyGeometry();
+  const coneGeo = pineGeometry();
+  const leafMat = new MeshStandardMaterial({ roughness: 0.95, flatShading: true, vertexColors: true });
+  type Leaf = { pos: Vector3; r: number; sy: number; color: number };
+  const forest = new Map<string, { trunks: Matrix4[]; blobs: Leaf[]; cones: Leaf[] }>();
   const trng = new Rng(77);
   const Y = new Vector3(0, 1, 0);
   const greens = [0x4f7f35, 0x5e8d3b, 0x6d9a41, 0x47722f, 0x7aa34a];
+  const pines = [0x2f5d36, 0x37683c, 0x2b5531];
+  const poplars = [0x5a8a36, 0x66963c];
+  /** Each crown part keeps its tree's up (its frame turns only about it, so the shaded side stays down). */
+  const upOf = new Map<Leaf, Quaternion>();
+  const addLeaf = (list: Leaf[], leaf: Leaf) => { list.push(leaf); upOf.set(leaf, q.clone()); };
   for (const t of map.trees) {
-    region(t.pos, 4 * t.scale);
+    region(t.pos, 5 * t.scale);
     const k = keyOf(t.pos);
-    if (!forest.has(k)) forest.set(k, { trunks: [], blobs: [] });
+    if (!forest.has(k)) forest.set(k, { trunks: [], blobs: [], cones: [] });
     const f = forest.get(k)!;
     const up = new Vector3(...t.up);
     q.setFromUnitVectors(Y, up);
     const base = new Vector3(...t.pos);
-    if (t.kind === 'tree') {
-      const th = 1.9 * t.scale;
-      f.trunks.push(new Matrix4().compose(base, q, sc.set(t.scale, th, t.scale)));
-      const c = base.clone().addScaledVector(up, th + 0.9 * t.scale);
-      f.blobs.push({ pos: c, r: 1.45 * t.scale, color: trng.pick(greens) });
+    const S = t.scale;
+    if (t.kind === 'bush') {
+      const c = base.clone().addScaledVector(up, 0.38 * S);
       for (let k2 = 0; k2 < 3; k2++) {
-        const off = new Vector3(trng.range(-1, 1), trng.range(-0.4, 0.6), trng.range(-1, 1)).applyQuaternion(q).multiplyScalar(0.8 * t.scale);
-        f.blobs.push({ pos: c.clone().add(off), r: trng.range(0.8, 1.1) * t.scale, color: trng.pick(greens) });
+        const off = new Vector3(trng.range(-0.6, 0.6), 0, trng.range(-0.6, 0.6)).applyQuaternion(q).multiplyScalar(S);
+        addLeaf(f.blobs, { pos: c.clone().add(off), r: trng.range(0.5, 0.75) * S, sy: 0.75, color: trng.pick(greens) });
       }
+      continue;
+    }
+    const species = treeSpecies(t.pos);
+    if (species === 'pine') {
+      const th = 1.1 * S;
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S, th + 1, S)));
+      const tiers = [[1.55, 1.7], [1.2, 1.5], [0.8, 1.3]];
+      let y = th;
+      for (const [r, h] of tiers) {
+        addLeaf(f.cones, { pos: base.clone().addScaledVector(up, y), r: r * S, sy: h * S, color: trng.pick(pines) });
+        y += h * S * 0.55;
+      }
+    } else if (species === 'poplar') {
+      const th = 1.5 * S;
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 0.8, th, S * 0.8)));
+      const c = base.clone().addScaledVector(up, th + 1.5 * S);
+      addLeaf(f.blobs, { pos: c, r: 0.85 * S, sy: 2.1, color: trng.pick(poplars) });
+      addLeaf(f.blobs, { pos: c.clone().addScaledVector(up, 1.1 * S), r: 0.6 * S, sy: 1.8, color: trng.pick(poplars) });
     } else {
-      const c = base.clone().addScaledVector(up, 0.45 * t.scale);
-      for (let k2 = 0; k2 < 2; k2++) {
-        const off = new Vector3(trng.range(-0.5, 0.5), 0, trng.range(-0.5, 0.5)).applyQuaternion(q).multiplyScalar(t.scale);
-        f.blobs.push({ pos: c.clone().add(off), r: trng.range(0.55, 0.8) * t.scale, color: trng.pick(greens) });
+      const th = 1.9 * S;
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S, th, S)));
+      const c = base.clone().addScaledVector(up, th + 0.9 * S);
+      addLeaf(f.blobs, { pos: c, r: 1.45 * S, sy: 0.9, color: trng.pick(greens) });
+      for (let k2 = 0; k2 < 3; k2++) {
+        const off = new Vector3(trng.range(-1, 1), trng.range(-0.4, 0.6), trng.range(-1, 1)).applyQuaternion(q).multiplyScalar(0.8 * S);
+        addLeaf(f.blobs, { pos: c.clone().add(off), r: trng.range(0.8, 1.1) * S, sy: 0.9, color: trng.pick(greens) });
       }
     }
   }
@@ -412,16 +439,49 @@ export function buildMapView(map: MapData): MapView {
       trunkMesh.computeBoundingSphere();
       g.add(shadowy(trunkMesh));
     }
-    const blobMesh = new InstancedMesh(blobGeo, blobMat, Math.max(1, f.blobs.length));
-    f.blobs.forEach((b, i) => {
-      q.setFromAxisAngle(new Vector3(trng.range(-1, 1), 1, trng.range(-1, 1)).normalize(), trng.range(0, 6));
-      m4.compose(b.pos, q, sc.setScalar(b.r));
-      blobMesh.setMatrixAt(i, m4);
-      blobMesh.setColorAt(i, col.setHex(b.color));
-    });
-    blobMesh.count = f.blobs.length;
-    blobMesh.computeBoundingSphere();
-    g.add(shadowy(blobMesh));
+    // crowns keep their shaded underside: the blob turns only about the tree's up
+    const leaves = (geo: BufferGeometry, list: Leaf[]) => {
+      if (!list.length) return;
+      const im = new InstancedMesh(geo, leafMat, list.length);
+      list.forEach((b, i) => {
+        const tq = upOf.get(b)!.clone();
+        tq.multiply(new Quaternion().setFromAxisAngle(Y, trng.range(0, 6.28)));
+        m4.compose(b.pos, tq, sc.set(b.r, b.sy * (geo === coneGeo ? 1 : b.r), b.r));
+        im.setMatrixAt(i, m4);
+        im.setColorAt(i, col.setHex(b.color));
+      });
+      im.computeBoundingSphere();
+      g.add(shadowy(im));
+    };
+    leaves(blobGeo, f.blobs);
+    leaves(coneGeo, f.cones);
+  }
+
+  // --- vehicles and street lamps: procedural low-poly models (models.ts), instanced per region and kind
+  {
+    const paintMat = new MeshStandardMaterial({ roughness: 0.38, metalness: 0.35, flatShading: true });
+    const detailMat = new MeshStandardMaterial({ roughness: 0.5, metalness: 0.2, flatShading: true, vertexColors: true });
+    const groups = new Map<string, DecorDef[]>();
+    for (const d of map.decor) {
+      const k = `${keyOf(d.pos)}|${d.kind}`;
+      region(d.pos, d.kind === 'bus' ? 6 : 3);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(d);
+    }
+    for (const [k, list] of groups) {
+      const model = decorModel(list[0].kind);
+      const g = regions.get(k.split('|')[0])!.group;
+      for (const [geo, mat] of [[model.paint, paintMat], [model.detail, detailMat]] as const) {
+        if (!geo) continue;
+        const im = new InstancedMesh(geo, mat, list.length);
+        list.forEach((d, i) => {
+          im.setMatrixAt(i, m4.compose(p.set(...d.pos), q.set(...d.quat), sc.set(1, 1, 1)));
+          if (mat === paintMat) im.setColorAt(i, col.setHex(d.color));
+        });
+        im.computeBoundingSphere();
+        g.add(shadowy(im));
+      }
+    }
   }
 
   // --- bed crystals (no collider; hidden when the bed is broken) + small floating markers above them

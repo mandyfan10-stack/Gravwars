@@ -22,35 +22,49 @@ export const FRAME_COLORS = [0xd8cdb6, 0xc9c0ad, 0xbfc6c4, 0xd2c2a4, 0xb8bcc2, 0
 export const GLASS_COLORS = [0x6f9fb4, 0x7fa7a0, 0x8e9fb8, 0x5f8a9e, 0x9ab3b8];
 export const CRATE_COLORS = [0xa0764a, 0x8f6a42, 0xb08458, 0x7d5b3a];
 
+/**
+ * Car body sizes (front = local -Z): half length, lights height, and the cabin (z range, roof). The model is drawn
+ * by the client (render/models.ts) to the same numbers; here only colliders and lights.
+ */
+export const CAR_SHAPES: Record<'sedan' | 'hatch' | 'van', { half: number; light: number; belt: number; roof: number; cabin: [number, number] }> = {
+  sedan: { half: 2.15, light: 0.78, belt: 0.98, roof: 1.48, cabin: [-0.7, 1.35] },
+  hatch: { half: 1.9, light: 0.8, belt: 1.0, roof: 1.52, cabin: [-0.55, 1.75] },
+  van: { half: 2.2, light: 0.85, belt: 1.12, roof: 1.98, cabin: [-1.45, 2.2] },
+};
+const CAR_KINDS = ['sedan', 'sedan', 'hatch', 'van'] as const;
+
 export function car(b: Builder, f: Frame, x: number, z: number, yaw: number, color: number, y0 = 0) {
   const c = f.sub(x, y0 + 0.02, z, yaw);
-  b.box(c, 0, 0.75, 0, 0.95, 0.42, 2.15, color, 'car');
-  b.box(c, 0, 1.5, 0.15, 0.82, 0.33, 1.15, 0x2a3440, 'glass');
-  for (const sx of [-1, 1]) for (const sz of [-1, 1])
-    b.box(c, sx * 0.9, 0.33, sz * 1.35, 0.12, 0.33, 0.33, 0x18181a, 'metal', false);
+  // the kind follows from where it is parked (no extra random draws: the rest of the map stays the same)
+  const kind = CAR_KINDS[Math.abs(Math.round(x * 3.1 + z * 7.3 + color)) % CAR_KINDS.length];
+  const s = CAR_SHAPES[kind];
+  b.decor(c, kind, 0, 0, 0, 0, color);
+  b.solid(c, 0, 0.05, 0, 0.95, (s.belt - 0.05) / 2, s.half);
+  b.solid(c, 0, s.belt, (s.cabin[0] + s.cabin[1]) / 2, 0.82, (s.roof - s.belt) / 2, (s.cabin[1] - s.cabin[0]) / 2);
   for (const sx of [-1, 1]) {
-    b.box(c, sx * 0.6, 0.85, -2.17, 0.22, 0.07, 0.025, 0xfff2c8, 'glow', false);
-    b.box(c, sx * 0.6, 0.85, 2.17, 0.22, 0.07, 0.025, 0xc81e1e, 'paint', false);
+    b.box(c, sx * 0.62, s.light, -s.half - 0.01, 0.2, 0.06, 0.025, 0xfff2c8, 'glow', false);
+    b.box(c, sx * 0.66, s.light + 0.04, s.half + 0.01, 0.16, 0.06, 0.025, 0xc81e1e, 'paint', false);
   }
 }
 
+/** City bus: 11.6 m, front = local -Z. */
 export function bus(b: Builder, f: Frame, x: number, z: number, yaw: number, color: number) {
   const c = f.sub(x, 0.02, z, yaw);
-  b.box(c, 0, 1.75, 0, 1.25, 1.35, 5.8, color, 'car');
-  b.box(c, 0, 0.42, 0, 1.2, 0.12, 5.7, 0x2a2a2e, 'metal', false); // skirt
-  for (const s of [-1, 1]) b.box(c, s * 1.27, 2.15, 0.4, 0.025, 0.55, 4.9, 0x24303a, 'glass', false);
-  b.box(c, 0, 2.05, -5.83, 1.1, 0.75, 0.03, 0x24303a, 'glass', false); // windscreen
-  b.box(c, 0, 2.95, -5.84, 0.8, 0.14, 0.03, 0xffb43a, 'glow', false); // route sign
-  b.box(c, 0, 3.13, 0, 1.15, 0.03, 5.6, 0xe9e5dc, 'paint', false); // roof
-  for (const sx of [-1, 1]) for (const sz of [-1, 1])
-    b.box(c, sx * 1.15, 0.45, sz * 3.9, 0.16, 0.45, 0.45, 0x18181a, 'metal', false);
+  b.decor(c, 'bus', 0, 0, 0, 0, color);
+  b.solid(c, 0, 0.05, 0, 1.25, 1.55, 5.8);
+  b.box(c, 0, 2.95, -5.88, 0.8, 0.13, 0.03, 0xffb43a, 'glow', false); // route sign
+  for (const sx of [-1, 1]) {
+    b.box(c, sx * 0.95, 0.75, -5.88, 0.18, 0.08, 0.03, 0xfff2c8, 'glow', false);
+    b.box(c, sx * 1.0, 0.9, 5.82, 0.12, 0.12, 0.03, 0xc81e1e, 'paint', false);
+  }
 }
 
+/** Street lamp: a 5 m pole with the light hanging over the road 1.2 m out (local +Z). */
 export function lamp(b: Builder, f: Frame, x: number, z: number, yaw: number, y0 = SW) {
   const l = f.sub(x, y0, z, yaw);
-  b.block(l, 0, 0, 0, 0.07, 2.5, 0.07, 0x2f3a33, 'metal');
-  b.box(l, 0, 4.95, 0.6, 0.05, 0.05, 0.6, 0x2f3a33, 'metal', false);
-  b.box(l, 0, 4.85, 1.15, 0.18, 0.08, 0.3, 0xfff1cf, 'glow', false);
+  b.decor(l, 'lamp', 0, 0, 0, 0, 0x2f3a33);
+  b.solid(l, 0, 0, 0, 0.09, 2.5, 0.09);
+  b.box(l, 0, 4.83, 1.22, 0.17, 0.025, 0.11, 0xfff1cf, 'glow', false);
 }
 
 export function bench(b: Builder, f: Frame, x: number, z: number, yaw: number, y0 = SW) {

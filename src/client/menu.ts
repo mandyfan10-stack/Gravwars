@@ -124,13 +124,21 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     save();
   });
 
-  const scale = $<HTMLInputElement>('render-scale');
-  const showScale = () => { $('render-scale-value').textContent = `${Math.round(settings.renderScale * 100)}%`; };
-  scale.value = String(settings.renderScale);
-  showScale();
-  // the slider moves often: re-allocate the buffers only once it is let go
-  scale.addEventListener('input', () => { settings.renderScale = Number(scale.value); showScale(); });
-  scale.addEventListener('change', () => { hooks.onToggles(); save(); });
+  const pixels = $<HTMLSelectElement>('pixels');
+  pixels.value = String(settings.pixels);
+  pixels.addEventListener('change', () => {
+    settings.pixels = Number(pixels.value);
+    hooks.onToggles();
+    save();
+  });
+
+  const palette = $<HTMLSelectElement>('palette');
+  palette.value = settings.palette ? 'on' : 'off';
+  palette.addEventListener('change', () => {
+    settings.palette = palette.value === 'on';
+    hooks.onToggles();
+    save();
+  });
 
   return {
     /** Match over: summary in the menu, "New match" becomes the main button. */

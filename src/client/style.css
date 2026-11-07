@@ -149,7 +149,9 @@ body.debug #info, body.debug #speed { display: block; }
 #kick.cd b { opacity: 1; }
 
 /* death screen: the world drains of colour, a dark red edge, who did it and when you are back */
-#game { transition: filter .5s; }
+#game { transition: filter .5s, opacity 1.2s; }
+/* page load: black until the menu's world has drawn its first frame */
+body.boot #game { opacity: 0; transition: none; }
 body.dead #game { filter: grayscale(.75) brightness(.78) contrast(1.08); }
 body.dead #crosshair, body.dead #hotbar, body.dead #weapon, body.dead #kick, body.dead #prompt, body.dead #bed-break, body.dead #hp { opacity: 0; }
 #death { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity .35s;
@@ -217,8 +219,8 @@ body.dead #death h2 { animation: death-in .6s cubic-bezier(.2, .9, .3, 1); }
 /* shop + inventory: windows driven by the in-game cursor (#cursor), clickable parts carry data-act */
 #shop, #inv { position: absolute; left: 50%; top: 47%; transform: translate(-50%, -50%); padding: 14px 16px 12px; border-radius: 6px;
   background: rgba(14, 16, 22, .9); border: 1px solid var(--line); pointer-events: auto; text-shadow: none; }
-#shop { width: min(880px, 94vw); }
-#shop.sell { width: 420px; }
+#shop { width: min(900px, 96vw); background: rgba(14, 16, 22, .94); }
+#shop.sell { width: 560px; }
 #hud #shop .ic, #hud #inv .ic { filter: none; }
 #shop h3, #inv h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font: 700 16px var(--display); }
 #shop h3 > .ic { font-size: 20px; color: #fff; }
@@ -232,24 +234,46 @@ body.dead #death h2 { animation: death-in .6s cubic-bezier(.2, .9, .3, 1); }
 button.x { width: 26px; height: 26px; margin-left: 6px; border: 0; border-radius: 3px; background: none; color: var(--muted); font: 400 20px/1 'Inter', sans-serif; }
 #inv button.x { margin-left: auto; }
 button.x.hover { background: rgba(255, 255, 255, .12); color: #fff; }
-#shop .groups { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 #shop h5, #inv h5 { margin: 0 0 6px; font: 600 10px 'Inter', sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-#shop section { display: flex; flex-direction: column; gap: 6px; }
-#shop .card { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px;
-  background: rgba(255, 255, 255, .03); font-size: 13px; font-weight: 600; transition: background .08s, border-color .08s; }
-#shop .card > .ic { font-size: 22px; color: var(--c, #fff); }
-#shop .card.hover { background: rgba(255, 255, 255, .1); border-color: rgba(255, 255, 255, .5); }
-#shop .card.poor { opacity: .45; }
-#shop .card.poor .price { color: #ff9a8f; }
-#shop .label { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.2; }
-#shop .card em { font-style: normal; font-size: 11px; font-weight: 500; color: var(--muted); }
-#shop .price { margin-left: auto; display: flex; align-items: center; gap: 4px; font: 700 14px var(--display); white-space: nowrap; }
-#shop .price .ic { font-size: 13px; }
+/* buy: one row per kind, a fixed grid of equal tiles (ammo right under its gun); bought things stay in place */
+#shop .rows { display: grid; grid-template-columns: 92px repeat(5, 1fr); gap: 6px; align-items: stretch; }
+#shop .rows h5 { margin: 0; align-self: center; }
+#shop .rows h5:not(:first-child) { margin-top: 0; }
+#shop .slot { display: block; }
+#shop .tile { position: relative; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto auto; column-gap: 8px;
+  min-width: 0; height: 74px; box-sizing: border-box; padding: 9px 10px 8px; border: 1px solid var(--line); border-radius: 4px;
+  background: rgba(255, 255, 255, .035); transition: background .08s, border-color .08s; }
+#shop .tile > .ic { grid-row: 1; font-size: 22px; color: var(--c, #fff); }
+#shop .tile .price { grid-row: 1; justify-self: end; align-self: start; display: flex; align-items: center; gap: 4px; font: 700 14px var(--display); white-space: nowrap; }
+#shop .tile .price .ic { font-size: 13px; }
 #shop .price.cash .ic { color: var(--cash); } #shop .price.crystal .ic { color: var(--crystal); }
-#shop .sell { display: flex; flex-direction: column; gap: 6px; }
-#shop .card.total { font-weight: 700; min-height: 44px; }
+#shop .tile b { grid-column: 1 / 3; margin-top: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 600 13px var(--display); }
+#shop .tile b small { margin-left: 4px; font-size: 11px; font-weight: 500; color: var(--muted); }
+#shop .tile em { grid-column: 1 / 3; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-style: normal; font-size: 11px; color: var(--muted); }
+#shop .tile.hover { background: rgba(255, 255, 255, .09); border-color: rgba(255, 255, 255, .75); }
+#shop .tile.poor > .ic, #shop .tile.poor b, #shop .tile.full > .ic, #shop .tile.full b { opacity: .45; }
+#shop .tile.poor .price { color: #ff9a8f; }
+#shop .tile.full .price { opacity: .45; }
+#shop .tile.na em { color: rgba(255, 255, 255, .4); }
+#shop .tile.owned { background: none; border-style: dashed; }
+#shop .tile.owned > .ic, #shop .tile.owned b { opacity: .4; }
+#shop .tile.owned .price { visibility: hidden; }
+#shop .tile.owned em { color: #9be3b4; }
+/* sell: the loot in a row, "sell all" under it */
+#shop .rows.sell { grid-template-columns: repeat(3, 1fr); }
+#shop .tile.all { grid-column: 1 / -1; height: 46px; align-items: center; grid-template-columns: 1fr auto; }
+#shop .tile.all b { grid-column: 1; margin: 0; font-size: 14px; }
+#shop .tile.all .price { grid-column: 2; grid-row: 1; align-self: center; }
 #shop footer, #inv footer { display: flex; align-items: center; gap: 5px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+#shop footer { min-height: 18px; font-size: 12px; }
 #shop footer kbd { margin-left: 10px; }
+#shop .details { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; }
+#shop .details b { color: #fff; font-weight: 600; }
+#shop .details span { overflow: hidden; text-overflow: ellipsis; }
+#shop .details .why { margin-left: auto; padding-left: 12px; color: #fff; }
+#shop .details .why.poor, #shop .details .why.full { color: #ff9a8f; }
+#shop .details .why.owned { color: #9be3b4; }
+#shop .keys { display: flex; align-items: center; gap: 5px; margin-left: 16px; white-space: nowrap; }
 
 #inv { width: 640px; }
 #inv .cols { display: grid; grid-template-columns: auto 1fr; gap: 18px; }
@@ -367,7 +391,7 @@ button.x.hover { background: rgba(255, 255, 255, .12); color: #fff; }
 
 /* ---------------- lobby (before the match, next to the menu) */
 .lobby { align-self: center; width: min(760px, calc(100vw - 520px)); margin: 0 40px; padding: 18px 20px 16px; border-radius: 4px;
-  background: rgba(10, 11, 16, .78); color: rgba(255, 255, 255, .85); font-size: 13px; }
+  background: rgba(10, 11, 16, .86); color: rgba(255, 255, 255, .85); font-size: 13px; }
 .lobby[hidden] { display: none; }
 .lobby header { margin-bottom: 14px; }
 .lobby h2 { margin: 0; font: 600 15px var(--display); color: #fff; }

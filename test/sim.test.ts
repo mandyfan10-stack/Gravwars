@@ -6,7 +6,7 @@ import {
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
 import { activeTeams, botRoster, defaultLobby, lobbyProblem, parseLobby, playerTeam, seatPlayer } from '../src/shared/lobby';
 import { BED_HP, GENERATORS, Match } from '../src/shared/match';
-import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
+import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP, SHOP_ROWS } from '../src/shared/economy';
 import { holdables, Hotbar } from '../src/shared/inventory';
 import { THROW, Throws } from '../src/shared/throwables';
 import { Fishing, FISHING } from '../src/shared/fishing';
@@ -627,6 +627,13 @@ import { HOOK } from '../src/shared/sim';
   const shelf = () => eco.offers().map((o) => `${o.item.id}:${o.state}`).join(' ');
   check('start with no money and no tools', eco.wallet.cash === 0 && !eco.has('rod') && ws.current === 'fists');
   check('everything is on the shelf from the start', eco.offers().length === SHOP.length && eco.buy(item('rifle')) === 'money', shelf());
+  {
+    // the shop window lays every item out once (ammo under its gun)
+    const laid = SHOP_ROWS.flatMap((r) => r.ids).filter((id): id is string => !!id);
+    const guns = SHOP_ROWS[0].ids, ammo = SHOP_ROWS[1].ids;
+    check('shop window: every item once, ammo under its gun', laid.length === SHOP.length && SHOP.every((i) => laid.includes(i.id))
+      && ammo.every((id, k) => !id || id === `ammo-${guns[k]}`), laid.join(' '));
+  }
   check('prices: tools, guns and block packs', item('rod').price === 5 && item('builder').price === 11 && item('pistol').price === 19
     && item('rifle').price === 41 && item('wood').price === 4 && item('stone').price === 8 && item('metal').price === 2);
   eco.items.bottle = 4; eco.items.apple = 1; eco.items.fish = 1;

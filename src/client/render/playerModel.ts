@@ -3,6 +3,7 @@ import {
   Sprite, SpriteMaterial, Vector2, Vector3,
 } from 'three';
 import type { GameAssets } from './assets';
+import { pixelGlint } from './pixelart';
 import { pistolModel, rifleModel } from './guns';
 import { bakeMeshes } from './bake';
 import { buildHuman, HumanRig, Outfit, solveArm } from './human';
@@ -14,24 +15,7 @@ const AY = new Vector3(0, 1, 0);
 
 /** A hard little star of light: the glint of a raised gun barrel (shared by every model). */
 let glintTex: CanvasTexture | null = null;
-function glintTexture() {
-  if (glintTex) return glintTex;
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d')!;
-  const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  r.addColorStop(0, '#fff');
-  r.addColorStop(0.18, 'rgba(255,240,210,.9)');
-  r.addColorStop(0.45, 'rgba(255,200,140,.18)');
-  r.addColorStop(1, 'rgba(255,180,120,0)');
-  g.fillStyle = r;
-  g.fillRect(0, 0, 64, 64);
-  g.fillStyle = 'rgba(255,245,225,.85)';
-  g.fillRect(2, 31, 60, 2);
-  g.fillRect(31, 2, 2, 60);
-  glintTex = new CanvasTexture(c);
-  return glintTex;
-}
+const glintTexture = () => (glintTex ??= pixelGlint(15));
 
 /** Hand grenade for the third-person models (metres). */
 function grenadeMesh() {

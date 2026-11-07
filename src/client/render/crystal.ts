@@ -1,3 +1,4 @@
+import { pixelDot } from './pixelart';
 import {
   AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, Color, Group, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, PointLight,
   Points, PointsMaterial, Vector3,
@@ -36,20 +37,7 @@ export function crystalGeometry(radius: number, height: number, rng: Rng, sides 
 }
 
 let sparkTex: CanvasTexture | null = null;
-function sparkTexture() {
-  if (sparkTex) return sparkTex;
-  const c = document.createElement('canvas');
-  c.width = c.height = 32;
-  const g = c.getContext('2d')!;
-  const r = g.createRadialGradient(16, 16, 0, 16, 16, 16);
-  r.addColorStop(0, 'rgba(255,255,255,1)');
-  r.addColorStop(0.3, 'rgba(255,255,255,.55)');
-  r.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = r;
-  g.fillRect(0, 0, 32, 32);
-  sparkTex = new CanvasTexture(c);
-  return sparkTex;
-}
+const sparkTexture = () => (sparkTex ??= pixelDot(8));
 
 /** Glassy shell over a glowing core: the shell reflects the sky with a rainbow sheen, the core feeds the bloom. */
 export function crystalMaterials(color: number) {

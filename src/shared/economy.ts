@@ -207,14 +207,20 @@ export type ShopItem = {
   | { kind: 'item'; item: ItemId; count: number }
 );
 
-/** Shop group (the columns of the shop window). */
-export type ShopGroup = 'tools' | 'weapons' | 'blocks' | 'supplies';
-export const SHOP_GROUPS: { id: ShopGroup; label: string }[] = [
-  { id: 'tools', label: 'Инструменты' }, { id: 'weapons', label: 'Оружие' }, { id: 'blocks', label: 'Блоки' }, { id: 'supplies', label: 'Припасы' },
+/**
+ * The shop window's rows: item ids by column (null = an empty slot). Every gun's ammo sits right under the gun.
+ * `short`: the name on the tile (the full label is in the details line).
+ */
+export const SHOP_ROWS: { label: string; ids: (string | null)[] }[] = [
+  { label: 'Оружие', ids: ['pistol', 'shotgun', 'rifle', 'rocket', 'grenade'] },
+  { label: 'Патроны', ids: ['ammo-pistol', 'ammo-shotgun', 'ammo-rifle', 'ammo-rocket', null] },
+  { label: 'Блоки', ids: ['wood', 'stone', 'metal'] },
+  { label: 'Снаряжение', ids: ['builder', 'hook', 'rod', 'medkit'] },
 ];
-export function shopGroup(item: ShopItem): ShopGroup {
-  return item.kind === 'tool' ? 'tools' : item.kind === 'blocks' ? 'blocks' : item.kind === 'weapon' ? 'weapons' : 'supplies';
-}
+export const SHOP_SHORT: Record<string, string> = {
+  builder: 'Лопатка', grenade: 'Гранаты', wood: 'Дерево', stone: 'Камень', metal: 'Металл',
+  'ammo-pistol': 'Пистолет', 'ammo-shotgun': 'Дробовик', 'ammo-rifle': 'Автомат', 'ammo-rocket': 'Ракеты',
+};
 
 /** Everything is on the shelf from the start; prices are 25 % below the first version (rounded). */
 export const SHOP: ShopItem[] = [

@@ -44,6 +44,7 @@ export class LocalPlayer {
 
   snap() {
     this.prevPos.copy(this.sim.state.pos);
+    this.renderPos.copy(this.sim.state.pos);
     this.renderFrame.copy(this.sim.state.frame);
     this.turnT = 1;
   }

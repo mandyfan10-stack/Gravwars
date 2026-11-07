@@ -9,7 +9,7 @@ import { BlockSystem } from '../shared/blocks';
 import { BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
-import { faceByUp, generateMap } from '../shared/map';
+import { faceByUp, faceOfTeam, generateMap, MapData } from '../shared/map';
 import { activeTeams, botRoster, playerTeam } from '../shared/lobby';
 import { NpcManager } from '../shared/npcs';
 import { Economy, Pickups } from '../shared/economy';
@@ -39,6 +39,7 @@ import { icon } from './icons';
 import { MatchUi } from './matchUi';
 import { setupMenu } from './menu';
 import { Lobby } from './lobby';
+import { MenuBackdrop } from './menuBackdrop';
 import { Intro } from './intro';
 import { PlayerCombat } from './playerCombat';
 import { Pockets } from './pockets';
@@ -57,11 +58,24 @@ import { buildMapView } from './render/mapView';
 import { buildPropView } from './render/propView';
 import { ViewModel } from './render/viewmodel';
 import { setPixelTextures } from './render/texFilter';
-import { loadSettings, saveSettings } from './settings';
+import { loadSettings, PALETTE_LEVELS, saveSettings } from './settings';
 import { formatTime, MatchStats } from './stats';
 
 /** Seconds of the start flight: from above the base into the player's eyes. */
 const INTRO_LENGTH = 2.6;
+
+/** The door of the team's hall behind `eye` (world points at eye height), for the start flight. */
+function doorBehind(map: MapData, team: TeamId, eye: { pos: Vector3; quat: Quaternion }) {
+  const face = faceOfTeam(map, team);
+  const doors = face && map.nav[face.id]?.doors;
+  if (!face || !doors?.length) return null;
+  const origin = new Vector3(...face.origin), q = new Quaternion(...face.quat), up = new Vector3(...face.up);
+  const h = eye.pos.clone().sub(origin).dot(up);
+  const world = ([x, z]: [number, number]) => new Vector3(x, h, z).applyQuaternion(q).add(origin);
+  const back = new Vector3(0, 0, 1).applyQuaternion(eye.quat);
+  const all = doors.map((d) => ({ out: world(d.out), in: world(d.in) }));
+  return all.reduce((a, b) => (b.in.clone().sub(eye.pos).dot(back) > a.in.clone().sub(eye.pos).dot(back) ? b : a));
+}
 
 async function main() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -73,6 +87,7 @@ async function main() {
   const loading = Promise.all([initRapier(), loadAssets(), document.fonts.load('800 64px Inter', 'МАГАЗИН КРАСНЫЕ')]);
   const gfx = new Graphics(canvas);
   const { renderer, scene, camera } = gfx;
+  window.addEventListener('resize', () => gfx.resize());
   const input = new Input(canvas, overlay);
   const audio = new GameAudio();
   audio.volume = settings.volume;
@@ -85,12 +100,13 @@ async function main() {
     camera.updateProjectionMatrix();
     setPixelTextures(toggles.pixel, viewModel ? [scene, viewModel.scene] : [scene]);
     gfx.setShadows(settings.shadows);
-    if (renderScale !== settings.renderScale) gfx.setRenderScale((renderScale = settings.renderScale));
+    const look = { lines: settings.pixels, levels: settings.palette ? PALETTE_LEVELS : 0 };
+    if (look.lines !== lastLook.lines || look.levels !== lastLook.levels) gfx.setLook((lastLook = look));
     // people fade out well before the map does: they are small and the most expensive to draw
     CHAR_LOD.far = Math.min(220, Math.max(90, settings.drawDistance * 0.3));
     CHAR_LOD.shadow = settings.shadows === 'off' ? 0 : settings.shadows === 'low' ? 30 : 45;
   };
-  let renderScale = 1;
+  let lastLook = { lines: -1, levels: -1 };
   let statsHtml = () => '';
   const menu = setupMenu(input, audio, camera, toggles, settings, { onToggles: applyToggles, statsHtml: () => statsHtml() });
   const lobby = new Lobby(settings.difficulty);
@@ -104,6 +120,11 @@ async function main() {
   lobby.onChange = syncStart;
   lobby.onLevel = (d) => { settings.difficulty = d; saveSettings(settings); };
   const [R, assets] = await loading;
+  // behind the menu: the default lobby's world, the camera drifting round the inside of the cube
+  const backdrop = new MenuBackdrop(gfx);
+  backdrop.start(assets, playerTeam(lobby.config) ?? 'red', activeTeams(lobby.config));
+  applyToggles();
+  (window as unknown as { __menu: MenuBackdrop }).__menu = backdrop;
   loaded = true;
   syncStart();
   // «В бой»: the click unlocks the audio and takes the mouse right away (a user gesture is needed for both)
@@ -117,13 +138,17 @@ async function main() {
     resolve();
   }));
   lobby.hidden = true;
-  document.body.classList.add('building');
-  await new Promise((r) => setTimeout(r, 30)); // let the "building" note paint
-
-  // --- simulation (shared with the future server)
   const cfg = lobby.config;
   const myTeam = playerTeam(cfg)!;
-  const map = generateMap(1337, myTeam, activeTeams(cfg));
+  // the menu's world when the lobby still matches it (no second build): its last frame stays up while the rest is
+  // built and the start flight leaves from the menu's camera; else a black "building" note
+  const menuEye = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
+  const built = backdrop.take(myTeam, activeTeams(cfg));
+  if (!built) document.body.classList.add('building');
+  await new Promise((r) => setTimeout(r, 30)); // let the hidden menu / the "building" note paint
+
+  // --- simulation (shared with the future server)
+  const map = built?.map ?? generateMap(1337, myTeam, activeTeams(cfg));
   const world = buildPhysicsWorld(R, map);
   const sim = new PlayerSim(R, world, map, myTeam);
   const combat = new Combat(R, world, map, [sim.mover.collider]);
@@ -147,9 +172,8 @@ async function main() {
   blocks.inventory.wood = 0;
 
   // --- rendering
-  const mapView = buildMapView(map);
-  scene.add(mapView.group);
-  scene.add(buildPropView(map, assets));
+  const mapView = built?.mapView ?? buildMapView(map);
+  if (!built) scene.add(mapView.group, buildPropView(map, assets));
   const fx = new Fx(scene);
   // blood stains land on the ground under the spray
   fx.ground = (pos, down) => {
@@ -158,6 +182,9 @@ async function main() {
   };
   viewModel = new ViewModel(sim.team.color, assets);
   viewModel.environment = scene.environment;
+  // the hands are drawn into the same small frame as the world (same pixels and palette)
+  gfx.overlay.scene = viewModel.scene;
+  gfx.overlay.camera = viewModel.camera;
   const gizmo = new GravityGizmo(map);
 
   // --- player, UI
@@ -262,7 +289,6 @@ async function main() {
     }
   };
 
-  window.addEventListener('resize', () => gfx.resize());
   const handleKeys = createKeyHandler({
     input, sim, local, build, player, ui, hands, pockets, nearShop: () => match.nearShop(sim.state.pos), camera, hud, toggles, applyToggles, gui,
   });
@@ -271,7 +297,7 @@ async function main() {
   const ambient: Area = { base: 0, forest: 0, park: 0, city: 0, water: 0 };
   const ambience = new Ambience(audio);
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, scene, combat, props, deathScreen, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, ready: true,
+    sim, local, input, camera, renderer, scene, gfx, combat, props, deathScreen, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -311,10 +337,13 @@ async function main() {
   let wasSprinting = false;
   let fovNow = 0;
 
-  // --- the start: the camera drops from above the base into the player's eyes
+  // --- the start: the camera flies from the menu's shot (or from above the base) in through the hall door behind the
+  // player into the player's eyes
   local.applyCamera(camera);
   const eye = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
-  const intro = new Intro(eye, upOf(sim.state.frame), INTRO_LENGTH);
+  const intro = new Intro(eye, upOf(sim.state.frame), built ? INTRO_LENGTH + 1.2 : INTRO_LENGTH + 0.4, {
+    start: built ? menuEye : undefined, door: doorBehind(map, myTeam, eye) ?? undefined,
+  });
   audio.whoosh();
   const fog = scene.fog as FogExp2;
   const FOG = fog.density;
@@ -334,6 +363,7 @@ async function main() {
     botView.update(dt, local.alpha);
     npcView.update(dt, local.alpha, camera);
     mapView.update(t, dt);
+    gfx.overlay.enabled = false; // no hands while the camera flies in
     gfx.render(dt);
     input.endFrame();
   };
@@ -346,8 +376,9 @@ async function main() {
   const _wf = new Vector3();
   const _wr = new Vector3();
   const frame = (now: number) => {
-    const dt = Math.min((now - last) / 1000, 0.1);
-    last = now;
+    // the first callback after the long synchronous build can carry a time stamp from before it: never step back
+    const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+    last = Math.max(last, now);
     time += dt;
     if (intro.active) { introFrame(dt, time); requestAnimationFrame(frame); return; }
     handleKeys();
@@ -461,7 +492,6 @@ async function main() {
     fishingView.update(time, pockets.rod ? viewModel.rodTipWorld(camera) : null);
     viewModel.hookOut = !!sim.hook;
     hookView.update(sim.hook && !dead ? viewModel.hookClawWorld(camera) : null, fx.down);
-    gfx.render(dt);
     const invCam = camera.quaternion.clone().invert();
     const pUp = upOf(sim.state.frame);
     viewModel.update(dt, {
@@ -474,7 +504,8 @@ async function main() {
     lastYaw = input.yaw;
     lastPitch = input.pitch;
     viewModel.bite = pockets.fishing.phase === 'bite' ? 1 : 0;
-    if (!dead) viewModel.render(renderer);
+    gfx.overlay.enabled = !dead;
+    gfx.render(dt);
 
     // HUD wind: what the local player's projectiles feel
     const w = combat.wind.felt(combat.time, pUp.clone().negate());
