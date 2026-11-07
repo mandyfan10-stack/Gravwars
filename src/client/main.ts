@@ -9,7 +9,7 @@ import { BlockSystem } from '../shared/blocks';
 import { BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
-import { generateMap } from '../shared/map';
+import { faceByUp, generateMap } from '../shared/map';
 import { activeTeams, botRoster, playerTeam } from '../shared/lobby';
 import { NpcManager } from '../shared/npcs';
 import { Economy, Pickups } from '../shared/economy';
@@ -18,7 +18,7 @@ import { upOf } from '../shared/math';
 import { moveBasis, viewQuat } from '../shared/movement';
 import { buildPhysicsWorld, initRapier } from '../shared/physics';
 import { PlayerSim } from '../shared/sim';
-import { getTeam, teamByDown, TeamId } from '../shared/teams';
+import { getTeam, TeamId } from '../shared/teams';
 import { Throws } from '../shared/throwables';
 import type { WeaponId } from '../shared/weapons';
 import { Ambience, Area } from './ambience';
@@ -145,7 +145,7 @@ async function main() {
   const fx = new Fx(scene);
   viewModel = new ViewModel(sim.team.color, assets);
   viewModel.environment = scene.environment;
-  const gizmo = new GravityGizmo();
+  const gizmo = new GravityGizmo(map);
 
   // --- player, UI
   const hud = new Hud();
@@ -209,10 +209,10 @@ async function main() {
   local.onEvent = (e) => {
     if (e.type === 'land') { if (player.me.alive) combat.fall(player.me, e.speed); return; }
     if (e.type === 'gravity') {
-      const down = sim.gravityDown();
-      if (Math.abs(down.z) > 0.9) hud.toast('Гравитация: центр', '#e8e2d0');
+      const face = faceByUp(map, upOf(sim.state.frame));
+      if (!face?.team) hud.toast('Гравитация: нейтральная грань', '#e8e2d0');
       else {
-        const t = teamByDown(down);
+        const t = getTeam(face.team as TeamId);
         hud.toast(`Гравитация: ${t.name}`, teamHex(t.color));
       }
     } else if (e.type === 'respawn' && e.reason === 'manual') player.reset();
@@ -254,7 +254,8 @@ async function main() {
   };
 
   // ambience: where the player is, sampled twice a second
-  const cityPts = [...map.houses, ...map.buildings];
+  // downtown: near the glazed facades of the towers and offices
+  const cityPts = map.boxes.filter((b) => b.mat === 'window' && b.half[1] > 4);
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
   let ambientT = 0;
   const nearest = (pts: ArrayLike<number>[] | { pos: ArrayLike<number> }[], p: Vector3) => {
@@ -331,13 +332,9 @@ async function main() {
       ambient.base = base;
       ambient.forest = clamp01((trees - 6) / 8) * (1 - base);
       ambient.park = clamp01(1 - nearest(map.trees, pos) / 22) * (1 - ambient.forest) * (1 - base);
-      // the central island is the city all over (its plaza is far from the towers but it is still downtown)
-      let isl = map.islands[0], bestD = Infinity;
-      for (const i of map.islands) {
-        const d = (i.origin[0] - pos.x) ** 2 + (i.origin[1] - pos.y) ** 2 + (i.origin[2] - pos.z) ** 2;
-        if (d < bestD) { bestD = d; isl = i; }
-      }
-      ambient.city = Math.max(isl.id === 'center' ? 0.7 : 0, clamp01(1 - (nearest(cityPts, pos) - 15) / 60)) * (1 - base * 0.7);
+      // a neutral face is the city all over (its square is far from the towers but it is still downtown)
+      const face = faceByUp(map, upOf(sim.state.frame));
+      ambient.city = Math.max(face && !face.team ? 0.7 : 0, clamp01(1 - (nearest(cityPts, pos) - 15) / 60)) * (1 - base * 0.7);
       ambient.water = clamp01(1 - nearest(map.ponds, pos) / 16);
     }
     ambience.update(ambient, dt);
@@ -364,7 +361,7 @@ async function main() {
     hands.update(dt, camera, input.locked && !cursor.active && input.down('Mouse0'), click);
     if (cursor.active) build.active = false;
     build.update(dt, camera);
-    gfx.updateLighting(local.renderFrame);
+    gfx.updateLighting(local.renderFrame, time);
 
     // bedwars: break enemy crystals (hold E), match events, UI
     match.breakTick(dt, camera.position, input.locked && !ui.shopOpen && input.down('KeyE'));
@@ -441,8 +438,7 @@ async function main() {
     hud.setWind(Math.atan2(w.dot(_wr), w.dot(_wf)) - Math.PI / 2, w.length(), 0);
     hud.setWeapon(player.weapons, hands.tool, eco.items);
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
-    const gDown = sim.gravityDown();
-    gizmo.render(renderer, viewQ, Math.abs(gDown.z) > 0.9 ? '' : teamByDown(gDown).id);
+    gizmo.render(renderer, viewQ, faceByUp(map, pUp)?.id ?? '');
     hud.setSpread(hands.tool ? null : player.nextSpread, camera.fov);
     hud.setGuard(player.me.guard && player.me.alive ? player.me.guard.t : null);
     hud.setHp(player.me.hp); // regen ticks it up between hits

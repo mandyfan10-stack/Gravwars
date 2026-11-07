@@ -12,7 +12,7 @@ export const THROW = {
   stun: 2,
   /** Anything else just bumps a person (no harm, but they notice). */
   bumpDamage: 0,
-  /** Gone if it flies longer than this (off the island into the void). */
+  /** Gone if it flies longer than this (off a face into the void). */
   life: 6,
   /** Seconds between two throws. */
   interval: 0.45,

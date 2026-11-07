@@ -19,12 +19,12 @@ export const BLOCK_REACH = 6;
 /** Material in the inventory at the start (one piece costs PIECE_COST). */
 export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 30, stone: 0, metal: 0 };
 
-/** Build pieces (the shovel places a random one): wall, floor, ramp. */
+/** Build pieces (chosen in the radial menu): wall, floor, ramp. */
 export type PieceKind = 'wall' | 'floor' | 'ramp';
 export const PIECE_KINDS: PieceKind[] = ['wall', 'floor', 'ramp'];
 export const PIECE_LABEL: Record<PieceKind, string> = { wall: 'Стена', floor: 'Пол', ramp: 'Лестница' };
-/** Horizontal grid cell, m. */
-export const PIECE_CELL = 4;
+/** Horizontal grid cell, m (GravWars: 6 m, a bridge over the 48 m gap at a cube edge is 8 floors + 16 ramps + 1). */
+export const PIECE_CELL = 6;
 /** Height of one building level (wall height, ramp rise), m. */
 export const PIECE_LEVEL = 3;
 export const PIECE_THICK = 0.25;
@@ -89,6 +89,49 @@ function boxDistance(p: Vector3, center: Vector3, half: Vector3, quat: Quaternio
 }
 const _q = new Quaternion();
 
+/**
+ * The piece of `kind` in a grid slot: frame of the axis-aligned `upAxis`, `along` / `sg` = the local axis and sign
+ * it faces, `bnd` = the cell boundary it starts at (along · sg), `b` = the cell centre on the other axis, `level` =
+ * the floor height (frame-local y). Players' pieces and the map's bridge lanes go through this, so keys match.
+ */
+export function piecePlan(kind: PieceKind, upAxis: Vector3, along: 'x' | 'z', sg: number, bnd: number, b: number, level: number): PiecePlan {
+  const q = frameForUp(upAxis);
+  const side: 'x' | 'z' = along === 'x' ? 'z' : 'x';
+  // local basis: F forward, U up, S sideways (right handed)
+  const F = new Vector3();
+  F[along] = sg;
+  const U = new Vector3(0, 1, 0);
+  let fa = bnd + PIECE_CELL / 2;
+  let y = level;
+  const half = new Vector3();
+  let rot = 0;
+  if (kind === 'wall') {
+    fa = bnd;
+    y = level + PIECE_LEVEL / 2;
+    half.set(PIECE_THICK / 2, PIECE_LEVEL / 2, PIECE_CELL / 2);
+  } else if (kind === 'floor') {
+    y = level - PIECE_THICK / 2;
+    half.set(PIECE_CELL / 2, PIECE_THICK / 2, PIECE_CELL / 2);
+  } else {
+    rot = Math.atan2(PIECE_LEVEL, PIECE_CELL);
+    y = level + PIECE_LEVEL / 2 - Math.cos(rot) * PIECE_THICK / 2;
+    fa += Math.sin(rot) * PIECE_THICK / 2;
+    half.set(Math.hypot(PIECE_CELL, PIECE_LEVEL) / 2, PIECE_THICK / 2, PIECE_CELL / 2);
+  }
+  const Fx = F.clone().multiplyScalar(Math.cos(rot)).addScaledVector(U, Math.sin(rot));
+  const Uy = U.clone().multiplyScalar(Math.cos(rot)).addScaledVector(F, -Math.sin(rot));
+  const Sz = new Vector3().crossVectors(Fx, Uy);
+  const local = new Vector3();
+  local[along] = fa * sg;
+  local.y = y;
+  local[side] = b;
+  const center = local.applyQuaternion(q);
+  const quat = new Quaternion().setFromRotationMatrix(_m.makeBasis(Fx, Uy, Sz)).premultiply(q);
+  const r = (v: number) => Math.round(v * 10);
+  const key = `${axisKey(upAxis)}|${kind}|${r(center.x)},${r(center.y)},${r(center.z)}`;
+  return { kind, center, half, quat, key, level };
+}
+
 /** Placed blocks: aiming, validation, inventory, damage. Shared by the client and the future server. */
 export class BlockSystem {
   /** Keyed by collider handle. */
@@ -142,39 +185,7 @@ export class BlockSystem {
     const a = lp[along] * sg;
     const bnd = Math.ceil((a + PLAYER_RADIUS + 0.25) / PIECE_CELL) * PIECE_CELL;
     const b = (Math.floor(lp[side] / PIECE_CELL) + 0.5) * PIECE_CELL;
-    // local basis: F forward, U up, S sideways (right handed)
-    const F = new Vector3();
-    F[along] = sg;
-    const U = new Vector3(0, 1, 0);
-    let fa = bnd + PIECE_CELL / 2;
-    let y = level;
-    const half = new Vector3();
-    let rot = 0;
-    if (kind === 'wall') {
-      fa = bnd;
-      y = level + PIECE_LEVEL / 2;
-      half.set(PIECE_THICK / 2, PIECE_LEVEL / 2, PIECE_CELL / 2);
-    } else if (kind === 'floor') {
-      y = level - PIECE_THICK / 2;
-      half.set(PIECE_CELL / 2, PIECE_THICK / 2, PIECE_CELL / 2);
-    } else {
-      rot = Math.atan2(PIECE_LEVEL, PIECE_CELL);
-      y = level + PIECE_LEVEL / 2 - Math.cos(rot) * PIECE_THICK / 2;
-      fa += Math.sin(rot) * PIECE_THICK / 2;
-      half.set(Math.hypot(PIECE_CELL, PIECE_LEVEL) / 2, PIECE_THICK / 2, PIECE_CELL / 2);
-    }
-    const Fx = F.clone().multiplyScalar(Math.cos(rot)).addScaledVector(U, Math.sin(rot));
-    const Uy = U.clone().multiplyScalar(Math.cos(rot)).addScaledVector(F, -Math.sin(rot));
-    const Sz = new Vector3().crossVectors(Fx, Uy);
-    const local = new Vector3();
-    local[along] = fa * sg;
-    local.y = y;
-    local[side] = b;
-    const center = local.applyQuaternion(q);
-    const quat = new Quaternion().setFromRotationMatrix(_m.makeBasis(Fx, Uy, Sz)).premultiply(q);
-    const r = (v: number) => Math.round(v * 10);
-    const key = `${axisKey(upAxis)}|${kind}|${r(center.x)},${r(center.y)},${r(center.z)}`;
-    return { kind, center, half, quat, key, level };
+    return piecePlan(kind, upAxis, along, sg, bnd, b, level);
   }
 
   /** Material a piece costs: one unit, whatever the piece (1 wood = 1 piece; bridges too). */

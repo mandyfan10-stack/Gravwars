@@ -29,6 +29,11 @@ export function buildPhysicsWorld(R: Rapier, map: MapData): PhysicsWorld {
       .setTranslation(b.pos[0], b.pos[1], b.pos[2])
       .setRotation({ x: b.quat[0], y: b.quat[1], z: b.quat[2], w: b.quat[3] }));
   }
+  for (const c of map.crates) {
+    const rot = { x: c.quat[0], y: c.quat[1], z: c.quat[2], w: c.quat[3] };
+    add((c.kind === 'crate' ? R.ColliderDesc.cuboid(c.half[0], c.half[1], c.half[2]) : R.ColliderDesc.cylinder(c.half[1], c.half[0]))
+      .setTranslation(c.pos[0], c.pos[1], c.pos[2]).setRotation(rot));
+  }
   for (const h of map.hulls) {
     if (!h.collide) continue;
     add(R.ColliderDesc.convexHull(new Float32Array(h.points)));

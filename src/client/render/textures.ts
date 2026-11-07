@@ -376,3 +376,58 @@ export function officeFacadeTexture(): [Texture, Texture] {
   }
   return [tex(c), tex(cw, false)];
 }
+
+/** Planks (texture = 2 × 2 m): crates, jetties, floors; near-white, tinted by the instance colour. */
+export function woodTexture(): Texture {
+  const S = 256;
+  const [c, g] = canvas(S);
+  const rng = new Rng(21);
+  g.fillStyle = grey(210);
+  g.fillRect(0, 0, S, S);
+  const boards = 8;
+  const bh = S / boards;
+  for (let r = 0; r < boards; r++) {
+    g.fillStyle = grey(rng.range(196, 246));
+    g.fillRect(0, r * bh + 1, S, bh - 2);
+    // grain
+    for (let k = 0; k < 7; k++) {
+      g.strokeStyle = grey(rng.range(150, 200), 0.35);
+      g.lineWidth = 1;
+      g.beginPath();
+      const y = r * bh + rng.range(3, bh - 3);
+      g.moveTo(0, y);
+      g.bezierCurveTo(S * 0.3, y + rng.range(-2, 2), S * 0.6, y + rng.range(-2, 2), S, y + rng.range(-1, 1));
+      g.stroke();
+    }
+    // butt joints
+    g.fillStyle = grey(120, 0.8);
+    g.fillRect(rng.range(0, S), r * bh, 2, bh);
+  }
+  speckle(g, S, rng, 400, 120, 200, 2, 0.2);
+  return tex(c);
+}
+
+/**
+ * Curtain-wall glazing (texture = 3 × 3 m): see-through panes (alpha), opaque mullions every 1.5 m both ways.
+ * Multiplied into a transparent material, so the colour is the instance tint and the panes keep ~30 % opacity.
+ */
+export function windowTexture(): Texture {
+  const S = 128;
+  const [c, g] = canvas(S);
+  g.clearRect(0, 0, S, S);
+  const grad = g.createLinearGradient(0, 0, S, S);
+  grad.addColorStop(0, 'rgba(235,245,255,0.30)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.40)');
+  grad.addColorStop(1, 'rgba(225,238,250,0.28)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, S, S);
+  g.fillStyle = 'rgba(70,76,84,1)';
+  const m = 3;
+  for (const p of [0, S / 2]) {
+    g.fillRect(p - m / 2, 0, m, S);
+    g.fillRect(0, p - m / 2, S, m);
+  }
+  g.fillRect(S - m / 2, 0, m, S);
+  g.fillRect(0, S - m / 2, S, m);
+  return tex(c);
+}

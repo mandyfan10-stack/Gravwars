@@ -6,25 +6,27 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { createSky, HAZE } from './sky';
+import { createSky, createSpace, HAZE } from './sky';
+import { createSun } from './sun';
 
-/** Sun direction in the local player's gravity frame (each team sees "its" sun). */
-const SUN_LOCAL = new Vector3(0.42, 0.78, 0.46).normalize();
+/** Fill light direction in the local player's gravity frame (the sun is always straight above: it is the centre). */
+const FILL_LOCAL = new Vector3(-0.55, 0.35, -0.6).normalize();
 
 /** Renderer, scene, camera, sky, lights and post-processing. */
 export class Graphics {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
-  readonly camera = new PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 3000);
+  readonly camera = new PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 1500);
   readonly composer: EffectComposer;
   readonly bloom: UnrealBloomPass;
   /** World-space sun / up of the local player's render frame. Updated by `updateLighting`. */
   readonly sunDir = new Vector3();
   readonly upDir = new Vector3();
-  private readonly sky: ReturnType<typeof createSky>;
+  private readonly space: ReturnType<typeof createSpace>;
+  private readonly sunView: ReturnType<typeof createSun>;
   private readonly hemi = new HemisphereLight(0xfff1dc, 0x8a7a62, 0.55);
   private readonly sun = new DirectionalLight(0xffeccc, 2.6);
-  private readonly fill = new DirectionalLight(0xc8d6ff, 0.5);
+  private readonly fill = new DirectionalLight(0xc8d6ff, 0.7);
 
   constructor(canvas: HTMLCanvasElement) {
     const renderer = (this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }));
@@ -36,10 +38,10 @@ export class Graphics {
     renderer.shadowMap.type = PCFShadowMap;
 
     const scene = this.scene;
-    scene.background = new Color(HAZE);
-    scene.fog = new FogExp2(HAZE, 0.0019);
+    scene.background = new Color(0x05070d);
+    // warm air inside the cube: the far faces fade a little, space behind the gaps does not
+    scene.fog = new FogExp2(HAZE, 0.0021);
 
-    this.sky = createSky();
     // image-based lighting from the (sunless) haze dome: soft warm ambient + reflections for glass/water
     {
       const envScene = new Scene();
@@ -51,7 +53,10 @@ export class Graphics {
       scene.environmentIntensity = 0.55;
       pm.dispose();
     }
-    scene.add(this.sky.sky);
+    this.space = createSpace();
+    scene.add(this.space.space);
+    this.sunView = createSun();
+    scene.add(this.sunView.group);
     scene.add(this.hemi);
 
     const sun = this.sun;
@@ -99,18 +104,23 @@ export class Graphics {
     this.composer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  /** Sky follows the camera; sun and sky live in the player's (eased) gravity frame. */
-  updateLighting(renderFrame: Quaternion) {
+  /**
+   * Space follows the camera; the sun sits in the centre of the cube, so its light comes from there towards the
+   * player (straight down on every face), the fill and the sky light live in the player's (eased) gravity frame.
+   */
+  updateLighting(renderFrame: Quaternion, time = 0) {
     const { camera, sunDir, upDir, sun } = this;
-    this.sky.sky.position.copy(camera.position);
-    sunDir.copy(SUN_LOCAL).applyQuaternion(renderFrame);
+    this.space.space.position.copy(camera.position);
+    this.space.uniforms.time.value = time;
+    this.sunView.update(time, camera);
     upDir.set(0, 1, 0).applyQuaternion(renderFrame);
-    this.sky.uniforms.sunDir.value.copy(sunDir);
-    this.sky.uniforms.upDir.value.copy(upDir);
+    sunDir.copy(camera.position).negate();
+    if (sunDir.lengthSq() < 1) sunDir.copy(upDir);
+    sunDir.normalize();
     this.hemi.position.copy(upDir);
     sun.target.position.copy(camera.position).addScaledVector(upDir, -10);
     sun.position.copy(sun.target.position).addScaledVector(sunDir, 200);
-    this.fill.position.copy(sunDir).negate().addScaledVector(upDir, 0.6);
+    this.fill.position.copy(FILL_LOCAL).applyQuaternion(renderFrame);
   }
 
   render(dt: number) {

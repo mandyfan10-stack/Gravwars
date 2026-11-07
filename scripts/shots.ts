@@ -153,7 +153,7 @@ const faceNpc = async (pick: string, dist: number, side = 0, pitch = -0.08) => {
   await g(`(() => { const G = __game, d = __npc.sim.state.pos.clone().sub(G.sim.state.pos); G.look(Math.atan2(-d.x, -d.z), ${pitch}); })()`);
 };
 // a bum having a drink
-await g(`(() => { const G = __game, n = G.npcs.npcs.find((n) => n.kind === 'bum' && n.island === 'red' && n.state !== 'dead');
+await g(`(() => { const G = __game, n = G.npcs.npcs.find((n) => n.kind === 'bum' && n.island === 'ny' && n.state !== 'dead');
   n.state = 'drink'; n.stateT = 0; window.__npc = n; })()`);
 await faceNpc('(n) => n === __npc', 2.6, 0.6, -0.12);
 await page.waitForTimeout(700);
@@ -163,12 +163,12 @@ await page.screenshot({ path: `${out}/12-bum.png` });
 // usually stirred them up, so calm the red gang first; the gangs hold the island's corners, so stand on the
 // island's side of one (towards the centre), not in front of it, where it may be the edge.
 await g(`(() => {
-  const G = __game, gang = G.npcs.npcs.filter((n) => n.kind === 'gang' && n.island === 'red' && n.state !== 'dead');
+  const G = __game, gang = G.npcs.npcs.filter((n) => n.kind === 'gang' && n.island === 'ny' && n.state !== 'dead');
   for (const n of gang) { n.state = 'patrol'; n.stateT = 0; n.foe = null; n.suspicion.clear(); n.fire = 'free'; n.windT = 0; n.throwing = false; n.lastSeen = null; n.searchAt = null; }
   const n = gang[0], p = n.sim.state.pos, V = p.constructor;
   window.__npc = n;
   // hold it still: a one-point route, already reached = it stands and looks around (as at a patrol stop)
-  const M = G.npcs, isl = M.islands.find((i) => i.id === 'red'), l = M.toLocal(isl, p);
+  const M = G.npcs, isl = M.islands.find((i) => i.id === 'ny'), l = M.toLocal(isl, p);
   n.route = [[l.x, l.z]]; n.wp = 0;
   const toCentre = new V(-p.x, 0, -p.z).normalize();
   G.sim.state.pos.copy(p).addScaledVector(toCentre, 7);
@@ -235,37 +235,30 @@ await hold(null);
 await page.waitForTimeout(900);
 await page.screenshot({ path: `${out}/19-materials.png` });
 
-// windows: rooms behind the glass on an old-town house, then the towers along the street
-const facing = async (pick: string, dist: number, pitch: number) => {
-  await g(`(() => {
-  const G = __game, sp = G.map.spawns.red.pos, h = [...G.map.houses].sort((a, b) => Math.hypot(a.pos[0] - sp[0], a.pos[1] - sp[1], a.pos[2] - sp[2]) - Math.hypot(b.pos[0] - sp[0], b.pos[1] - sp[1], b.pos[2] - sp[2]))${pick};
-  const V = G.sim.state.pos.constructor, Q = G.camera.quaternion.constructor;
-  const q = new Q(...h.quat), out = new V(0, 0, 1).applyQuaternion(q);
-  G.sim.state.pos.set(...h.pos).addScaledVector(out, h.size[2] / 2 + ${dist}).add(new V(0, 0.95, 0));
-  G.sim.state.vel.set(0, 0, 0); G.sim.mover.place(G.sim.state); G.local.snap();
-  window.__face = out;
+// the city: a street of the home face, a tower from the inside, the cube overhead with the sun
+const stand = (x: number, y: number, z: number, yaw: number, pitch: number) => g(`(() => {
+  const G = __game; G.sim.setGravity(new G.sim.state.pos.constructor(0, -1, 0));
+  G.sim.state.frame.identity(); G.sim.state.pos.set(${x}, -138 + ${y}, ${z}); G.sim.state.vel.set(0, 0, 0);
+  G.sim.mover.place(G.sim.state); G.local.snap(); G.look(${yaw}, ${pitch});
 })()`);
-  await page.waitForTimeout(200);
-  await g(`__game.look(Math.atan2(__face.x, __face.z), ${pitch})`);
-};
-await facing('[3]', 7, 0.22);
+await stand(18, 1.2, -30, 0, 0.05);
 await page.waitForTimeout(900);
-await page.screenshot({ path: `${out}/20-windows.png` });
-await g(`(() => {
-  const G = __game, n = G.npcs.npcs.find((n) => n.kind === 'bum' && n.island === 'red'), p = n.sim.state.pos;
-  G.sim.state.pos.copy(p).add(new p.constructor(0.8, 0.1, 0));
-  G.sim.state.vel.set(0, 0, 0); G.sim.mover.place(G.sim.state); G.local.snap();
-  const towers = G.map.buildings.filter((b) => b.style === 'tower' && Math.abs(b.pos[1] - p.y) < 120);
-  towers.sort((a, b) => Math.hypot(a.pos[0] - p.x, a.pos[2] - p.z) - Math.hypot(b.pos[0] - p.x, b.pos[2] - p.z));
-  window.__tower = towers.find((b) => Math.hypot(b.pos[0] - p.x, b.pos[2] - p.z) > 25) ?? towers[0];
-})()`);
-await page.waitForTimeout(200);
-// towers stand on some islands only
-if (await g('!!window.__tower')) {
-  await g(`(() => { const G = __game, t = __tower, p = G.sim.state.pos; G.look(Math.atan2(-(t.pos[0] - p.x), -(t.pos[2] - p.z)), 0.3); })()`);
-  await page.waitForTimeout(700);
-  await page.screenshot({ path: `${out}/21-towers.png` });
+await page.screenshot({ path: `${out}/20-street.png` });
+// the tile of the home face with the tallest glass (a tower), entered at its middle
+const tower = await g(`(() => {
+  let best = null;
+  for (const b of __game.map.boxes) if (b.mat === 'window' && b.pos[1] < -90 && (Math.abs(b.pos[0]) > 20 || Math.abs(b.pos[2]) > 20)
+    && (!best || b.half[1] > best.half[1])) best = b;
+  return best && [Math.round(best.pos[0] / 36) * 36, Math.round(best.pos[2] / 36) * 36];
+})()`) as [number, number] | null;
+if (tower) {
+  await stand(tower[0] + 2, 0.15 + 9 + 1.2, tower[1] + 2, 0, 0);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: `${out}/21-tower-inside.png` });
 }
+await stand(18, 1.2, -30, 0, 1.2);
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/22-cube.png` });
 await browser.close();
 if (errors.length) console.log('page errors:\n' + errors.slice(0, 10).join('\n'));
 console.log('saved to', out);

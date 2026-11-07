@@ -4,7 +4,8 @@ import { STAMINA } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
 import { ITEMS } from '../shared/economy';
 import { isGun, WEAPONS, WeaponState } from '../shared/weapons';
-import { teamByDown } from '../shared/teams';
+import { faceByUp } from '../shared/map';
+import { getTeam, TeamId } from '../shared/teams';
 import { icon, IconName } from './icons';
 import type { ViewTool } from './render/viewmodel';
 
@@ -145,14 +146,14 @@ export class Hud {
     _up.set(0, 1, 0).applyQuaternion(s.frame);
     const planar = s.vel.clone().addScaledVector(_up, -s.vel.dot(_up)).length();
     this.speed.textContent = String(Math.round(planar / HU));
-    // -Z is no team's gravity: the central city and the bridges
-    const down = sim.gravityDown(_down);
-    const team = Math.abs(down.z) > 0.9 ? null : teamByDown(down);
-    const id = team?.id ?? 'center';
+    // the face whose gravity you have: a team's base or a neutral city
+    const face = faceByUp(sim.map, _down.set(0, 1, 0).applyQuaternion(s.frame));
+    const team = face?.team ? getTeam(face.team as TeamId) : null;
+    const id = face?.id ?? '';
     if (id !== this.lastTeam) {
       this.lastTeam = id;
       this.gravDot.style.color = team ? '#' + team.color.toString(16).padStart(6, '0') : '#e8e2d0';
-      this.gravName.textContent = `Гравитация: ${team ? team.name : 'центр'}`;
+      this.gravName.textContent = `Гравитация: ${team ? team.name : 'нейтральная грань'}`;
     }
     // sprint stamina: hidden while full
     const st = s.stamina / STAMINA.max;

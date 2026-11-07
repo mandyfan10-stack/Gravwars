@@ -10,8 +10,8 @@ const _p = new Vector3();
 const _d = new Vector3();
 
 /**
- * New-player guidance: an objective line that follows where you are (hall → bridge stub → bridge → centre →
- * enemy lane → enemy hall → crystal), and screen markers for every crystal still standing, with the distance.
+ * New-player guidance: an objective line that follows where you are (hall → rim → bridge → neutral face →
+ * enemy face → enemy hall → crystal), and screen markers for every crystal still standing, with the distance.
  */
 export class Guide {
   private readonly tip = document.getElementById('objective')!;
@@ -36,17 +36,15 @@ export class Guide {
     const team = (id: TeamId) => `<b style="color:${teamHex(getTeam(id).color)}">${getTeam(id).name}</b>`;
     if (!m.bed(m.team).alive) return ['lost', 'Твой кристалл сломан — следующая смерть станет последней'];
     if (loc.kind === 'air') return [this.tipKey, this.tip.innerHTML];
-    if (loc.kind === 'center') {
-      if (Math.max(Math.abs(loc.x), Math.abs(loc.z)) > this.sim.map.centerHalf)
-        return ['bridge', 'Мост: держи пол под ногами — <kbd>B</kbd>, плита «Пол» над пустотой стоит 1 материал. Упадёшь — конец'];
-      return ['center', 'Центр: генераторы кристаллов на площади, нейтральные магазины на рынках. Мосты к базам идут по бульварам'];
-    }
-    const id = loc.island as TeamId;
-    if (id === m.team && loc.hall) return ['home-hall', 'Выходи из зала и иди в <b>опору моста</b> на площади перед ним — гравитация повернёт тебя к центру'];
-    if (id === m.team) return ['home-street', 'Опора моста — бетонная полоса посреди площади. Подойди к ней вплотную: она станет полом'];
+    if (loc.lane) return ['bridge', 'Мост: держи пол под ногами — <kbd>B</kbd>, форма на <kbd>Q</kbd>, 1 материал = 1 плита. До угла полом, дальше лестницей вверх по стене. Упадёшь — конец'];
+    const face = this.sim.map.faces.find((f) => f.id === loc.face);
+    const id = face?.team as TeamId | null;
+    if (!id) return ['neutral', 'Нейтральная грань: генераторы кристаллов на площади в центре, магазины на рынках'];
+    if (id === m.team && loc.hall) return ['home-hall', 'Выходи из зала к краю грани: за бордюром щель у ребра куба, через неё строится мост на соседнюю грань'];
+    if (id === m.team) return ['home-street', 'Мост: с края грани полом до угла, потом лестницей вверх по стене соседней грани — и шагни на неё'];
     if (!m.bed(id).alive) return [`done-${id}`, `Кристалл ${team(id)} сломан — добей оставшихся бойцов`];
     if (loc.hall) return [`hall-${id}`, 'Пробей стену вокруг кристалла и держи <kbd>E</kbd> рядом с ним'];
-    return [`street-${id}`, `База: ${team(id)}. Кристалл в зале — две двери с улицы и два спуска с крыши`];
+    return [`street-${id}`, `База: ${team(id)}. Кристалл в зале в центре грани — две двери с улицы и два спуска с крыши`];
   }
 
   update(camera: PerspectiveCamera) {

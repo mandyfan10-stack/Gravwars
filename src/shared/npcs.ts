@@ -2,7 +2,7 @@ import { Quaternion, Vector3 } from 'three';
 import { Combat, Noise, Target } from './combat';
 import { DEFAULT_MOVEMENT, EYE_OFFSET } from './constants';
 import type { Pickups } from './economy';
-import type { IslandNav, MapData, XZ } from './map';
+import { FaceNav, MapData, navPath, XZ } from './map';
 import { Rng, upOf } from './math';
 import { emptyInput, MoveInput, moveBasis } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
@@ -106,7 +106,7 @@ export type NpcState = 'wander' | 'drink' | 'fight' | 'patrol' | 'search' | 'com
 export interface Npc {
   id: number;
   kind: NpcKind;
-  /** Island id: a team id or 'center'. */
+  /** Face id (map.faces). */
   island: string;
   /** Gang index on its island (bums: -1). */
   slot: number;
@@ -169,29 +169,6 @@ const _fwd = new Vector3();
 const _right = new Vector3();
 const _inv = new Quaternion();
 
-/** Shortest path over the road graph between two nodes (Dijkstra; the graphs have ~30 nodes). */
-export function navPath(nav: IslandNav, from: number, to: number): number[] {
-  const n = nav.nodes.length;
-  const d = (a: number, b: number) => Math.hypot(nav.nodes[a][0] - nav.nodes[b][0], nav.nodes[a][1] - nav.nodes[b][1]);
-  const adj: number[][] = Array.from({ length: n }, () => []);
-  for (const [a, b] of nav.edges) { adj[a].push(b); adj[b].push(a); }
-  const dist = new Array<number>(n).fill(Infinity);
-  const prev = new Array<number>(n).fill(-1);
-  const done = new Array<boolean>(n).fill(false);
-  dist[from] = 0;
-  for (;;) {
-    let u = -1;
-    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < Infinity && (u < 0 || dist[i] < dist[u])) u = i;
-    if (u < 0 || u === to) break;
-    done[u] = true;
-    for (const v of adj[u]) if (dist[u] + d(u, v) < dist[v]) { dist[v] = dist[u] + d(u, v); prev[v] = u; }
-  }
-  if (dist[to] === Infinity) return [to];
-  const path: number[] = [];
-  for (let u = to; u >= 0; u = prev[u]) path.unshift(u);
-  return path;
-}
-
 interface Island {
   id: string;
   up: Vector3;
@@ -199,8 +176,8 @@ interface Island {
   /** Ground centre. */
   origin: Vector3;
   half: number;
-  nav: IslandNav;
-  /** Nodes where NPCs may stand (not at the bridge stub / central square). */
+  nav: FaceNav;
+  /** Nodes where NPCs may stand (not at the hall / the square, not at the rim). */
   street: number[];
   gangHome: number;
   gangPatrol: number[];
@@ -233,14 +210,14 @@ export class NpcManager {
     // drops land under a dying body (or a crowd): the ray must not stop on capsules
     pickups.passThrough ??= combat.notCharacter;
     let id = 500;
-    for (const def of map.islands) {
+    for (const def of map.faces) {
       const nav = map.nav[def.id];
       if (!nav) continue;
       const up = new Vector3(...def.up);
       const isl: Island = { id: def.id, up, q: new Quaternion(...def.quat), origin: new Vector3(...def.origin), half: def.half,
         nav, street: [], gangHome: 0, gangPatrol: [], busy: false };
       const dl = (i: number) => Math.hypot(nav.nodes[i][0] - nav.hub[0], nav.nodes[i][1] - nav.hub[1]);
-      // not at the stub / square, not at the torn edges (road ends hang over the void)
+      // not at the hall / square, not at the rim (road ends at the gap)
       const inner = (i: number) => Math.max(Math.abs(nav.nodes[i][0]), Math.abs(nav.nodes[i][1])) < def.half - 10;
       isl.street = nav.nodes.map((_, i) => i).filter((i) => dl(i) > 10 && inner(i));
       // the gang holds the corner furthest from the hub (and so from the way to the bridge)
@@ -248,7 +225,7 @@ export class NpcManager {
       const near = nav.edges.filter(([a, b]) => a === isl.gangHome || b === isl.gangHome).map(([a, b]) => (a === isl.gangHome ? b : a));
       isl.gangPatrol = [isl.gangHome, ...near.filter((i) => isl.street.includes(i))];
       this.islands.push(isl);
-      const more = def.team ? 1 : 2; // the central city is bigger and rougher
+      const more = def.team ? 1 : 2; // neutral faces are rougher
       for (let k = 0; k < (opts.bums ?? NPC.bumsPerIsland) * more; k++) this.npcs.push(this.create(R, world, id++, 'bum', isl, -1));
       for (let k = 0; k < (opts.gang ?? NPC.gangSize) + (more - 1) * 2; k++) this.npcs.push(this.create(R, world, id++, 'gang', isl, k));
     }

@@ -1,8 +1,8 @@
 import { Quaternion, Vector3 } from 'three';
-import { BlockSystem } from './blocks';
+import { BlockSystem, PiecePlan } from './blocks';
 import { Combat, MAX_HP, Target } from './combat';
 import { EYE_OFFSET, PLAYER_HEIGHT } from './constants';
-import type { IslandNav, LaneDef, MapData } from './map';
+import { FaceId, FaceNav, HALL_H, LaneDef, MapData, navPath, nearestNode } from './map';
 import { BED_BREAK_TIME, Match } from './match';
 import { Rng, upOf } from './math';
 import { emptyInput, MoveInput, moveBasis } from './movement';
@@ -69,20 +69,23 @@ export type BotRoster = Partial<Record<TeamId, Difficulty[]>>;
 
 type XZ = [number, number];
 /**
- * Where a bot stands: on an island (a base: `hall` = inside its hall, `roof` = on the hall roof) or on something
- * level with the central city (the city itself, the bridges, the bridge stubs), or in the air (no steering then).
- * x / z / h are in the frame of that surface.
+ * Where a bot stands: on a face of the cube (`hall` = inside its team hall, `roof` = on the hall roof; `lane` = on
+ * the bridge of one of this face's lanes, beyond its rim), or in the air (no steering then). x / z / h are in the
+ * face's frame.
  */
 export type Loc =
-  | { kind: 'island'; island: string; x: number; z: number; h: number; hall: boolean; roof: boolean }
-  | { kind: 'center'; x: number; z: number; h: number }
+  | { kind: 'face'; face: FaceId; x: number; z: number; h: number; hall: boolean; roof: boolean; lane: LaneDef | null }
   | { kind: 'air' };
 type Ground = Exclude<Loc, { kind: 'air' }>;
 
-interface IslandInfo { id: string; up: Vector3; q: Quaternion; inv: Quaternion; origin: Vector3; half: number; nav: IslandNav }
+interface FaceInfo { id: FaceId; team: string | null; up: Vector3; q: Quaternion; inv: Quaternion; origin: Vector3; half: number; nav: FaceNav }
 
-/** Hall height (map.ts genHall): above this - 1 m = on the roof. */
-const HALL_ROOF = 7;
+/** A route on the current face: face-local XZ points and what to do at the end (see `route`). */
+/**
+ * `strict`: points from this index on are a bridge lane: never skipped when stuck, no detours (a detour off a lane is
+ * a fall into the void).
+ */
+interface Route { key: string; pts: XZ[]; end: 'go' | 'bed' | 'hold'; push?: boolean; lane?: LaneDef; strict?: number }
 
 export type BotRole = 'defend' | 'attack';
 
@@ -99,6 +102,8 @@ export interface Bot {
   weapons: WeaponState;
   /** Team whose crystal the attacker is going for. */
   goal: TeamId | null;
+  /** Lives so far: picks a different face to cross when the goal is on the opposite face. */
+  trip: number;
   /** Match time when the attacker sets off. */
   departAt: number;
   respawnT: number;
@@ -146,29 +151,29 @@ const _right = new Vector3();
 
 /**
  * Bots: same movement / physics / weapons as the player. Navigation follows the map's structure:
- * hall → front door → walk into the bridge stub (gravity turns onto it) → along the own lane, laying floor pieces
- * over the void → central city → the target's lane → its stub → walk into its island → door → crystal.
+ * hall → door → roads to a bridge lane at the rim → along the lane (laying its missing pieces) to the corner, up the
+ * next face's wall, off the landing onto that face → (the opposite face: through a neighbour) → door → crystal.
  * A cheap local planner (line-of-sight detours) gets around obstacles on each surface.
  */
 export class BotManager {
   readonly bots: Bot[] = [];
   private readonly rng = new Rng(4242);
-  private readonly islands: IslandInfo[];
-  private readonly centerQ: Quaternion;
-  private readonly centerInv: Quaternion;
-  /** Teams with an island (the others do not play). */
+  private readonly faces: FaceInfo[];
+  /** Lane pieces as build plans (bots lay the missing ones as they walk a lane). */
+  private readonly lanePlans = new Map<string, PiecePlan[]>();
+  /** Teams with a face (the others do not play). */
   private readonly teams: TeamId[];
 
   constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private combat: Combat,
     private match: Match, private blocks: BlockSystem, readonly playerTeam: TeamId, perTeam = BOT.perTeam, roster?: BotRoster) {
     this.teams = map.teams as TeamId[];
-    this.islands = map.islands.filter((i) => i.team).map((i) => {
-      const q = new Quaternion(...i.quat);
-      return { id: i.id, up: new Vector3(...i.up), q, inv: q.clone().invert(), origin: new Vector3(...i.origin), half: i.half, nav: map.nav[i.id] };
+    this.faces = map.faces.map((f) => {
+      const q = new Quaternion(...f.quat);
+      return { id: f.id, team: f.team, up: new Vector3(...f.up), q, inv: q.clone().invert(), origin: new Vector3(...f.origin), half: f.half, nav: map.nav[f.id] };
     });
-    const c = map.islands.find((i) => i.id === 'center')!;
-    this.centerQ = new Quaternion(...c.quat);
-    this.centerInv = this.centerQ.clone().invert();
+    for (const l of map.lanes) this.lanePlans.set(l.id, l.pieces.map((p) => ({
+      kind: p.kind, center: new Vector3(...p.center), half: new Vector3(...p.half), quat: new Quaternion(...p.quat), key: p.key, level: p.level,
+    })));
     match.membersAlive = (team) => this.bots.filter((b) => b.team === team && !b.out).length;
     match.characterFilter = combat.notCharacter;
     let id = 100;
@@ -192,7 +197,7 @@ export class BotManager {
         };
         combat.targets.push(target);
         const bot: Bot = {
-          id: target.id, team: t.id, role, slot, tune, sim, target, weapons: createWeaponState(), goal: null,
+          id: target.id, team: t.id, role, slot, tune, sim, target, weapons: createWeaponState(), goal: null, trip: slot,
           departAt: role === 'attack' ? tune.firstAttack + tune.attackStagger * wave++ : Infinity,
           respawnT: 0, out: false, enemy: null, seenT: 0, scanT: this.rng.range(0, 0.15), shots: 0, shotsTotal: 0, pauseT: 0,
           routeKey: '', routePts: [], wp: 0, detour: null, checkT: 0, progressT: 0, bestDist: Infinity, stuckT: 0, jumpT: 0,
@@ -227,6 +232,7 @@ export class BotManager {
     bot.routeKey = '';
     bot.enemy = null;
     bot.bedT = 0;
+    bot.trip++;
   }
 
   /** Dead bots wait far away so their capsule does not block anybody. */
@@ -239,28 +245,42 @@ export class BotManager {
 
   // --- geometry helpers --------------------------------------------------------------------------
 
+  private face(id: FaceId) {
+    return this.faces.find((f) => f.id === id)!;
+  }
+
+  /** The face of a team. */
+  private teamFace(team: TeamId) {
+    return this.faces.find((f) => f.team === team) ?? this.faces[0];
+  }
+
   /** Where the bot is (see Loc). */
   locate(sim: PlayerSim): Loc {
     if (!sim.state.onGround) return { kind: 'air' };
     const up = upOf(sim.state.frame, _up);
-    if (up.z > 0.99) {
-      const l = _v.copy(sim.state.pos).applyQuaternion(this.centerInv);
-      return { kind: 'center', x: l.x, z: l.z, h: l.y };
+    const f = this.faces.find((i) => i.up.dot(up) > 0.99);
+    if (!f) return { kind: 'air' };
+    const l = _v.copy(sim.state.pos).sub(f.origin).applyQuaternion(f.inv);
+    if (l.y < -3 || l.y > 2 * this.map.cube.half) return { kind: 'air' };
+    let lane: LaneDef | null = null;
+    if (Math.max(Math.abs(l.x), Math.abs(l.z)) > f.half) {
+      // beyond the rim: on the bridge of one of this face's lanes (or on somebody's own stray floor)
+      let bd = 10;
+      for (const L of this.map.lanes) {
+        if (L.a !== f.id) continue;
+        const d = polyDist(L.pathA, l.x, l.z);
+        if (d < bd) { bd = d; lane = L; }
+      }
     }
-    const isl = this.islands.find((i) => i.up.dot(up) > 0.99);
-    if (!isl) return { kind: 'air' };
-    const l = _v.copy(sim.state.pos).sub(isl.origin).applyQuaternion(isl.inv);
-    if (l.y < -1 || l.y > 60 || Math.max(Math.abs(l.x), Math.abs(l.z)) > isl.half + 1) return { kind: 'air' };
-    const hall = isl.nav.hall!;
-    const inRect = Math.max(Math.abs(l.x - hall.c[0]), Math.abs(l.z - hall.c[1])) < hall.half - 0.3;
-    return { kind: 'island', island: isl.id, x: l.x, z: l.z, h: l.y, hall: inRect && l.y < HALL_ROOF - 1, roof: inRect && l.y > HALL_ROOF - 1 };
+    const hall = f.nav.hall;
+    const inRect = !!hall && Math.max(Math.abs(l.x - hall.c[0]), Math.abs(l.z - hall.c[1])) < hall.half - 0.3;
+    return { kind: 'face', face: f.id, x: l.x, z: l.z, h: l.y, hall: inRect && l.y < HALL_H - 1, roof: inRect && l.y > HALL_H - 1, lane };
   }
 
-  /** Local XZ on the bot's current surface → world point at the bot's height. */
+  /** Local XZ on the bot's current face → world point at the bot's height. */
   private toWorld(loc: Ground, p: XZ, out = new Vector3()) {
-    if (loc.kind === 'center') return out.set(p[0], loc.h, p[1]).applyQuaternion(this.centerQ);
-    const isl = this.islands.find((i) => i.id === loc.island)!;
-    return out.set(p[0], loc.h, p[1]).applyQuaternion(isl.q).add(isl.origin);
+    const f = this.face(loc.face);
+    return out.set(p[0], loc.h, p[1]).applyQuaternion(f.q).add(f.origin);
   }
 
   /** Walkable straight line? Rays at knee and chest height; characters do not count. */
@@ -304,80 +324,87 @@ export class BotManager {
     return bot.goal;
   }
 
+  /** Face to cross to next on the way from `from` to `to`: the goal itself if adjacent, else one of the four between. */
+  private nextFace(bot: Bot, from: FaceId, to: FaceId): FaceId {
+    const a = this.face(from), b = this.face(to);
+    if (Math.abs(a.up.dot(b.up)) < 0.5) return to;
+    const between = this.faces.filter((f) => Math.abs(f.up.dot(a.up)) < 0.5).map((f) => f.id).sort();
+    return between[(bot.id + bot.trip) % between.length];
+  }
+
+  private laneBetween(a: FaceId, b: FaceId): LaneDef {
+    return this.map.lanes.find((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a))!;
+  }
+
+  /** Road points from the bot to a node of the face's road graph (the first node is skipped if it lies behind). */
+  private roads(loc: Ground, to: number): XZ[] {
+    const nav = this.map.nav[loc.face];
+    const pts = navPath(nav, nearestNode(nav, [loc.x, loc.z]), to).map((i) => nav.nodes[i]);
+    if (pts.length > 1) {
+      const [a, b] = pts;
+      if (Math.hypot(loc.x - b[0], loc.z - b[1]) < Math.hypot(a[0] - b[0], a[1] - b[1])) pts.shift();
+    }
+    return pts;
+  }
+
   /**
-   * Route on the current surface: local XZ points + what to do at the end. `push`: the last point lies inside a wall
-   * that turns the gravity (stub, island ground): walk straight into it, no detours.
+   * Route on the current face: local XZ points + what to do at the end. `push`: the last point lies inside a surface
+   * that turns the gravity (the next face's ground, a lane's landing): walk straight into it, no detours.
+   * `lane`: the bridge the route uses (its missing pieces are laid on the way).
    */
-  private route(bot: Bot, loc: Ground): { key: string; pts: XZ[]; end: 'go' | 'bed' | 'hold'; push?: boolean } {
-    const goal = this.heading(bot);
-    if (loc.kind === 'center') return this.laneRoute(goal, loc);
-    const N = this.map.nav[loc.island];
-    const [hx, hz] = N.hall!.c;
-    const doors = N.doors!;
-    if (loc.roof) return { key: `roof:${loc.island}`, pts: [[hx + 10, hz + 10], [hx + 10, hz], [hx + 10, hz - 10]], end: 'go' };
-    if (loc.island === goal) {
-      if (!loc.hall) {
-        const k = Math.hypot(loc.x - doors[0].out[0], loc.z - doors[0].out[1]) <= Math.hypot(loc.x - doors[1].out[0], loc.z - doors[1].out[1]) ? 0 : 1;
-        return { key: `enter:${loc.island}:${k}`, pts: [doors[k].out, doors[k].in], end: 'go' };
+  private route(bot: Bot, loc: Ground): Route {
+    const goal = this.teamFace(this.heading(bot)).id;
+    const N = this.map.nav[loc.face];
+    const here = loc.face;
+    // on a bridge of this face: on along it towards the next face, or back into the city
+    if (loc.lane) {
+      const L = loc.lane;
+      const next = here === goal ? null : this.nextFace(bot, here, goal);
+      if (next === L.b) return { key: `lane:${L.id}`, pts: rest(L.pathA, loc.x, loc.z), end: 'go', push: true, lane: L, strict: 0 };
+      return { key: `back:${L.id}`, pts: rest(L.back, loc.x, loc.z), end: 'go', lane: L, strict: 0 };
+    }
+    if (N.hall) {
+      const [hx, hz] = N.hall.c;
+      const doors = N.doors!;
+      if (loc.roof) return { key: `roof:${here}`, pts: [[hx + 10, hz + 10], [hx + 10, hz], [hx + 10, hz - 10]], end: 'go' };
+      if (here === goal) {
+        if (!loc.hall) {
+          const k = Math.hypot(loc.x - doors[0].out[0], loc.z - doors[0].out[1]) <= Math.hypot(loc.x - doors[1].out[0], loc.z - doors[1].out[1]) ? 0 : 1;
+          return { key: `enter:${here}:${k}`, pts: [...this.roads(loc, nearestNode(N, doors[k].out)), doors[k].out, doors[k].in], end: 'go' };
+        }
+        if (goal !== this.teamFace(bot.team).id && this.match.bed(this.heading(bot)).alive)
+          return { key: `bed:${goal}:${bot.stand}`, pts: [N.bedStands![bot.stand % N.bedStands!.length]], end: 'bed' };
+        return { key: `patrol:${here}:${bot.patrol}`, pts: [N.patrol![bot.patrol % N.patrol!.length]], end: 'hold' };
       }
-      if (goal !== bot.team && this.match.bed(goal).alive) return { key: `bed:${goal}:${bot.stand}`, pts: [N.bedStands![bot.stand % N.bedStands!.length]], end: 'bed' };
-      return { key: `patrol:${loc.island}:${bot.patrol}`, pts: [N.patrol![bot.patrol % N.patrol!.length]], end: 'hold' };
     }
-    // leave: out of the front door (around the crystal's fort), then into the stub
-    if (loc.hall) return { key: `exit:${loc.island}`, pts: [[hx + Math.sign(loc.x - hx || 1) * 4.5, hz - 7], doors[0].in, doors[0].out], end: 'go' };
-    return { key: `stub:${loc.island}`, pts: [N.stub![0], N.stub![1]], end: 'go', push: true };
+    const next = this.nextFace(bot, here, goal);
+    const L = this.laneBetween(here, next);
+    const exit = L.a === here ? L.nodeA : L.nodeB;
+    // leave the hall by the door on the side of the exit (around the crystal's fort)
+    if (loc.hall && N.hall) {
+      const [hx, hz] = N.hall.c;
+      const doors = N.doors!;
+      const e = N.nodes[exit];
+      const k = Math.hypot(e[0] - doors[0].out[0], e[1] - doors[0].out[1]) <= Math.hypot(e[0] - doors[1].out[0], e[1] - doors[1].out[1]) ? 0 : 1;
+      const sz = k === 0 ? -1 : 1;
+      return { key: `exit:${here}:${k}`, pts: [[hx + Math.sign(loc.x - hx || 1) * 4.5, hz + sz * 7], doors[k].in, doors[k].out], end: 'go' };
+    }
+    const roads = this.roads(loc, exit);
+    if (L.a === here) return { key: `lane:${L.id}`, pts: [...roads, ...L.pathA], end: 'go', push: true, lane: L, strict: roads.length };
+    return { key: `land:${L.id}`, pts: [...roads, ...L.pathB], end: 'go', push: true, lane: L, strict: roads.length };
   }
 
-  /** The lane a point beyond the city's rim is on (bridges and stubs), or null inside the city. */
-  private laneAt(x: number, z: number): TeamId | null {
-    const H = this.map.centerHalf;
-    if (Math.max(Math.abs(x), Math.abs(z)) < H) return null;
-    let best: TeamId | null = null;
-    let bd = Infinity;
-    for (const t of this.teams) {
-      const L = this.map.lanes[t];
-      // distance to the segment rim → base
-      const dx = L.base[0] - L.rim[0], dz = L.base[1] - L.rim[1];
-      const k = Math.max(0, Math.min(1, ((x - L.rim[0]) * dx + (z - L.rim[1]) * dz) / (dx * dx + dz * dz)));
-      const d = Math.hypot(x - L.rim[0] - dx * k, z - L.rim[1] - dz * k);
-      if (d < bd) { bd = d; best = t; }
-    }
-    return best;
-  }
-
-  /** On the central city / a bridge: along own lane into the city, across the square, out along the goal's lane. */
-  private laneRoute(goal: TeamId, loc: Extract<Loc, { kind: 'center' }>): { key: string; pts: XZ[]; end: 'go'; push: boolean } {
-    const G: LaneDef = this.map.lanes[goal];
-    const on = this.laneAt(loc.x, loc.z);
-    if (on === goal) return { key: `lane:${goal}:out`, pts: [G.base], end: 'go', push: true };
-    const pts: XZ[] = [];
-    if (on) {
-      const S = this.map.lanes[on];
-      pts.push(S.rim, S.hub);
-    } else if (Math.min(Math.abs(loc.x), Math.abs(loc.z)) > 8) {
-      // off the boulevards (chased into the streets): back to the nearest one first
-      pts.push(Math.abs(loc.x) < Math.abs(loc.z) ? [0, loc.z] : [loc.x, 0]);
-    }
-    pts.push(G.hub, G.rim, G.base);
-    return { key: `lane:${goal}:${on ?? 'city'}`, pts, end: 'go', push: true };
-  }
-
-  /** Bridge building: on a lane beyond the rim, lay a floor piece ahead if there is nothing to walk on. */
-  private bridge(bot: Bot, loc: Ground, wish: Vector3, dt: number) {
-    if (loc.kind !== 'center' || wish.lengthSq() < 0.01) return;
-    if (Math.max(Math.abs(loc.x), Math.abs(loc.z)) < this.map.centerHalf - 5) return;
+  /** On the way along a lane: lay its missing pieces near the bot (free for now; bots will carry material later). */
+  private bridge(bot: Bot, lane: LaneDef | undefined, dt: number) {
+    if (!lane) return;
     bot.buildT -= dt;
     if (bot.buildT > 0) return;
-    bot.buildT = 0.1;
-    const s = bot.sim.state;
-    const up = upOf(s.frame, _up).clone();
-    const plan = this.blocks.plan('floor', s.pos, up, wish);
-    if (!plan) return;
-    // something to walk on there already (the city, a stub, a piece somebody built)?
-    const from = plan.center.clone().addScaledVector(up, 0.6);
-    const hit = this.world.castRay(new this.R.Ray(from, up.clone().negate()), 1, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
-    if (hit) return;
-    this.blocks.place(plan, 'wood', bot.team, true);
+    bot.buildT = 0.15;
+    const pos = bot.sim.state.pos;
+    for (const p of this.lanePlans.get(lane.id)!) {
+      if (p.center.distanceToSquared(pos) > 8 * 8) continue;
+      this.blocks.place(p, 'wood', bot.team, true);
+    }
   }
 
   private findEnemy(bot: Bot, eye: Vector3): Target | null {
@@ -510,10 +537,21 @@ export class BotManager {
       const pts = bot.routePts;
       const goalXZ = pts[Math.min(bot.wp, pts.length - 1)];
       const goal = this.toWorld(loc, goalXZ);
+      // on a lane: follow the line between its points (a point 2 m ahead on it), not a cut from where the bot stands
+      // (a cut runs along the next face's wall, and touching that wall turns the gravity)
+      let carrot: XZ | null = null;
+      if (r.strict !== undefined && bot.wp > r.strict && bot.wp < pts.length) {
+        const a = pts[bot.wp - 1], b = pts[bot.wp];
+        const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz) || 1;
+        const k = Math.max(0, Math.min(1, ((loc.x - a[0]) * dx + (loc.z - a[1]) * dz) / (len * len) + 2 / len));
+        carrot = [a[0] + dx * k, a[1] + dz * k];
+      }
       const planar = (p: Vector3) => { _v.copy(p).sub(s.pos); return _v.addScaledVector(up, -_v.dot(up)); };
       const dist = planar(goal).length();
       const last = bot.wp >= pts.length - 1;
-      if (!last && dist < 0.9) bot.wp++;
+      const strict = r.strict !== undefined && bot.wp >= r.strict;
+      const advance = !last && dist < (strict ? 0.5 : 0.9);
+      if (advance) bot.wp++;
       // reached the end of a 'go' route but nothing happened (the gravity did not turn): re-plan
       if (last && r.end === 'go' && dist < 0.6) bot.routeKey = '';
       const arrived = last && r.end !== 'go' && dist < 0.6;
@@ -521,7 +559,7 @@ export class BotManager {
       // local planner: if the straight line is blocked, pick a detour point that sees both ends
       const push = !!r.push && last;
       bot.checkT -= dt;
-      if (push) bot.detour = null;
+      if (push || strict) bot.detour = null;
       else if (!arrived && bot.checkT <= 0) {
         bot.checkT = 0.5;
         if (bot.detour) {
@@ -529,19 +567,21 @@ export class BotManager {
           if (planar(d).length() < 0.9 || this.clear(sim, s.pos, goal)) bot.detour = null;
         } else if (!this.clear(sim, s.pos, goal)) bot.detour = this.findDetour(bot, loc, goal);
       }
-      const steerTo = bot.detour ? this.toWorld(loc, bot.detour) : goal;
+      const steerTo = bot.detour ? this.toWorld(loc, bot.detour) : carrot ? this.toWorld(loc, carrot) : goal;
       if (!arrived) wish.copy(planar(steerTo)).normalize();
-      this.bridge(bot, loc, wish, dt);
+      this.bridge(bot, r.lane, dt);
 
       bot.status = r.key;
       // stuck: jump, then give up and go home
-      const d2 = planar(steerTo).length();
+      const d2 = planar(carrot && !bot.detour ? goal : steerTo).length();
       if (!arrived && d2 < bot.bestDist - 0.25) { bot.bestDist = d2; bot.progressT = 0; }
       else if (!arrived) bot.progressT += dt;
+      // a new point: progress is measured afresh (or the bot would think it is stuck and jump / skip points)
+      if (advance) { bot.bestDist = Infinity; bot.progressT = 0; }
       if (bot.progressT > 1.2) {
         bot.jumpT = 0.25; bot.bestDist = d2; bot.progressT = 0; bot.stuckT += 1.2; bot.detour = null; bot.checkT = 0;
         // an intermediate point may sit inside something (a parked car): skip it
-        if (!last && bot.stuckT > 2) bot.wp++;
+        if (!last && !strict && bot.stuckT > 2) { bot.wp++; bot.bestDist = Infinity; }
       }
       if (arrived || bot.progressT === 0) bot.stuckT = Math.max(0, bot.stuckT - dt * 0.5);
       if (bot.stuckT > bot.tune.giveUp) { bot.stuckT = 0; this.placeAtSpawn(bot); }
@@ -653,4 +693,36 @@ export class BotManager {
     const down = upOf(sim.state.frame, _up).clone().negate();
     return !!this.world.castRay(new this.R.Ray(p, down), PLAYER_HEIGHT / 2 + 0.5, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
   }
+}
+
+/** Distance from (x, z) to a polyline. */
+function polyDist(pts: XZ[], x: number, z: number) {
+  let best = Infinity;
+  for (let i = 0; i + 1 < pts.length; i++) best = Math.min(best, segDist(pts[i], pts[i + 1], x, z));
+  return best;
+}
+
+function segDist(a: XZ, b: XZ, x: number, z: number) {
+  const dx = b[0] - a[0], dz = b[1] - a[1];
+  const k = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(x - a[0] - dx * k, z - a[1] - dz * k);
+}
+
+/**
+ * The rest of a polyline from the point nearest to (x, z) on: starts with the segment's start when near it, otherwise
+ * with a point on the segment just ahead (back onto the line first, then along it).
+ */
+function rest(pts: XZ[], x: number, z: number): XZ[] {
+  let seg = 0, best = Infinity;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const d = segDist(pts[i], pts[i + 1], x, z);
+    if (d < best) { best = d; seg = i; }
+  }
+  const a = pts[seg], b = pts[seg + 1];
+  const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz) || 1;
+  const along = ((x - a[0]) * dx + (z - a[1]) * dz) / len;
+  if (along < 1.5) return pts.slice(seg);
+  if (along > len - 2.5) return pts.slice(seg + 1);
+  const k = (along + 1.5) / len;
+  return [[a[0] + dx * k, a[1] + dz * k], ...pts.slice(seg + 1)];
 }

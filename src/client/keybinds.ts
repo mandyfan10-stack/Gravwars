@@ -2,7 +2,6 @@ import { PerspectiveCamera, Vector3 } from 'three';
 import { PLAYER_HEIGHT } from '../shared/constants';
 import { HOTBAR_SIZE } from '../shared/inventory';
 import type { PlayerSim } from '../shared/sim';
-import { TEAMS } from '../shared/teams';
 import type { BlockController } from './blockController';
 import type { createDebugGui, DebugToggles } from './debugGui';
 import type { Hands } from './hands';
@@ -46,12 +45,13 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     } else gui.hide();
   });
 
+  let tCount = 0;
   return () => {
     if (!input.locked) return;
     const shift = input.down('ShiftLeft') || input.down('ShiftRight');
-    // debug: Shift+1–4 = that team's gravity (Shift is also the sprint, so only while standing still)
+    // debug: Shift+1–6 = the gravity of that cube face (Shift is also the sprint, so only while standing still)
     if (shift && local.input.forward === 0 && local.input.right === 0) {
-      TEAMS.forEach((t, i) => { if (input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...t.down)); });
+      sim.map.faces.forEach((f, i) => { if (input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...f.up).negate()); });
     }
     // E: shop when standing at it, otherwise pick up the item in reach (holding E at an enemy crystal: per frame)
     if (input.take('KeyE')) {
@@ -82,9 +82,12 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       hud.toast(sim.state.noclip ? 'Noclip: вкл' : 'Noclip: выкл', '#8af5ff', 1);
     }
     if (input.take('KeyT')) {
-      // debug: onto the central square
-      sim.setGravity(new Vector3(0, 0, -1));
-      sim.state.pos.set(0, 0, PLAYER_HEIGHT / 2 + 0.3);
+      // debug: onto the square of a neutral face (the next one each press)
+      const faces = sim.map.faces.filter((f) => !f.team);
+      const f = faces[(tCount++) % Math.max(1, faces.length)] ?? sim.map.faces[0];
+      const up = new Vector3(...f.up);
+      sim.setGravity(up.clone().negate());
+      sim.state.pos.set(...f.origin).addScaledVector(up, PLAYER_HEIGHT / 2 + 0.5);
       sim.state.vel.set(0, 0, 0);
       sim.mover.place(sim.state);
       local.snap();

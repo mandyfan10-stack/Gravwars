@@ -5,7 +5,7 @@ import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 import { TeamId } from './teams';
 
-/** Crystal generators on the middle islands: one unit every `interval` s, up to `cap` waiting to be picked up. */
+/** Crystal generators on the squares of the neutral faces: one unit every `interval` s, up to `cap` waiting to be picked up. */
 export const GENERATORS: Record<'crystal', { interval: number; cap: number }> = {
   crystal: { interval: 15, cap: 4 },
 };

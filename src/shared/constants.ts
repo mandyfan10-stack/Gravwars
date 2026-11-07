@@ -55,14 +55,14 @@ export const DEFAULT_MOVEMENT: MovementConfig = {
 
 export const WORLD = {
   /**
-   * Distance from the world centre to the ground of each team base island (doubled in v2). Bases sit in a ring in
-   * the XY plane, each facing the centre; the centre is a flat city in that plane, top face +Z.
+   * The world is the inside of a cube: six faces, each a 5×5 block city that looks at the centre (the sun). Face
+   * grounds lie at ±cubeHalf on their axis; a city covers ±faceHalf of its face, the rest up to the cube edge is a
+   * 48 m gap (two of them meet at every edge): the way to the next face is a bridge over it and stairs up its wall.
    */
-  islandDistance: 432,
-  /** Half extent of a base island (5×5 city tiles of 32 m). */
-  islandHalf: 80,
-  /** Half extent of the central city (7×7 tiles). */
-  centerHalf: 112,
-  /** Further than this from the centre = fell into the void = death. */
-  killRadius: 700,
+  cubeHalf: 138,
+  faceHalf: 90,
+  /** Further than this outside the cube (on any axis) = fell into the void. */
+  voidMargin: 20,
+  /** Projectiles further than this from the centre are dropped. */
+  killRadius: 360,
 };

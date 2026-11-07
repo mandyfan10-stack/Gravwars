@@ -3,13 +3,13 @@ import type { Block } from './blocks';
 import type { MapData } from './map';
 
 /**
- * Gravity towards the nearest walkable surface. Only "gravity plates" pull: the top of every island (base islands,
- * the central city), the bridge stubs on the bases and every floor piece players build (bridges). Walls, houses and
- * cars do not, so walking into a building does not stick you to it.
+ * Gravity towards the nearest walkable surface. Only "gravity plates" pull: the ground of every cube face and every
+ * floor piece (bridge lanes, players' floors). Walls, houses and cars do not, so walking into a building does not
+ * stick you to it.
  *
  * A plate pulls a point that is above its walk face (within `range`) and over its rectangle; of all such plates the
  * closest wins, with a small bias for the one whose gravity you already have (no flicker at a corner). Off every
- * rectangle nothing pulls and the current gravity stays: stepping off an island edge is still a fall into the void.
+ * rectangle nothing pulls and the current gravity stays: stepping off a face's rim is still a fall into the void.
  */
 export interface GravityPlate {
   /** Centre of the walk face. */
@@ -95,7 +95,7 @@ export class GravityField {
     return found && Math.max(found.h, 0) + BIAS < hold ? found : null;
   }
 
-  /** Is there something level for `up` under `pos` (an island top within its range, a floor right below)? */
+  /** Is there something level for `up` under `pos` (a face's ground within its range, a floor right below)? */
   holds(pos: Vector3, up: Vector3): boolean {
     for (const p of this.plates) if (p.up.dot(up) > 0.99 && GravityField.pulls(p, pos) !== null) return true;
     for (const b of this.blocks()) {

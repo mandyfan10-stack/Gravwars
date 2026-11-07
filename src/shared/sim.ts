@@ -23,8 +23,6 @@ const _q = new Quaternion();
 const _n = new Vector3();
 /** After a switch the body is put this far above the new surface (capsule half height + a short drop). */
 const SWITCH_CLEARANCE = PLAYER_HEIGHT / 2 + 0.2;
-/** Falling this long with nothing level for you below = the void. */
-const VOID_TIME = 1.5;
 
 /**
  * Authoritative player simulation (movement + world rules). Runs on the client for prediction
@@ -38,8 +36,6 @@ export class PlayerSim {
   team: TeamDef;
   /** Gravity follows the surface you step onto (gravity.ts). NPCs stay in the gravity they were made in. */
   surfaces = true;
-  /** Time spent falling with nothing under you. */
-  private voidT = 0;
 
   constructor(R: Rapier, world: PhysicsWorld, readonly map: MapData, teamId: TeamId,
     readonly cfg: MovementConfig = { ...DEFAULT_MOVEMENT }) {
@@ -59,7 +55,6 @@ export class PlayerSim {
     s.pitch = 0;
     s.onGround = false;
     s.airT = -1;
-    this.voidT = 0;
     this.mover.place(s);
     this.events.push({ type: 'respawn', reason });
   }
@@ -91,6 +86,11 @@ export class PlayerSim {
     s.onGround = false;
   }
 
+  /** Fallen out of the cube: further than the void margin outside it on some axis. */
+  outside(p = this.state.pos) {
+    return Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z)) > this.map.cube.half + this.map.voidMargin;
+  }
+
   gravityDown(out = new Vector3()): Vector3 {
     return upOf(this.state.frame, out).negate();
   }
@@ -118,8 +118,7 @@ export class PlayerSim {
       }
     }
 
-    if (s.onGround || this.gravity.holds(s.pos, up)) this.voidT = 0;
-    else if ((this.voidT += dt) > VOID_TIME) this.respawn('void');
-    if (s.pos.length() > this.map.killRadius) this.respawn('void');
+    // the void: out through a gap at a cube edge (or off the rim and down past the face)
+    if (this.outside()) this.respawn('void');
   }
 }

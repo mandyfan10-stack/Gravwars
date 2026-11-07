@@ -5,7 +5,7 @@ import { TeamId, TEAMS } from './teams';
 export type Seat = { kind: 'player' } | { kind: 'bot'; difficulty: Difficulty } | null;
 export const TEAM_SEATS = 5;
 
-/** Who plays: four teams × five seats. A team with nobody in it gets no island. */
+/** Who plays: four teams × five seats. A team with nobody in it gets no face. */
 export interface LobbyConfig {
   seats: Record<TeamId, Seat[]>;
 }
@@ -25,7 +25,7 @@ export function playerTeam(c: LobbyConfig): TeamId | null {
   return null;
 }
 
-/** Teams with at least one member (they get an island), in the usual order. */
+/** Teams with at least one member (they get a face of the cube), in the usual order. */
 export function activeTeams(c: LobbyConfig): TeamId[] {
   return TEAMS.filter((t) => c.seats[t.id].some((s) => s)).map((t) => t.id);
 }

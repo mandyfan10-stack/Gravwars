@@ -51,16 +51,16 @@ export const PICKUPS = {
   appleRespawn: 45,
   /** Street litter is rare; most bottles are dropped by bums (npcs.ts). */
   bottleRespawn: 90,
-  /** Litter bottles lying on the streets of each base island. */
+  /** Litter bottles lying on the streets of each face. */
   bottlesPerIsland: 4,
   /** Dropped items disappear after this long. */
   dropLife: 180,
-  /** No more dropped bottles on an island than this (bums stop littering). */
+  /** No more dropped bottles on a face than this (bums stop littering). */
   maxBottlesPerIsland: 18,
 };
 
 /**
- * Apples under every tree, bottles on random street spots of the base islands (later: dropped by bums).
+ * Apples under every tree, bottles on random street spots of every face (and dropped by bums).
  * Items sit on the ground found by a ray along the local gravity.
  */
 export class Pickups {
@@ -83,8 +83,8 @@ export class Pickups {
       if (!ground) continue;
       this.items.push({ id: this.nextId++, kind: 'apple', amount: 0, once: false, pos: ground, up, alive: true, respawnT: 0, spot: -1 });
     }
-    // bottles: along the road graph of each island, a little off the centre line
-    for (const isl of map.islands) {
+    // bottles: along the road graph of each face, a little off the centre line
+    for (const isl of map.faces) {
       const nav = map.nav[isl.id];
       if (!nav) continue;
       const up = new Vector3(...isl.up);
@@ -149,7 +149,7 @@ export class Pickups {
       it.respawnT -= dt;
       if (it.respawnT > 0) continue;
       if (it.kind === 'bottle') {
-        // a new free spot on the same island
+        // a new free spot on the same face
         const taken = new Set(this.items.filter((o) => o.alive && o.kind === 'bottle' && !o.once).map((o) => o.spot));
         const free = this.bottleSpots.map((s, i) => i).filter((i) => !taken.has(i) && this.bottleSpots[i].up.equals(it.up));
         if (free.length) it.spot = this.rng.pick(free);

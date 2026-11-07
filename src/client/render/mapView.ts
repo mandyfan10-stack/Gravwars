@@ -8,7 +8,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { HouseDef, MapData, MatKind } from '../../shared/map';
 import { Rng } from '../../shared/math';
 import {
-  glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture,
+  glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture, windowTexture, woodTexture,
 } from './textures';
 import { crystalCluster, CrystalCluster, crystalGeometry, crystalMaterials } from './crystal';
 import { withRooms } from './rooms';
@@ -76,7 +76,7 @@ function tintMasked(mat: MeshStandardMaterial, mask: Texture): MeshStandardMater
 function makeMaterials(): Record<MatKind, Material> {
   const t = groundTextures();
   const std = (o: ConstructorParameters<typeof MeshStandardMaterial>[0]) => new MeshStandardMaterial(o);
-  return {
+  const mats: Record<MatKind, Material> = {
     concrete: triplanar(std({ roughness: 0.92 }), t.concrete, 4),
     asphalt: triplanar(std({ roughness: 0.95 }), t.asphalt, 3),
     paving: triplanar(std({ roughness: 0.88 }), t.paving, 2),
@@ -92,7 +92,18 @@ function makeMaterials(): Record<MatKind, Material> {
     stone: triplanar(std({ roughness: 0.85 }), t.stone, 2),
     test: std({ roughness: 0.55 }),
     glow: new MeshBasicMaterial({ color: new Color(2.2, 2.2, 2.2) }),
+    window: triplanar(std({ roughness: 0.06, metalness: 0.5, transparent: true, depthWrite: false, envMapIntensity: 1.6 }), windowTexture(), 3),
+    wood: triplanar(std({ roughness: 0.85 }), woodTexture(), 2),
+    tile: triplanar(std({ roughness: 0.8 }), roofTexture(), 2),
   };
+  // thin overlays (road markings, lamps, signs) lie 1–3 cm over other surfaces: a depth bias keeps them from
+  // flickering into them far away
+  for (const k of ['paint', 'glow'] as MatKind[]) {
+    mats[k].polygonOffset = true;
+    mats[k].polygonOffsetFactor = -1;
+    mats[k].polygonOffsetUnits = -2;
+  }
+  return mats;
 }
 
 /** Builds merged geometry for every old-town house: walls with facade UVs + gabled tile roofs. */
@@ -195,16 +206,16 @@ export interface MapView {
 export function buildMapView(map: MapData): MapView {
   const group = new Group();
   const mats = makeMaterials();
-  // regions: every base island, the central city in four quarters. Each has its own batches, so whole regions drop
-  // out of view (frustum, shadow pass, draw distance) instead of one map-sized batch being drawn always.
+  // regions: the six faces of the cube. Each has its own batches, so whole faces drop out of view (frustum, shadow
+  // pass, draw distance) instead of one map-sized batch being drawn always.
   const regions = new Map<string, { group: Group; box: Box3 }>();
   const regionOf = (x: number, y: number, z: number) => {
-    let best = map.islands[0], bd = Infinity;
-    for (const i of map.islands) {
+    let best = map.faces[0], bd = Infinity;
+    for (const i of map.faces) {
       const d = (i.origin[0] - x) ** 2 + (i.origin[1] - y) ** 2 + (i.origin[2] - z) ** 2;
       if (d < bd) { bd = d; best = i; }
     }
-    return best.id === 'center' ? `center${x < 0 ? '-' : '+'}${y < 0 ? '-' : '+'}` : best.id;
+    return best.id;
   };
   /** The region holding a point; `r` = how far the thing reaches around it (for the region's bounds). */
   const region = (pos: ArrayLike<number>, r = 1) => {
@@ -245,7 +256,35 @@ export function buildMapView(map: MapData): MapView {
       im.setColorAt(i, col.setHex(b.color));
     });
     im.computeBoundingSphere();
-    region(list[0].pos).group.add(shadowy(im, mat !== 'glow' && mat !== 'water'));
+    region(list[0].pos).group.add(shadowy(im, mat !== 'glow' && mat !== 'water' && mat !== 'window'));
+    if (mat === 'window') im.renderOrder = 1; // after the opaque world, so the rooms show through
+  }
+
+  // --- crates (wooden boxes) and barrels
+  {
+    const byRegion = new Map<string, typeof map.crates>();
+    for (const c of map.crates) {
+      const k = keyOf(c.pos);
+      region(c.pos, 2);
+      if (!byRegion.has(k)) byRegion.set(k, []);
+      byRegion.get(k)!.push(c);
+    }
+    const barrelGeo = new CylinderGeometry(1, 1, 1, 12);
+    const barrelMat = new MeshStandardMaterial({ roughness: 0.5, metalness: 0.4 });
+    for (const [k, list] of byRegion) {
+      for (const kind of ['crate', 'barrel'] as const) {
+        const items = list.filter((c) => c.kind === kind);
+        if (!items.length) continue;
+        const im = new InstancedMesh(kind === 'crate' ? unit : barrelGeo, kind === 'crate' ? mats.wood : barrelMat, items.length);
+        items.forEach((c, i) => {
+          m4.compose(p.set(...c.pos), q.set(...c.quat), sc.set(c.half[0] * 2, c.half[1] * 2, c.half[2] * 2).multiplyScalar(kind === 'crate' ? 1 : 0.5).setY(c.half[1] * 2));
+          im.setMatrixAt(i, m4);
+          im.setColorAt(i, col.setHex(c.color));
+        });
+        im.computeBoundingSphere();
+        regions.get(k)!.group.add(shadowy(im));
+      }
+    }
   }
 
   // --- convex hulls, merged per material with vertex colors
