@@ -5,9 +5,12 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
  * Real-life-looking firearms built from simple solids (no brand, generic designs), in metres, barrel along -Z,
  * origin at the top of the pistol grip (where the hand holds it):
  * - a 9 mm self-loading pistol: polymer frame, steel slide;
- * - a 5.45 mm assault rifle: steel receiver, wooden handguard and stock, curved magazine.
- * Moving parts are separate nodes for the reload animation: `mag` (drops out / goes in), `slide` (pistol slide or
- * rifle bolt handle, pulled back along +Z).
+ * - a 5.45 mm assault rifle: steel receiver, wooden handguard and stock, curved magazine;
+ * - a 12-gauge pump shotgun: tube magazine under the barrel, wooden pump and stock;
+ * - a single-shot rocket launcher: an olive tube with a grip, a sight and the warhead sticking out in front;
+ * - a grappling-hook launcher: a stubby tube with a folded three-prong claw and a rope drum.
+ * Moving parts are separate nodes for the reload animation: `mag` (drops out / goes in; the launcher's rocket, the
+ * hook's claw), `slide` (pistol slide, rifle bolt handle, shotgun pump: pulled back along +Z).
  */
 export interface GunModel {
   root: Group;
@@ -100,4 +103,85 @@ export function rifleModel(): GunModel {
   mag.add(part(box(0.032, 0.008, 0.074, 0.002), bk, 0, -0.17, -0.14, 0.5)); // floor plate
   root.add(mag);
   return { root, mag, slide, muzzle: new Vector3(0, 0.03, -0.66) };
+}
+
+const olive = () => new MeshStandardMaterial({ color: 0x4a5236, roughness: 0.7, metalness: 0.15 });
+const paint = (color: number) => new MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1 });
+
+export function shotgunModel(): GunModel {
+  const root = new Group();
+  const st = steel(), bl = blued(), wd = wood();
+  // receiver, trigger group, pistol-grip stock in one wooden piece
+  root.add(part(box(0.044, 0.062, 0.2, 0.006), st, 0, 0.03, -0.02));
+  root.add(part(box(0.006, 0.006, 0.06, 0), bl, 0, -0.012, 0.01)); // guard
+  root.add(part(box(0.005, 0.02, 0.005, 0), bl, 0, 0.0, 0.0, 0.3)); // trigger
+  root.add(part(box(0.036, 0.1, 0.044, 0.008), wd, 0, -0.04, 0.09, -0.4)); // grip
+  root.add(part(box(0.042, 0.075, 0.26, 0.014), wd, 0, 0.0, 0.27, 0.1)); // stock
+  root.add(part(box(0.044, 0.12, 0.022, 0.008), polymer(), 0, -0.018, 0.4, 0.1)); // recoil pad
+  // barrel and the magazine tube under it, a bead sight
+  root.add(part(tube(0.012, 0.52), bl, 0, 0.045, -0.37));
+  root.add(part(tube(0.0115, 0.4), st, 0, 0.012, -0.31));
+  root.add(part(tube(0.013, 0.02), st, 0, 0.012, -0.515)); // tube cap
+  root.add(part(box(0.006, 0.008, 0.006, 0), st, 0, 0.061, -0.62)); // bead
+  // pump: grooved wooden forend around the tube
+  const slide = new Group();
+  slide.add(part(box(0.05, 0.048, 0.17, 0.014), wd, 0, 0.014, -0.25));
+  for (let i = 0; i < 5; i++) slide.add(part(box(0.052, 0.05, 0.006, 0), bl, 0, 0.014, -0.3 + i * 0.025));
+  root.add(slide);
+  // "magazine": a shell pushed into the loading port (shows during the reload)
+  const mag = new Group();
+  mag.add(part(tube(0.0105, 0.07, 8), paint(0xb3261e), 0, -0.012, 0.0));
+  mag.add(part(tube(0.0108, 0.016, 8), new MeshStandardMaterial({ color: 0xc9a54a, roughness: 0.3, metalness: 0.8 }), 0, -0.012, 0.04));
+  mag.position.set(0, -0.06, 0.05);
+  root.add(mag);
+  return { root, mag, slide, muzzle: new Vector3(0, 0.045, -0.64) };
+}
+
+export function launcherModel(): GunModel {
+  const root = new Group();
+  const ol = olive(), bl = blued(), pl = polymer();
+  // the tube rides over the shoulder: the grip is near its middle
+  root.add(part(tube(0.052, 1.0, 14), ol, 0, 0.09, -0.12));
+  root.add(part(tube(0.058, 0.08, 14), bl, 0, 0.09, -0.6)); // front ring
+  root.add(part(tube(0.06, 0.1, 14), bl, 0, 0.09, 0.36)); // venturi
+  root.add(part(box(0.03, 0.1, 0.045, 0.008), pl, 0, -0.02, 0.0, -0.25)); // grip
+  root.add(part(box(0.03, 0.09, 0.04, 0.008), pl, 0, -0.01, -0.3, -0.1)); // front grip
+  root.add(part(box(0.006, 0.006, 0.05, 0), bl, 0, 0.03, 0.025)); // guard
+  // folding sight on the left
+  root.add(part(box(0.012, 0.07, 0.05, 0.003), bl, -0.06, 0.13, -0.15));
+  root.add(part(box(0.018, 0.018, 0.04, 0.003), paint(0x1a1a1a), -0.06, 0.17, -0.15));
+  // the rocket: warhead cone out of the front (gone once fired, back with the reload)
+  const mag = new Group();
+  const cone = new Mesh(new CylinderGeometry(0.005, 0.045, 0.16, 12).rotateX(-Math.PI / 2), paint(0x6b6f45));
+  cone.position.set(0, 0.09, -0.74);
+  const band = new Mesh(new CylinderGeometry(0.046, 0.046, 0.03, 12).rotateX(Math.PI / 2), paint(0xc8a530));
+  band.position.set(0, 0.09, -0.65);
+  mag.add(cone, band);
+  root.add(mag);
+  return { root, mag, slide: new Group(), muzzle: new Vector3(0, 0.09, -0.66) };
+}
+
+export function hookGunModel(teamColor: number): GunModel {
+  const root = new Group();
+  const st = steel(), bl = blued(), pl = polymer();
+  const team = paint(teamColor);
+  root.add(part(box(0.04, 0.06, 0.2, 0.01), team, 0, 0.03, -0.06));
+  root.add(part(tube(0.026, 0.2), bl, 0, 0.04, -0.24));
+  root.add(part(box(0.032, 0.1, 0.044, 0.008), pl, 0, -0.045, 0.02, -0.3)); // grip
+  root.add(part(box(0.006, 0.006, 0.05, 0), bl, 0, -0.008, -0.03)); // guard
+  // rope drum on the side
+  root.add(part(new CylinderGeometry(0.04, 0.04, 0.03, 14).rotateZ(Math.PI / 2), st, 0.04, 0.03, -0.06));
+  root.add(part(new CylinderGeometry(0.03, 0.03, 0.032, 14).rotateZ(Math.PI / 2), paint(0xd8c9a3), 0.04, 0.03, -0.06));
+  // the claw: a shank with three prongs folded forward
+  const mag = new Group();
+  mag.add(part(tube(0.008, 0.1, 6), st, 0, 0, 0.03));
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2;
+    const prong = part(box(0.008, 0.008, 0.06, 0.002), st, Math.cos(a) * 0.016, Math.sin(a) * 0.016, -0.03);
+    prong.rotation.set(-Math.sin(a) * 0.5, Math.cos(a) * 0.5, 0);
+    mag.add(prong);
+  }
+  mag.position.set(0, 0.04, -0.36);
+  root.add(mag);
+  return { root, mag, slide: new Group(), muzzle: new Vector3(0, 0.04, -0.36) };
 }

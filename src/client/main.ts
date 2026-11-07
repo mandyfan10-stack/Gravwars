@@ -17,14 +17,16 @@ import { KILL_REWARD, Match } from '../shared/match';
 import { upOf } from '../shared/math';
 import { moveBasis, viewQuat } from '../shared/movement';
 import { buildPhysicsWorld, initRapier } from '../shared/physics';
+import { Props } from '../shared/props';
 import { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
 import { Throws } from '../shared/throwables';
-import type { WeaponId } from '../shared/weapons';
+import { isGun, WeaponId } from '../shared/weapons';
 import { Ambience, Area } from './ambience';
 import { GameAudio } from './audio';
 import { BlockController } from './blockController';
 import { Cursor } from './cursor';
+import { DeathScreen } from './deathScreen';
 import { createDebugGui, DebugToggles } from './debugGui';
 import { GrenadeWarn } from './grenadeWarn';
 import { Hands } from './hands';
@@ -43,6 +45,7 @@ import { Pockets } from './pockets';
 import { Fx } from './render/fx';
 import { GeneratorView } from './render/generatorView';
 import { GravityGizmo } from './render/gizmo';
+import { HookView } from './render/hookView';
 import { Graphics } from './render/graphics';
 import { loadAssets } from './render/assets';
 import { BotView } from './render/botView';
@@ -129,7 +132,11 @@ async function main() {
   combat.onWorldDamage = (handle, damage) => { blocks.damageCollider(handle, damage); };
   combat.onExplosion = (pos, radius, damage) => blocks.explosion(pos, radius, damage);
   combat.materialOf = (handle) => blocks.byCollider(handle)?.material ?? null;
+  // crates and barrels are physics bodies: kicks, blasts and bullets move them
+  const props = new Props(world, map);
+  combat.props = props;
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
+  match.attach(combat); // crystals take damage from shots / blows (only from close up)
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id, 0, botRoster(cfg));
   const pickups = new Pickups(R, world, map);
   const npcs = new NpcManager(R, world, map, combat, pickups);
@@ -143,6 +150,11 @@ async function main() {
   scene.add(mapView.group);
   scene.add(buildPropView(map, assets));
   const fx = new Fx(scene);
+  // blood stains land on the ground under the spray
+  fx.ground = (pos, down) => {
+    const hit = combat.rayWorld(pos, pos.clone().addScaledVector(down, 4));
+    return hit ? { pos: pos.clone().addScaledVector(down, 4 * hit.t), normal: hit.normal } : null;
+  };
   viewModel = new ViewModel(sim.team.color, assets);
   viewModel.environment = scene.environment;
   const gizmo = new GravityGizmo(map);
@@ -151,6 +163,12 @@ async function main() {
   const hud = new Hud();
   const player = new PlayerCombat(sim, combat, hud, fx, audio, viewModel);
   const botView = new BotView(scene, bots, assets);
+  // a killed fighter bursts into blood
+  botView.onDeath = (pos) => {
+    fx.blood(pos);
+    audio.gore(pos.distanceTo(sim.state.pos));
+  };
+  fx.bleeds = (id) => (combat.target(id)?.npc ? 0.45 : 1);
   const npcView = new NpcView(scene, npcs, assets);
   const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
   build.onPlace = () => viewModel.dig();
@@ -159,6 +177,15 @@ async function main() {
   const ui = new MatchUi(match, eco, hud, audio, cursor);
   const pockets = new Pockets(eco, pickups, sim, player, hud, audio, map.ponds);
   const hands = new Hands(eco, player, build, pockets, throws, sim, audio, hud, viewModel, cursor);
+  // grappling hook: bites the world (not people); the throw has its sound and kick in the hands
+  hands.hookFilter = combat.notCharacter;
+  hands.onHook = (thrown) => {
+    if (!thrown) return;
+    audio.hookFire();
+    viewModel.hookShot();
+  };
+  const hookView = new HookView(scene, sim);
+  const deathScreen = new DeathScreen(combat);
   const pickupView = new PickupView(scene, pickups);
   const thrownView = new ThrownView(scene, throws);
   const grenadeWarn = new GrenadeWarn(combat);
@@ -202,6 +229,7 @@ async function main() {
     player.me.crouched = local.input.crouch;
     if (!match.result) { bots.tick(TICK_DT); npcs.tick(TICK_DT); }
     throws.tick(TICK_DT);
+    props.tick(TICK_DT);
     // LMB fires only with a weapon in hand and no window open
     player.tick(!hands.tool && !cursor.active && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
@@ -217,12 +245,14 @@ async function main() {
       }
     } else if (e.type === 'respawn' && e.reason === 'manual') player.reset();
     else if (e.type === 'respawn' && e.reason === 'void') {
+      if (player.death) return; // already dead (a body thrown off by the blast): the death screen is on
       stats.deaths++;
-      hud.toast('Упал в пустоту', '#ff6b6b');
       pockets.spill(sim.state.pos, upOf(sim.state.frame), true); // the void keeps what you carried
-      if (match.onDeath()) player.reset();
-      else player.me.alive = false;
-    } else if (e.type === 'respawn' && e.reason === 'killed') hud.toast('Ты погиб', '#ff6b6b');
+      player.die('void');
+    } else if (e.type === 'hook') {
+      if (e.what === 'attach') audio.hookBite(sim.hook ? sim.hook.anchor.distanceTo(sim.state.pos) : 0);
+      else if (e.what === 'release') audio.hookRelease();
+    }
   };
 
   window.addEventListener('resize', () => gfx.resize());
@@ -234,7 +264,7 @@ async function main() {
   const ambient: Area = { base: 0, forest: 0, park: 0, city: 0, water: 0 };
   const ambience = new Ambience(audio);
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, scene, combat, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, ready: true,
+    sim, local, input, camera, renderer, scene, combat, props, deathScreen, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -315,6 +345,7 @@ async function main() {
     if (intro.active) { introFrame(dt, time); requestAnimationFrame(frame); return; }
     handleKeys();
     // the world never stops: with the menu open the player just stands (no input), everything else goes on
+    local.frozen = !!player.death;
     local.update(dt);
     // footsteps and landings
     if (local.landed) { audio.land(local.landed); local.landed = 0; local.stride = 0; }
@@ -354,18 +385,19 @@ async function main() {
       if (sprintT > 0.01) speedEl.style.transform = `rotate(${(Math.random() * 6).toFixed(2)}deg) scale(${(1.02 + Math.random() * 0.04).toFixed(3)})`;
     }
     local.applyCamera(camera);
+    // dead: the death camera has the view (the sim already waits at the spawn)
+    const dead = deathScreen.update(player.death, camera, dt);
     CHAR_LOD.eye.copy(camera.position);
     mapView.cull(camera.position, settings.drawDistance);
     // windows (shop, inventory) take the mouse: the click goes to them, not to the hands
     const click = cursor.update();
-    hands.update(dt, camera, input.locked && !cursor.active && input.down('Mouse0'), click);
+    hands.update(dt, camera, input.locked && !cursor.active && !dead && input.down('Mouse0'), click);
     if (cursor.active) build.active = false;
     build.update(dt, camera);
     gfx.updateLighting(local.renderFrame, time);
 
-    // bedwars: break enemy crystals (hold E), match events, UI
-    match.breakTick(dt, camera.position, input.locked && !ui.shopOpen && input.down('KeyE'));
-    const reachable = match.breaking ? null : match.reachableBed(camera.position);
+    // bedwars: the enemy crystal under the crosshair (shoot / hit it from close up), match events, UI
+    const sight = dead ? null : match.bedInSight(camera.position, camera.getWorldDirection(_wf));
     for (const e of match.events.splice(0)) {
       ui.onEvent(e);
       if (e.type === 'bedBroken' && e.byPlayer) stats.crystals++;
@@ -387,7 +419,7 @@ async function main() {
     // rod: LMB casts / strikes
     if (pockets.rod && input.locked && !cursor.active && input.take('Mouse0')) pockets.useRod(camera);
     const pocketPrompt = pockets.update(dt, camera, () => viewModel.cast());
-    ui.update(match.nearShop(sim.state.pos), reachable, pocketPrompt, click);
+    ui.update(match.nearShop(sim.state.pos), sight, pocketPrompt, click);
     // thrown items: a bottle breaks (and dazes an NPC), the rest land
     for (const e of throws.events.splice(0)) {
       if (e.type === 'shatter') {
@@ -414,29 +446,35 @@ async function main() {
     fx.down.copy(gfx.upDir).negate();
     fx.update(dt, combat, time);
     mapView.update(time, dt);
-    player.applyCameraKick(camera, dt);
+    if (!dead) player.applyCameraKick(camera, dt);
+    // crates and barrels that moved this tick
+    for (const i of props.moved) mapView.setCrate(i, props.pos(i), props.quat(i), props.present(i));
+    props.moved.clear();
 
     fishingView.update(time, pockets.rod ? viewModel.rodTipWorld(camera) : null);
+    viewModel.hookOut = !!sim.hook;
+    hookView.update(sim.hook && !dead ? viewModel.hookClawWorld(camera) : null, fx.down);
     gfx.render(dt);
     const invCam = camera.quaternion.clone().invert();
     const pUp = upOf(sim.state.frame);
     viewModel.update(dt, {
       speed: sim.state.vel.clone().addScaledVector(pUp, -sim.state.vel.dot(pUp)).length(),
       lookDX: lastYaw - input.yaw, lookDY: input.pitch - lastPitch, reload: player.reloadProgress,
-      empty: (player.weapons.current === 'pistol' || player.weapons.current === 'rifle') && player.weapons.ammo[player.weapons.current] === 0,
+      empty: isGun(player.weapons.current) && player.weapons.ammo[player.weapons.current] === 0,
       sunCam: gfx.sunDir.clone().applyQuaternion(invCam), upCam: gfx.upDir.clone().applyQuaternion(invCam),
       aspect: camera.aspect,
     });
     lastYaw = input.yaw;
     lastPitch = input.pitch;
     viewModel.bite = pockets.fishing.phase === 'bite' ? 1 : 0;
-    viewModel.render(renderer);
+    if (!dead) viewModel.render(renderer);
 
     // HUD wind: what the local player's projectiles feel
     const w = combat.wind.felt(combat.time, pUp.clone().negate());
     moveBasis(sim.state.frame, input.yaw, _wf, _wr);
     hud.setWind(Math.atan2(w.dot(_wr), w.dot(_wf)) - Math.PI / 2, w.length(), 0);
     hud.setWeapon(player.weapons, hands.tool, eco.items);
+    hud.setKick(player.kickCooldown);
     viewQuat(local.renderFrame, input.yaw, input.pitch, viewQ);
     gizmo.render(renderer, viewQ, faceByUp(map, pUp)?.id ?? '');
     hud.setSpread(hands.tool ? null : player.nextSpread, camera.fov);

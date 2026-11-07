@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
 import { HU } from '../shared/constants';
 import { STAMINA } from '../shared/movement';
-import type { PlayerSim } from '../shared/sim';
+import { HOOK, PlayerSim } from '../shared/sim';
 import { ITEMS } from '../shared/economy';
 import { isGun, WEAPONS, WeaponState } from '../shared/weapons';
 import { faceByUp } from '../shared/map';
@@ -16,6 +16,7 @@ const _up = new Vector3();
 export class Hud {
   constructor() {
     document.querySelector('#hp .hp-ic')!.innerHTML = icon('heart');
+    document.querySelector('#kick .k-ic')!.innerHTML = icon('kick');
     document.querySelector('#wind .wind-ic')!.innerHTML = icon('wind');
   }
 
@@ -64,7 +65,8 @@ export class Hud {
     if (active !== this.iconKey) {
       this.iconKey = active;
       const ic: Record<string, IconName> = {
-        fists: 'fist', pistol: 'pistol', rifle: 'rifle', grenade: 'grenade', build: 'shovel', rod: 'rod', apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
+        fists: 'fist', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook',
+        rod: 'rod', apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
       };
       this.weaponIc.innerHTML = icon(ic[active]);
     }
@@ -85,6 +87,11 @@ export class Hud {
       this.ammo.innerHTML = '<small>ЛКМ — забросить в пруд</small>';
       return;
     }
+    if (tool === 'hook') {
+      this.wName.textContent = 'Крюк-кошка';
+      this.ammo.innerHTML = `<small>ЛКМ — зацепиться (до ${HOOK.range} м), ещё раз — отпустить</small>`;
+      return;
+    }
     const w = ws.current;
     const def = WEAPONS[w];
     this.wName.textContent = def.name;
@@ -95,6 +102,18 @@ export class Hud {
     } else {
       this.ammo.innerHTML = `<div class="pips">${'<i></i>'.repeat(ws.ammo.grenade)}${'<i class="empty"></i>'.repeat(def.mag - ws.ammo.grenade)}</div>`;
     }
+  }
+
+  private readonly kickEl = $('kick');
+  private readonly kickBar = $('kick').querySelector('i')!;
+  private kickKey = -1;
+  /** Kick (V) readiness: 0 = ready, else the share of the cooldown left. */
+  setKick(left: number) {
+    const k = Math.round(left * 50);
+    if (k === this.kickKey) return;
+    this.kickKey = k;
+    this.kickEl.classList.toggle('cd', left > 0);
+    this.kickBar.style.width = `${((1 - left) * 100).toFixed(0)}%`;
   }
 
   /** angle: radians, 0 = blowing forward (away from you), positive = to the right. */

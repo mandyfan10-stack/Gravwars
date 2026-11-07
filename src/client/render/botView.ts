@@ -1,5 +1,6 @@
 import { AdditiveBlending, Color, Mesh, MeshBasicMaterial, Quaternion, Scene, SphereGeometry, Vector3 } from 'three';
 import type { BotManager } from '../../shared/bots';
+import { isGun } from '../../shared/weapons';
 import { upOf } from '../../shared/math';
 import { getTeam } from '../../shared/teams';
 import type { GameAssets } from './assets';
@@ -7,13 +8,14 @@ import { PlayerModel } from './playerModel';
 
 const _p = new Vector3();
 const _up = new Vector3();
-/** How long a dead bot's death animation stays visible, s. */
-const CORPSE_TIME = 1.4;
+/** A killed bot bursts: its body is hidden this long after (the blood covers the moment), s. */
+const CORPSE_TIME = 0.05;
 
 interface View {
   model: PlayerModel;
   hp: number;
   shots: number;
+  kicks: number;
   /** > 0 while showing the death animation where the bot fell. */
   corpseT: number;
   lastPos: Vector3;
@@ -28,6 +30,8 @@ const shellGeo = new SphereGeometry(1, 24, 16);
 /** Draws bots with the animated character, interpolated between simulation ticks. */
 export class BotView {
   private readonly views: View[];
+  /** A bot was killed (not fallen off the world): where its body was. */
+  onDeath: (pos: Vector3) => void = () => {};
 
   constructor(scene: Scene, private bots: BotManager, assets: GameAssets) {
     this.views = bots.bots.map((b) => {
@@ -39,7 +43,7 @@ export class BotView {
       shell.scale.set(0.7, 1.12, 0.7);
       shell.visible = false;
       model.group.add(shell);
-      return { model, hp: b.target.hp, shots: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, shell };
+      return { model, hp: b.target.hp, shots: 0, kicks: 0, corpseT: 0, lastPos: new Vector3(), lastFrame: new Quaternion(), lastYaw: 0, shell };
     });
   }
 
@@ -56,6 +60,8 @@ export class BotView {
           v.corpseT = CORPSE_TIME;
           m.hit();
           m.die();
+          // killed (in the fight, not by the void): the body bursts into blood
+          if (b.target.hp <= 0 && v.lastPos.lengthSq() > 0) this.onDeath(v.lastPos.clone());
         }
         v.corpseT -= dt;
         m.group.visible = v.corpseT > 0;
@@ -72,7 +78,7 @@ export class BotView {
       v.hp = b.target.hp;
       m.group.visible = true;
       const w = b.weapons.current;
-      const held = w === 'rifle' || w === 'pistol' ? w : 'fists';
+      const held = w === 'pistol' ? 'pistol' : isGun(w) ? 'rifle' : 'fists';
       if (held !== m.held) m.setHeld(held);
       const s = b.sim.state;
       // big jumps (portal, respawn) are not interpolated
@@ -86,6 +92,7 @@ export class BotView {
       const vUp = s.vel.dot(_up);
       const fired = b.shotsTotal !== v.shots;
       v.shots = b.shotsTotal;
+      if (b.kicksTotal !== v.kicks) { v.kicks = b.kicksTotal; m.kick(); }
       m.update(dt, { speed: Math.sqrt(Math.max(0, s.vel.lengthSq() - vUp * vUp)), grounded: s.onGround, vUp, fired });
     });
   }

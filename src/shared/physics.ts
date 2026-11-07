@@ -1,6 +1,8 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Quaternion, Vector3 } from 'three';
+import { TICK_DT } from './constants';
 import type { MapData } from './map';
+import { crateBodies, createCrateBody } from './props';
 
 export type Rapier = typeof RAPIER;
 export type PhysicsWorld = InstanceType<typeof RAPIER.World>;
@@ -12,9 +14,13 @@ export function initRapier(): Promise<Rapier> {
   return ready;
 }
 
-/** Builds static colliders from map data. Same code runs on the client and on the server. */
+/**
+ * Builds static colliders from map data, and the loose crates as sleeping rigid bodies (props.ts moves them). Same
+ * code runs on the client and on the server.
+ */
 export function buildPhysicsWorld(R: Rapier, map: MapData): PhysicsWorld {
   const world = new R.World({ x: 0, y: 0, z: 0 });
+  world.timestep = TICK_DT;
   const add = (desc: InstanceType<typeof R.ColliderDesc> | null) => {
     if (desc) world.createCollider(desc);
   };
@@ -29,11 +35,7 @@ export function buildPhysicsWorld(R: Rapier, map: MapData): PhysicsWorld {
       .setTranslation(b.pos[0], b.pos[1], b.pos[2])
       .setRotation({ x: b.quat[0], y: b.quat[1], z: b.quat[2], w: b.quat[3] }));
   }
-  for (const c of map.crates) {
-    const rot = { x: c.quat[0], y: c.quat[1], z: c.quat[2], w: c.quat[3] };
-    add((c.kind === 'crate' ? R.ColliderDesc.cuboid(c.half[0], c.half[1], c.half[2]) : R.ColliderDesc.cylinder(c.half[1], c.half[0]))
-      .setTranslation(c.pos[0], c.pos[1], c.pos[2]).setRotation(rot));
-  }
+  crateBodies.set(world, map.crates.map((c) => createCrateBody(R, world, c)));
   for (const h of map.hulls) {
     if (!h.collide) continue;
     add(R.ColliderDesc.convexHull(new Float32Array(h.points)));
@@ -68,6 +70,13 @@ export function buildPhysicsWorld(R: Rapier, map: MapData): PhysicsWorld {
       .setTranslation(t.pos[0] + t.up[0] * th / 2, t.pos[1] + t.up[1] * th / 2, t.pos[2] + t.up[2] * th / 2)
       .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }));
   }
-  world.step();
+  // the first steps wake the crates (new contacts): let them settle (stacks find their rest), then they sleep until
+  // something hits them
+  const crates = crateBodies.get(world)!;
+  for (let i = 0; i < 90; i++) {
+    world.step();
+    if (i > 2 && !crates.some((b) => !b.isSleeping())) break;
+  }
+  for (const b of crates) b.sleep();
   return world;
 }

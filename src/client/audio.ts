@@ -77,6 +77,30 @@ export class GameAudio {
     this.tone('sine', pistol ? 150 : 110, 38, pistol ? .12 : .16, .2 * v * near, delay);
     this.noise(pistol ? .45 : .6, .05 * v * Math.sqrt(near), 1400 * dull, 120, delay + .03);
   }
+  /** Pump shotgun: a deep boom with a long roll, then (own gun) the pump racked back and forward. */
+  shotgun(dist = 0, own = false) {
+    const near = 1 / (1 + dist / 18);
+    const delay = dist / 343;
+    const dull = Math.max(0.15, 1 - dist / 120);
+    if (dist < 60) this.noise(.04, .2 * near, 7000 * dull, 2500 * dull, delay, 'highpass');
+    this.noise(.2, .32 * near, 2400 * dull, 140, delay);
+    this.tone('sine', 85, 30, .28, .3 * near, delay);
+    this.noise(.9, .07 * Math.sqrt(near), 1000 * dull, 90, delay + .04);
+    if (own) {
+      this.noise(.07, .07, 2200, 900, .32, 'bandpass', 2);
+      this.click(.1, 1300, .36);
+      this.noise(.06, .08, 2600, 1100, .48, 'bandpass', 2);
+      this.click(.12, 1700, .52);
+    }
+  }
+  /** Rocket launch: a hard pop, then the motor's hiss going away. */
+  rocket(dist = 0) {
+    const near = 1 / (1 + dist / 18);
+    this.noise(.08, .22 * near, 1800, 300);
+    this.tone('sine', 120, 45, .18, .18 * near);
+    this.noise(.7, .12 * near, 900, 3800, .03, 'bandpass', 1.4);
+    this.noise(.5, .05 * near, 5000, 2000, .1, 'highpass');
+  }
   /** Bullet whine off a hard surface. */
   ricochet(dist = 0) {
     const near = 1 / (1 + dist / 10);
@@ -96,7 +120,20 @@ export class GameAudio {
   /**
    * Reload in stages over `total` s: magazine out, magazine in, and (empty) the slide / bolt is pulled and released.
    */
-  reload(pistol: boolean, total: number, empty: boolean) {
+  reload(pistol: boolean, total: number, empty: boolean, kind: 'mag' | 'shells' | 'rocket' = 'mag') {
+    if (kind === 'shells') {
+      // shells pushed into the tube one by one, the pump racked at the end
+      for (let t = 0.2; t < total - 0.5; t += 0.36) { this.noise(.05, .06, 2400, 900, t, 'bandpass', 2); this.click(.07, 1500, t + .04); }
+      this.noise(.07, .07, 2200, 900, total - .32, 'bandpass', 2); this.click(.1, 1300, total - .28);
+      this.noise(.06, .08, 2600, 1100, total - .16, 'bandpass', 2); this.click(.12, 1700, total - .12);
+      return;
+    }
+    if (kind === 'rocket') {
+      // a rocket slid into the tube, the latch clicks
+      this.noise(.4, .05, 900, 1600, .25, 'bandpass', 1.2);
+      this.click(.12, 1100, total * 0.75); this.tone('triangle', 260, 160, .08, .05, total * 0.75);
+      return;
+    }
     const end = total - (empty ? 0.55 : 0.15);
     // release + magazine sliding out
     this.click(.06, pistol ? 2400 : 1700, .05);
@@ -115,7 +152,65 @@ export class GameAudio {
       this.click(.12, pistol ? 2200 : 1500, total - 0.12);
     }
   }
-  punch(hit: boolean) { if (hit) { this.noise(.07,.16,700,120);this.tone('sine',90,45,.08,.12); } else this.noise(.1,.05,1800,600); }
+  /** A punch: the swing's whoosh; on a body a heavy thump, a slap of the glove and a short crunch. */
+  punch(hit: boolean) {
+    this.noise(.11, .05, 500, 1900, 0, 'bandpass', 1.6);
+    if (!hit) return;
+    this.tone('sine', 130, 48, .12, .22, .03);
+    this.noise(.06, .2, 2200, 500, .03, 'bandpass', 1.2);
+    this.noise(.03, .09, 6000, 3000, .035, 'highpass');
+    this.noise(.14, .1, 600, 90, .04);
+  }
+  /** A kick: a heavier swing; landing on someone / a crate, a deep boot thud. */
+  kick(hit: boolean) {
+    this.noise(.16, .07, 350, 1500, 0, 'bandpass', 1.4);
+    if (!hit) return;
+    this.tone('sine', 95, 36, .18, .28, .07);
+    this.noise(.09, .2, 1500, 260, .07);
+    this.noise(.2, .08, 500, 80, .09);
+  }
+  /** A body bursting: a wet splat, a crunch, drops pattering down. */
+  gore(dist = 0) {
+    const near = 1 / (1 + dist / 10);
+    if (near < 0.05) return;
+    this.noise(.32, .3 * near, 1100, 140);
+    this.noise(.12, .18 * near, 520, 260, .01, 'bandpass', 3);
+    this.tone('sine', 70, 30, .3, .22 * near);
+    this.noise(.05, .1 * near, 4200, 1800, .02, 'bandpass', 2);
+    for (let i = 0; i < 6; i++) this.noise(.04, .05 * near, 900 + Math.random() * 900, 300, .18 + i * .07 + Math.random() * .05, 'bandpass', 2.5);
+  }
+  /** Your own death: the world goes muffled, a dull thud and a ringing in the ears. */
+  death() {
+    this.tone('sine', 110, 40, .5, .25);
+    this.noise(.6, .12, 500, 80);
+    this.tone('sine', 3100, 3000, 2.2, .025, .1);
+  }
+  /** Grappling hook: the launcher's twang and the rope paying out. */
+  hookFire() {
+    this.tone('triangle', 900, 320, .09, .08);
+    this.noise(.08, .1, 2600, 900);
+    this.noise(.3, .04, 3800, 2200, .04, 'bandpass', 3);
+  }
+  /** The claw bites: a metal clank, then the winch ratchets. */
+  hookBite(dist = 0) {
+    const near = 1 / (1 + dist / 15);
+    this.click(.14 * near, 2100);
+    this.tone('triangle', 1400, 1150, .16, .05 * near);
+    for (let i = 0; i < 7; i++) this.click(.035, 2800 - i * 60, .12 + i * .055);
+  }
+  /** Let go of the rope / the claw comes back. */
+  hookRelease() { this.click(.07, 1600); this.noise(.12, .04, 1800, 3200, 0, 'bandpass', 2); }
+  /** A hit on a crystal: a glassy ping (dull and short when shot from too far). */
+  crystalHit(far: boolean, dist = 0) {
+    const near = 1 / (1 + dist / 12);
+    const f = 1900 + Math.random() * 900;
+    if (far) { this.tone('triangle', f * 0.5, f * 0.45, .08, .03 * near); return; }
+    this.tone('sine', f, f * 0.995, .45, .05 * near);
+    this.tone('sine', f * 1.51, f * 1.5, .3, .025 * near);
+    this.noise(.05, .06 * near, 7000, 4000, 0, 'highpass');
+  }
+  /** Your crystal is under attack: two short low alert tones. */
+  alarm() { this.tone('square', 440, 440, .12, .03); this.tone('square', 330, 330, .16, .03, .16); }
   pickup() { this.tone('triangle',660,880,.05,.04);this.tone('triangle',880,990,.05,.03,.05); }
   eat() { this.noise(.06,.08,2600,900);this.noise(.06,.07,2200,800); }
   coins() { this.tone('square',1250,1250,.05,.02);this.tone('square',1660,1660,.09,.02,.06); }

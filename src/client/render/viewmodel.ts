@@ -7,7 +7,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { ITEM_ORDER, ItemId } from '../../shared/economy';
 import type { WeaponId } from '../../shared/weapons';
 import type { GameAssets } from './assets';
-import { GunModel, pistolModel, rifleModel } from './guns';
+import { GunModel, hookGunModel, launcherModel, pistolModel, rifleModel, shotgunModel } from './guns';
 import { itemMeshes } from './pickupView';
 
 /**
@@ -20,11 +20,19 @@ const RIFLE_OFFSET = new Vector3(-0.03, 0.055, 0.16);
 const SHOVEL_TILT = 0.7;
 const PISTOL_ROT = [0.03, 0.08, -0.03] as const;
 const PISTOL_OFFSET = new Vector3(-0.13, 0.1, 0.02);
-/** How far the slide / bolt travels back, m. */
-const SLIDE_TRAVEL = { pistol: 0.035, rifle: 0.075 };
+/** The shotgun sits like the rifle; the launcher rides higher on the shoulder, the hook gun is held out one-handed. */
+const SHOTGUN_OFFSET = new Vector3(-0.03, 0.06, 0.16);
+const LAUNCHER_ROT = [0.0, 0.03, 0] as const;
+const LAUNCHER_OFFSET = new Vector3(0.0, 0.07, 0.1);
+const HOOK_ROT = [0.04, 0.1, -0.05] as const;
+const HOOK_OFFSET = new Vector3(-0.06, 0.08, 0.04);
+/** How far the slide / bolt / pump travels back, m. */
+const SLIDE_TRAVEL: Partial<Record<WeaponId, number>> = { pistol: 0.035, rifle: 0.075, shotgun: 0.09 };
+type Gun = 'pistol' | 'rifle' | 'shotgun' | 'rocket';
+const isViewGun = (w: WeaponId): w is Gun => w === 'pistol' || w === 'rifle' || w === 'shotgun' || w === 'rocket';
 
 /** What the hands hold besides weapons: tools and pocket items. */
-export type ViewTool = 'build' | 'rod' | ItemId | null;
+export type ViewTool = 'build' | 'rod' | 'hook' | ItemId | null;
 
 /** Muzzle flash sprite: a hot core with four soft spikes, fading to transparent. */
 function flashTexture() {
@@ -60,6 +68,18 @@ export class ViewModel {
   private root = new Group();
   private rifle = new Group();
   private pistol = new Group();
+  private shotgun = new Group();
+  private rocket = new Group();
+  private hookGun = new Group();
+  private hookClaw = new Vector3();
+  private hookModel!: GunModel;
+  /** The claw is out on the rope (hidden on the gun). */
+  hookOut = false;
+  /** Kick: the leg comes up from below the screen, 1 → 0. */
+  private kickT = 0;
+  private leg = new Group();
+  /** Shotgun: the pump is worked after a shot, 1 → 0. */
+  private pumpT = 0;
   private fists = new Group();
   private rod = new Group();
   private grenade = new Group();
@@ -86,9 +106,10 @@ export class ViewModel {
   private flashLight = new PointLight(0xffc070, 0, 3, 2);
   private sun = new DirectionalLight(0xffeccc, 2.2);
   private hemi = new HemisphereLight(0xfff1dc, 0x6a5a48, 0.7);
-  private kick = 0;
+  private recoilK = 0;
   private flashT = 1;
-  private guns!: { rifle: GunModel; pistol: GunModel };
+  private guns!: Record<Gun, GunModel>;
+  private muzzles!: Record<Gun, Vector3>;
   private reloadEmpty = false;
   private swayX = 0;
   private swayY = 0;
@@ -154,7 +175,46 @@ export class ViewModel {
     pistolGun.root.updateMatrix();
     this.pistolMuzzle.copy(pistolGun.muzzle).applyMatrix4(pistolGun.root.matrix);
     this.pistol.add(pistolGun.root);
-    this.guns = { rifle: rifleGun, pistol: pistolGun };
+
+    // pump shotgun: right hand on the grip, left on the pump
+    const shotgunGun = shotgunModel();
+    shotgunGun.root.rotation.set(...RIFLE_ROT);
+    shotgunGun.root.position.copy(SHOTGUN_OFFSET);
+    shotgunGun.root.add(hand(0.006, -0.05, 0.08, 0.6, 0, 0));
+    shotgunGun.slide.add(hand(-0.012, -0.012, -0.25, 0.9, 0.5, 0.25));
+    shotgunGun.root.updateMatrix();
+    this.shotgun.add(shotgunGun.root);
+    // rocket launcher on the shoulder: both hands on its grips
+    const launcher = launcherModel();
+    launcher.root.rotation.set(...LAUNCHER_ROT);
+    launcher.root.position.copy(LAUNCHER_OFFSET);
+    launcher.root.add(hand(0.004, -0.05, 0.0, 0.4, 0, 0), hand(-0.01, -0.05, -0.3, 0.6, 0.4, 0.3));
+    launcher.root.updateMatrix();
+    this.rocket.add(launcher.root);
+    // grappling-hook gun, one hand
+    const hookGun = hookGunModel(teamColor);
+    hookGun.root.rotation.set(...HOOK_ROT);
+    hookGun.root.position.copy(HOOK_OFFSET);
+    hookGun.root.add(hand(0.004, -0.045, 0.02, 0.35, 0, 0));
+    hookGun.root.updateMatrix();
+    this.hookClaw.copy(hookGun.muzzle).applyMatrix4(hookGun.root.matrix);
+    this.hookGun.add(hookGun.root);
+    this.hookModel = hookGun;
+    this.guns = { rifle: rifleGun, pistol: pistolGun, shotgun: shotgunGun, rocket: launcher };
+    const at = (g: GunModel) => g.muzzle.clone().applyMatrix4(g.root.matrix);
+    this.muzzles = { rifle: this.muzzle, pistol: this.pistolMuzzle, shotgun: at(shotgunGun), rocket: at(launcher) };
+
+    // the kicking leg: trousers in the team colour, a heavy boot; it lives below the screen until a kick
+    const legM = new MeshStandardMaterial({ color: new Color(teamColor).multiplyScalar(0.45), roughness: 0.85 });
+    const bootM = new MeshStandardMaterial({ color: 0x1d1b19, roughness: 0.6 });
+    const shin = new Mesh(new CylinderGeometry(0.075, 0.09, 0.55, 14), legM);
+    shin.position.y = 0.3;
+    const boot = new Mesh(new RoundedBoxGeometry(0.15, 0.13, 0.3, 3, 0.04), bootM);
+    boot.position.set(0, 0.0, -0.06);
+    const sole = new Mesh(new RoundedBoxGeometry(0.16, 0.035, 0.32, 2, 0.012), new MeshStandardMaterial({ color: 0x3a3631, roughness: 0.9 }));
+    sole.position.set(0, -0.07, -0.06);
+    this.leg.add(shin, boot, sole);
+    this.leg.visible = false;
 
     // grenade + shovel: chunky low-poly in the Kenney palette (flat shaded, bevelled), team-coloured accents
     const flat = (color: number, rough = 0.7) => new MeshStandardMaterial({ color, roughness: rough, flatShading: true });
@@ -258,8 +318,8 @@ export class ViewModel {
       this.held.add(g);
     }
 
-    this.root.add(this.rifle, this.pistol, this.fists, this.rod, this.grenade, this.shovel, this.held);
-    this.scene.add(this.root, this.sun, this.sun.target, this.hemi);
+    this.root.add(this.rifle, this.pistol, this.shotgun, this.rocket, this.hookGun, this.fists, this.rod, this.grenade, this.shovel, this.held);
+    this.scene.add(this.root, this.leg, this.sun, this.sun.target, this.hemi);
     this.setWeapon('fists');
   }
 
@@ -294,9 +354,23 @@ export class ViewModel {
     this.swing = 1;
   }
 
+  /** V: the boot comes up into view and shoots forward. */
+  kick() {
+    this.kickT = 1;
+  }
+
+  /** The hook gun fired / the claw came back: a small jolt. */
+  hookShot() {
+    this.recoilK = 0.6;
+  }
+
   /** Reload started: `empty` = the slide / bolt has to be racked at the end. */
   reload(empty: boolean) {
     this.reloadEmpty = empty;
+  }
+
+  private gunGroup(w: Gun) {
+    return w === 'rifle' ? this.rifle : w === 'pistol' ? this.pistol : w === 'shotgun' ? this.shotgun : this.rocket;
   }
 
   fire() {
@@ -305,26 +379,44 @@ export class ViewModel {
       this.punchT = 1;
       return;
     }
-    this.kick = this.current === 'pistol' ? 0.7 : 1;
-    if (this.current === 'rifle' || this.current === 'pistol') {
-      // the flash lives on the current gun's muzzle
-      const gun = this.current === 'rifle' ? this.rifle : this.pistol;
-      const m = this.current === 'rifle' ? this.muzzle : this.pistolMuzzle;
+    const w = this.current;
+    this.recoilK = w === 'pistol' ? 0.7 : w === 'shotgun' ? 1.6 : w === 'rocket' ? 1.3 : 1;
+    if (w === 'shotgun') this.pumpT = 1;
+    if (w === 'rocket') this.guns.rocket.mag.visible = false;
+    if (isViewGun(w)) {
+      // the flash lives on the current gun's muzzle (a shotgun's is big, the rocket's is the motor's burn)
+      const gun = this.gunGroup(w);
+      const m = this.muzzles[w];
       gun.add(this.flash, this.flashLight);
       this.flash.position.copy(m);
       this.flashLight.position.copy(m);
       this.flashT = 0;
       this.flash.rotation.z = Math.random() * Math.PI;
-      this.flash.scale.setScalar(0.8 + Math.random() * 0.5);
+      this.flash.scale.setScalar((w === 'shotgun' ? 1.6 : w === 'rocket' ? 2 : 0.8) + Math.random() * 0.5);
     }
   }
 
   /** Muzzle position in camera space (for tracers). */
   muzzleCameraSpace(out = new Vector3()): Vector3 {
-    const pistol = this.current === 'pistol';
-    const gun = pistol ? this.pistol : this.rifle;
+    const w: Gun = isViewGun(this.current) ? this.current : 'rifle';
+    const gun = this.gunGroup(w);
     gun.updateWorldMatrix(true, false);
-    return out.copy(pistol ? this.pistolMuzzle : this.muzzle).applyMatrix4(gun.matrixWorld);
+    return out.copy(this.muzzles[w]).applyMatrix4(gun.matrixWorld);
+  }
+
+  /** Where the hook gun's claw sits, as seen by the world camera (the rope starts there). */
+  hookClawWorld(camera: PerspectiveCamera, out = new Vector3()): Vector3 {
+    this.hookGun.updateWorldMatrix(true, false);
+    return this.toWorldCamera(out.copy(this.hookClaw).applyMatrix4(this.hookGun.matrixWorld), camera);
+  }
+
+  /** A point in viewmodel-camera space → the world point on the same screen spot at the same distance. */
+  private toWorldCamera(p: Vector3, camera: PerspectiveCamera) {
+    const dist = p.length();
+    p.project(this.camera);
+    p.z = 0.5;
+    p.unproject(camera).sub(camera.position).normalize().multiplyScalar(dist);
+    return p.add(camera.position);
   }
 
   /**
@@ -333,12 +425,7 @@ export class ViewModel {
    */
   rodTipWorld(camera: PerspectiveCamera, out = new Vector3()): Vector3 {
     this.rod.updateWorldMatrix(true, false);
-    const tip = out.copy(this.rodTip).applyMatrix4(this.rod.matrixWorld);
-    const dist = tip.length();
-    tip.project(this.camera);
-    tip.z = 0.5;
-    tip.unproject(camera).sub(camera.position).normalize().multiplyScalar(dist);
-    return tip.add(camera.position);
+    return this.toWorldCamera(out.copy(this.rodTip).applyMatrix4(this.rod.matrixWorld), camera);
   }
 
   update(dt: number, opts: { speed: number; lookDX: number; lookDY: number; reload: number; sunCam: Vector3; upCam: Vector3; aspect: number;
@@ -346,7 +433,7 @@ export class ViewModel {
     empty?: boolean; }) {
     this.camera.aspect = opts.aspect;
     this.camera.updateProjectionMatrix();
-    this.kick = Math.max(0, this.kick - dt * 9);
+    this.recoilK = Math.max(0, this.recoilK - dt * (this.current === 'shotgun' || this.current === 'rocket' ? 6 : 9));
     this.flashT += dt;
     this.flash.visible = this.flashT < 0.045;
     this.flashLight.intensity = this.flash.visible ? 3 : 0;
@@ -356,7 +443,7 @@ export class ViewModel {
     const sp = Math.min(opts.speed / 7.6, 1.5);
     this.bobT += dt * (4 + sp * 6) * (sp > 0.05 ? 1 : 0.3);
     const bob = sp * 0.012;
-    const k = this.kick;
+    const k = this.recoilK;
     const rel = opts.reload;
     // reload: the gun rolls to show the magazine well, then comes back
     const relDip = rel > 0 ? Math.sin(Math.min(rel, 1) * Math.PI) : 0;
@@ -369,6 +456,10 @@ export class ViewModel {
     const weapon = this.tool === null;
     this.rifle.visible = weapon && this.current === 'rifle';
     this.pistol.visible = weapon && this.current === 'pistol';
+    this.shotgun.visible = weapon && this.current === 'shotgun';
+    this.rocket.visible = weapon && this.current === 'rocket';
+    this.hookGun.visible = this.tool === 'hook';
+    this.hookModel.mag.visible = !this.hookOut;
     this.fists.visible = weapon && this.current === 'fists';
     this.grenade.visible = weapon && this.current === 'grenade';
     this.shovel.visible = this.tool === 'build';
@@ -382,15 +473,34 @@ export class ViewModel {
     this.held.position.set(0.0, 0.03 + fling * 0.08, -0.08 - fling * 0.22);
     this.held.rotation.set(-fling * 0.7, 0, 0);
     if (item) this.heldItems[item].visible = this.tossT < 0.35 || this.tossT > 0.75;
-    // punch: the active fist jabs forward and a bit inward, then comes back
-    this.punchT = Math.max(0, this.punchT - dt * 4.5);
-    const jab = Math.sin(Math.min(1, (1 - this.punchT) * 1.6) * Math.PI) * (this.punchT > 0 ? 1 : 0);
+    // punch: a quick wind-up, then the active fist drives forward and in with a twist of the wrist, the other one
+    // pulls back to the chin; the whole guard leans into it
+    this.punchT = Math.max(0, this.punchT - dt * 4.2);
+    const pt = 1 - this.punchT;
+    const wind = this.punchT > 0 ? Math.sin(Math.min(1, pt / 0.18) * Math.PI) * (pt < 0.18 ? 1 : 0) : 0;
+    const jab = this.punchT > 0 && pt >= 0.12 ? Math.sin(Math.min(1, (pt - 0.12) * 1.9) * Math.PI) : 0;
     this.fists.children.forEach((h, i) => {
       const side = i === 0 ? -1 : 1;
       const rest = h.userData.rest as Vector3;
       const on = side === this.punchHand ? jab : 0;
-      h.position.set(rest.x - side * on * 0.12, rest.y + on * 0.08, rest.z - on * 0.32);
+      const back = side === this.punchHand ? wind : jab * 0.4;
+      h.position.set(rest.x - side * on * 0.17, rest.y + on * 0.1 - back * 0.02, rest.z - on * 0.42 + back * 0.06);
+      h.rotation.set(0.6 - on * 0.35, -side * 0.2, side * (0.35 - on * 1.1));
     });
+    this.fists.position.set(-this.punchHand * jab * 0.03, 0, -jab * 0.05);
+    this.fists.rotation.set(0, this.punchHand * jab * 0.12, 0);
+    // kick: the boot rises from below the screen and drives forward, then drops back out of view
+    this.kickT = Math.max(0, this.kickT - dt * 2.6);
+    this.leg.visible = this.kickT > 0;
+    if (this.kickT > 0) {
+      const kt = 1 - this.kickT;
+      const up = Math.sin(Math.min(1, kt / 0.75) * Math.PI);
+      const thrust = Math.sin(Math.min(1, Math.max(0, kt - 0.12) / 0.5) * Math.PI);
+      this.leg.position.set(0.05, -0.95 + up * 0.55, -0.45 - thrust * 0.32);
+      this.leg.rotation.set(0.35 + up * 0.9, 0.08, 0);
+    }
+    // shotgun pump: racked back and forward right after the shot
+    this.pumpT = Math.max(0, this.pumpT - dt * 2.2);
     // rod: cast flick, small tremble while a fish bites
     this.castT = Math.max(0, this.castT - dt * 3);
     const flick = Math.sin(this.castT * Math.PI);
@@ -405,15 +515,37 @@ export class ViewModel {
 
   /** Magazine out / in and the slide or bolt during a reload; the slide cycles on a shot and locks back when empty. */
   private animateGun(rel: number, empty: boolean) {
-    if (this.current !== 'rifle' && this.current !== 'pistol') return;
-    const g = this.guns[this.current];
-    const travel = SLIDE_TRAVEL[this.current];
     const smooth = (a: number, b: number, x: number) => {
       const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
       return t * t * (3 - 2 * t);
     };
+    if (this.current === 'shotgun') {
+      const g = this.guns.shotgun;
+      // shells go into the loading port one after another, the pump is worked at the end (and after every shot)
+      const shell = rel > 0 && rel < 0.85 ? (rel * 4) % 1 : 0;
+      g.mag.visible = rel > 0 && rel < 0.85;
+      g.mag.position.set(0, -0.06 + smooth(0.2, 0.7, shell) * 0.05, 0.05 - smooth(0.2, 0.7, shell) * 0.02);
+      const pump = this.pumpT > 0 ? Math.sin((1 - this.pumpT) * Math.PI) : rel > 0.85 ? Math.sin(smooth(0.85, 1, rel) * Math.PI) : 0;
+      g.slide.position.z = pump * SLIDE_TRAVEL.shotgun!;
+      return;
+    }
+    if (this.current === 'rocket') {
+      // a new rocket slides into the front of the tube
+      const g = this.guns.rocket;
+      if (rel > 0) {
+        g.mag.visible = rel > 0.35;
+        g.mag.position.set(0, -0.06 * (1 - smooth(0.35, 0.8, rel)), -0.25 * (1 - smooth(0.35, 0.8, rel)));
+      } else {
+        g.mag.position.set(0, 0, 0);
+        if (!empty) g.mag.visible = true;
+      }
+      return;
+    }
+    if (this.current !== 'rifle' && this.current !== 'pistol') return;
+    const g = this.guns[this.current];
+    const travel = SLIDE_TRAVEL[this.current]!;
     let magDrop = 0;
-    let slide = Math.min(1, this.kick * 1.2) * 0.8;
+    let slide = Math.min(1, this.recoilK * 1.2) * 0.8;
     if (rel > 0) {
       // old magazine out (0.1–0.38), new one in from below (0.42–0.7)
       magDrop = rel < 0.4 ? smooth(0.1, 0.38, rel) : 1 - smooth(0.42, 0.7, rel);

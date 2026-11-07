@@ -139,6 +139,38 @@ body.debug #info, body.debug #speed { display: block; }
 #ammo .pips i.empty { background: rgba(255, 255, 255, .22); }
 #ammo .reload { font-size: 13px; color: #fff; }
 #ammo .empty { color: #ff8e83; }
+/* kick (V): ready = white, cooling down = dim with a filling line */
+#kick { position: absolute; right: 24px; bottom: 92px; display: flex; align-items: center; gap: 6px; color: #fff; transition: opacity .2s; }
+#kick .k-ic .ic { font-size: 18px; }
+#kick kbd { min-width: 18px; height: 18px; font-size: 10px; }
+#kick b { display: block; width: 34px; height: 2px; background: rgba(255, 255, 255, .2); overflow: hidden; opacity: 0; transition: opacity .2s; }
+#kick b i { display: block; height: 100%; width: 100%; background: #fff; }
+#kick.cd { opacity: .45; }
+#kick.cd b { opacity: 1; }
+
+/* death screen: the world drains of colour, a dark red edge, who did it and when you are back */
+#game { transition: filter .5s; }
+body.dead #game { filter: grayscale(.75) brightness(.78) contrast(1.08); }
+body.dead #crosshair, body.dead #hotbar, body.dead #weapon, body.dead #kick, body.dead #prompt, body.dead #bed-break, body.dead #hp { opacity: 0; }
+#death { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity .35s;
+  background: radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(70, 0, 0, .55) 100%); }
+#death::before { content: ''; position: absolute; inset: 0; background: rgba(170, 0, 0, .35); opacity: 0; }
+body.dead #death { opacity: 1; }
+body.dead #death::before { animation: death-flash .7s ease-out; }
+@keyframes death-flash { 0% { opacity: 1; } 100% { opacity: 0; } }
+#death .card { position: relative; top: 24%; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+#death .kicker { font-size: 11px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; color: rgba(255, 255, 255, .6); }
+#death h2 { margin: 0; font: 800 54px/1 var(--display); letter-spacing: .04em; text-transform: uppercase; color: #fff;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, .6); }
+body.dead #death h2 { animation: death-in .6s cubic-bezier(.2, .9, .3, 1); }
+@keyframes death-in { 0% { transform: scale(1.25); letter-spacing: .3em; opacity: 0; } 100% { transform: none; opacity: 1; } }
+#death .by { margin: 4px 0 0; display: flex; align-items: center; gap: 8px; font-size: 15px; color: rgba(255, 255, 255, .9); }
+#death .by .ic { font-size: 18px; }
+#death .by small { color: rgba(255, 255, 255, .55); font-size: 13px; }
+#death .bar { width: 220px; height: 3px; margin-top: 14px; background: rgba(255, 255, 255, .18); overflow: hidden; }
+#death .bar i { display: block; height: 100%; width: 0; background: #fff; }
+#death .t { margin: 0; font-size: 12px; color: rgba(255, 255, 255, .6); letter-spacing: .04em; }
+#death.final .bar { display: none; }
 
 
 /* fishing strike bar: a marker sweeps once, press in the zone */

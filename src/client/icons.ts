@@ -8,7 +8,8 @@ for (const [path, svg] of Object.entries(files)) icons[path.slice(8, -4)] = svg.
 
 export type IconName =
   | 'heart' | 'coins' | 'crystal' | 'rifle' | 'grenade' | 'shovel' | 'wind' | 'shop' | 'trophy' | 'skull' | 'wall'
-  | 'stairs' | 'wood' | 'stone' | 'metal' | 'swords' | 'fist' | 'pistol' | 'rod' | 'apple' | 'bottle' | 'fish' | 'ammo';
+  | 'stairs' | 'wood' | 'stone' | 'metal' | 'swords' | 'fist' | 'pistol' | 'rod' | 'apple' | 'bottle' | 'fish' | 'ammo'
+  | 'shotgun' | 'rocket' | 'hook' | 'kick';
 
 export function icon(name: IconName, cls = ''): string {
   const svg = icons[name] ?? '';

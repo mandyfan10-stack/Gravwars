@@ -1,10 +1,14 @@
 import type { Economy, ItemId } from './economy';
 import { ITEM_ORDER } from './economy';
 
+/** Guns that go into a hand (bought in the shop). */
+export type GunId = 'pistol' | 'shotgun' | 'rifle' | 'rocket';
+export const HELD_GUNS: GunId[] = ['pistol', 'shotgun', 'rifle', 'rocket'];
+export const isHeldGun = (h: Holdable | null): h is GunId => !!h && (HELD_GUNS as string[]).includes(h);
 /** Everything that can go into a hand besides the bare fists (an empty hand punches). */
-export type Holdable = 'pistol' | 'rifle' | 'grenade' | 'build' | 'rod' | ItemId;
+export type Holdable = GunId | 'grenade' | 'build' | 'hook' | 'rod' | ItemId;
 /** Where new things go first: weapons on the left, the tools, then the pocket items. */
-export const HOLD_ORDER: Holdable[] = ['pistol', 'rifle', 'grenade', 'build', 'rod', ...ITEM_ORDER];
+export const HOLD_ORDER: Holdable[] = [...HELD_GUNS, 'grenade', 'build', 'hook', 'rod', ...ITEM_ORDER];
 export const HOTBAR_SIZE = 9;
 
 export const isItem = (h: Holdable | null): h is ItemId => !!h && (ITEM_ORDER as string[]).includes(h);
@@ -13,9 +17,10 @@ export const isItem = (h: Holdable | null): h is ItemId => !!h && (ITEM_ORDER as
 export function holdables(eco: Economy): Holdable[] {
   const ws = eco.weapons;
   return HOLD_ORDER.filter((h) => {
-    if (h === 'pistol' || h === 'rifle') return ws.owned[h];
+    if (isHeldGun(h)) return ws.owned[h];
     if (h === 'grenade') return ws.ammo.grenade > 0;
     if (h === 'build') return eco.has('builder');
+    if (h === 'hook') return eco.has('hook');
     if (h === 'rod') return eco.has('rod');
     return eco.items[h] > 0;
   });

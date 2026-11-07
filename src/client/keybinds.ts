@@ -75,6 +75,7 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     if (input.take('KeyF')) pockets.eat();
     if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
     if (input.take('KeyR')) player.pendingReload = true;
+    if (input.take('KeyV')) player.kick();
     // eliminated players stay out: K is a debug respawn for the living only
     if (input.take('KeyK') && player.me.alive) sim.respawn('manual');
     if (input.take('KeyN')) {

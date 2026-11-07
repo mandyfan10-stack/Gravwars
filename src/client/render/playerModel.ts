@@ -114,6 +114,7 @@ const POLE_L = new Vector3(1, -0.9, -0.2).normalize();
 const RIFLE_AT = new Vector3(-0.1, 0.22, 0.3);
 const PISTOL_AT = new Vector3(-0.03, 0.27, 0.46);
 const smooth = (x: number) => x * x * (3 - 2 * x);
+const KICK_TIME = 0.45;
 /** Shared by every third-person gun and grenade (vertex colours carry the parts' colours). */
 let gunMat: MeshStandardMaterial | null = null;
 const gunMaterial = () => (gunMat ??= new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.45 }));
@@ -138,6 +139,8 @@ export class PlayerModel {
   private recoil = 0;
   private punchT = 0;
   private throwT = 0;
+  /** Kick timer, s (counts down from KICK_TIME). */
+  private kickT = 0;
   private flash = 0;
   private dying = false;
   private dieT = 0;
@@ -213,6 +216,11 @@ export class PlayerModel {
     this.body.quaternion.setFromAxisAngle(AY, yaw + Math.PI);
   }
 
+  /** A front kick with the right leg (V). */
+  kick() {
+    this.kickT = KICK_TIME;
+  }
+
   /** Brief white flash (took damage). */
   hit() {
     this.flash = 1;
@@ -264,6 +272,7 @@ export class PlayerModel {
     this.recoil = Math.max(0, this.recoil - dt * 9);
     this.punchT = Math.max(0, this.punchT - dt);
     this.throwT = Math.max(0, this.throwT - dt);
+    this.kickT = Math.max(0, this.kickT - dt);
     this.breath += dt;
 
     // --- legs and body: gait cycle (one cycle = two steps, ~1.5 m walking, longer strides running)
@@ -289,13 +298,27 @@ export class PlayerModel {
       r.shin[i].rotation.x = kn;
       r.foot[i].rotation.x = -(th + kn) * 0.6 * move + this.air * 0.25;
     }
+    // kick: the right knee comes up (chamber), the leg snaps out straight, then back down; the body leans back
+    let lean = 0;
+    if (this.kickT > 0) {
+      const e = 1 - this.kickT / KICK_TIME; // 0 → 1
+      const chamber = smooth(Math.min(1, e / 0.3));
+      const snap = e < 0.3 ? 0 : e < 0.5 ? smooth((e - 0.3) / 0.2) : 1 - smooth((e - 0.5) / 0.5);
+      const out = e < 0.5 ? chamber : 1 - smooth((e - 0.5) / 0.5);
+      r.thigh[RIGHT].rotation.x = -1.35 * out - 0.2 * snap;
+      r.shin[RIGHT].rotation.x = 1.5 * out * (1 - snap) + 0.05;
+      r.foot[RIGHT].rotation.x = -0.3 * snap;
+      r.thigh[LEFT].rotation.x = 0.12 * out;
+      r.shin[LEFT].rotation.x = 0.2 * out;
+      lean = 0.22 * out;
+    }
     // pelvis: bob (lowest when the feet pass each other), sway, run crouch
     const bob = (Math.abs(Math.cos(ph)) - 0.6) * (0.035 + run * 0.03) * move;
     r.pelvis.position.y = 0.975 + bob - run * 0.04 * move + Math.sin(this.breath * 1.7) * 0.003;
     r.pelvis.rotation.set(0, Math.sin(ph) * 0.12 * move, Math.sin(ph) * 0.03 * move);
     // chest: counter-twist, lean into a run, breathing
     const aim = this.held === 'rifle' || this.held === 'pistol';
-    r.chest.rotation.set(0.06 + run * 0.2 * move + Math.sin(this.breath * 1.7) * 0.012, -Math.sin(ph) * (aim ? 0.04 : 0.16) * move, 0);
+    r.chest.rotation.set(0.06 + run * 0.2 * move + Math.sin(this.breath * 1.7) * 0.012 - lean, -Math.sin(ph) * (aim ? 0.04 : 0.16) * move, 0);
     r.head.rotation.x = -r.chest.rotation.x * 0.7;
 
     // --- arms

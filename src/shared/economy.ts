@@ -185,7 +185,7 @@ export type Currency = 'cash' | 'crystal';
 export const CURRENCY_LABEL: Record<Currency, string> = { cash: 'деньги', crystal: 'кристаллы' };
 
 /** One-off tools: bought once, kept for the match. */
-export type Step = 'rod' | 'builder';
+export type Step = 'rod' | 'builder' | 'hook';
 
 /** Wood that comes with the build tool, so that it is usable right away (a bridge to the centre is ~75 plates). */
 export const BUILDER_WOOD = 16;
@@ -220,14 +220,19 @@ export function shopGroup(item: ShopItem): ShopGroup {
 export const SHOP: ShopItem[] = [
   { id: 'rod', label: 'Удочка', note: 'ловить рыбу в прудах парка', price: 5, currency: 'cash', step: 'rod', kind: 'tool' },
   { id: 'builder', label: 'Инструмент строителя', note: `+${BUILDER_WOOD} дерева`, price: 11, currency: 'cash', step: 'builder', kind: 'tool' },
+  { id: 'hook', label: 'Крюк-кошка', note: 'притягивает к точке до 30 м', price: 9, currency: 'cash', step: 'hook', kind: 'tool' },
   { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 19, currency: 'cash', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
+  { id: 'shotgun', label: 'Дробовик', note: `${WEAPONS.shotgun.mag} патронов, вблизи смертелен`, price: 27, currency: 'cash', kind: 'weapon', weapon: 'shotgun', count: WEAPONS.shotgun.mag },
   { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 41, currency: 'cash', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
+  { id: 'rocket', label: 'Ракетница', note: `взрыв ${WEAPONS.rocket.radius} м, ${WEAPONS.rocket.damage} урона`, price: 4, currency: 'crystal', kind: 'weapon', weapon: 'rocket', count: 1 },
   { id: 'grenade', label: 'Гранаты ×2', price: 14, currency: 'cash', kind: 'weapon', weapon: 'grenade', count: 2 },
   { id: 'wood', label: 'Дерево ×16', note: '1 дерево = 1 постройка', price: 4, currency: 'cash', kind: 'blocks', material: 'wood', count: 16 },
   { id: 'stone', label: 'Камень ×8', price: 8, currency: 'cash', kind: 'blocks', material: 'stone', count: 8 },
   { id: 'metal', label: 'Металл ×4', price: 2, currency: 'crystal', kind: 'blocks', material: 'metal', count: 4 },
   { id: 'ammo-pistol', label: 'Патроны: пистолет ×15', price: 3, currency: 'cash', kind: 'ammo', weapon: 'pistol', count: 15 },
+  { id: 'ammo-shotgun', label: 'Патроны: дробовик ×12', price: 4, currency: 'cash', kind: 'ammo', weapon: 'shotgun', count: 12 },
   { id: 'ammo-rifle', label: 'Патроны: автомат ×30', price: 6, currency: 'cash', kind: 'ammo', weapon: 'rifle', count: 30 },
+  { id: 'ammo-rocket', label: 'Ракеты ×3', price: 1, currency: 'crystal', kind: 'ammo', weapon: 'rocket', count: 3 },
   { id: 'medkit', label: 'Аптечка', note: 'в руку, ЛКМ — полное здоровье', price: 8, currency: 'cash', kind: 'item', item: 'medkit', count: 1 },
 ];
 

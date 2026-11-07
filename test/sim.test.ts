@@ -5,7 +5,7 @@ import {
 } from '../src/shared/blocks';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
 import { activeTeams, botRoster, defaultLobby, lobbyProblem, parseLobby, playerTeam, seatPlayer } from '../src/shared/lobby';
-import { GENERATORS, Match } from '../src/shared/match';
+import { BED_HP, GENERATORS, Match } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP } from '../src/shared/economy';
 import { holdables, Hotbar } from '../src/shared/inventory';
 import { THROW, Throws } from '../src/shared/throwables';
@@ -274,8 +274,10 @@ sim.respawn();
 }
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
-import { Combat, DAMAGE_SCALE, MAX_HP, SPAWN_GUARD, Target } from '../src/shared/combat';
-import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
+import { Combat, CRYSTAL, DAMAGE_SCALE, MAX_HP, SPAWN_GUARD, Target } from '../src/shared/combat';
+import { createWeaponState, energyLeft, giveWeapon, hasAmmo, KICK, kicked, kickReady, MELEE, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
+import { Props } from '../src/shared/props';
+import { HOOK } from '../src/shared/sim';
 {
   sim.team = TEAMS[0];
   sim.respawn();
@@ -315,7 +317,7 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   };
   const rf = flight('rifle');
   const pf = flight('pistol');
-  check('rifle: flat and fast over 100 m', rf.drop > 0.04 && rf.drop < 0.3 && rf.speed > 0.88 && rf.speed < 0.97 && rf.t < 0.2,
+  check('rifle: flat over 100 m, a slow visible tracer (~0.5 s)', rf.drop > 0.04 && rf.drop < 0.3 && rf.speed > 0.88 && rf.speed < 0.97 && rf.t > 0.4 && rf.t < 0.6,
     `drop=${rf.drop.toFixed(2)}m speed=${(rf.speed * 100).toFixed(0)}% t=${rf.t.toFixed(2)}s`);
   check('pistol: drops more and slows down', pf.drop > rf.drop * 3 && pf.speed < rf.speed && pf.speed > 0.7,
     `drop=${pf.drop.toFixed(2)}m speed=${(pf.speed * 100).toFixed(0)}%`);
@@ -572,16 +574,40 @@ import { createWeaponState, energyLeft, giveWeapon, hasAmmo, shotSpread, weaponT
   m.tick(TICK_DT, gen.pos.clone().addScaledVector(gen.up, 0.95));
   check('walking onto the generator collects', m.wallet.crystal === GENERATORS.crystal.cap && gen.stored === 0 && m.events.some((e) => e.type === 'pickup'));
   check('player can stand at the shop', m.nearShop(new Vector3(...map.spawns.red.pos)) === false && m.shop !== null);
-  // enemy bed: walled off from the roof, reachable after breaking the wall
+  // enemy crystal: walled off, then shot to pieces, but only from within 5 m
   const blue = m.bed('blue');
   const st = map.statues.find((s) => s.team === 'blue')!;
   const bup = new Vector3(...st.up);
-  const roofEye = blue.pos.clone().addScaledVector(bup, -4 + 1.625).add(new Vector3(3, 0, 0).applyQuaternion(new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), bup)));
-  check('fortification blocks the enemy bed', m.reachableBed(roofEye) === null);
+  const side = new Vector3(1, 0, 0).applyQuaternion(new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), bup));
+  const roofEye = blue.pos.clone().addScaledVector(bup, -4 + 1.625).addScaledVector(side, 3);
+  const toBlue = blue.pos.clone().sub(roofEye).normalize();
+  check('fortification hides the enemy crystal', m.bedInSight(roofEye, toBlue) === null);
   for (const b of [...bs.blocks.values()]) if (b.team === 'blue') bs.damageCollider(b.collider.handle, b.hp);
-  check('enemy bed reachable once the wall is gone', m.reachableBed(roofEye) === blue, `d=${roofEye.distanceTo(blue.pos).toFixed(2)}`);
-  for (let k = 0; k < 64 * 2; k++) m.breakTick(TICK_DT, roofEye, true);
-  check('holding E breaks the bed', !blue.alive && m.events.some((e) => e.type === 'bedBroken' && e.team === 'blue'));
+  const sight = m.bedInSight(roofEye, toBlue);
+  check('enemy crystal in sight once the wall is gone, within 5 m', sight?.bed === blue && sight.dist < CRYSTAL.range, `d=${sight?.dist.toFixed(2)}`);
+  const cb = new Combat(R, w, map, [ps.mover.collider]);
+  m.attach(cb);
+  cb.targets.push({ id: 0, team: 'red', center: roofEye.clone(), up: bup, hp: MAX_HP, alive: true, respawnIn: -1 });
+  const shootBed = (from: Vector3, n: number) => {
+    for (let k = 0; k < n && blue.alive; k++) {
+      cb.fire('rifle', 0, from, blue.pos.clone().sub(from).normalize(), new Vector3(), bup.clone().negate());
+      for (let j = 0; j < 8; j++) cb.tick(TICK_DT);
+    }
+  };
+  const farEye = blue.pos.clone().addScaledVector(bup, -4 + 1.625).addScaledVector(side, -7);
+  shootBed(farEye, 6);
+  const farHits = cb.events.filter((e) => e.type === 'crystal');
+  check('shots from 7 m stop at the crystal and do nothing', blue.hp === BED_HP && farHits.length === 6 && farHits.every((e) => e.type === 'crystal' && e.far),
+    `hp=${blue.hp} hits=${farHits.length}`);
+  cb.events.length = 0;
+  shootBed(roofEye, 5);
+  const chipped = blue.hp;
+  for (let k = 0; k < 64 * 12; k++) m.tick(TICK_DT, new Vector3(0, 500, 0));
+  check('close shots chip the crystal; it heals back after 10 s', chipped < BED_HP - 8 && blue.hp === BED_HP, `${chipped.toFixed(1)} → ${blue.hp}`);
+  let shots = 0;
+  for (; shots < 80 && blue.alive; shots++) shootBed(roofEye, 1);
+  check('rifle fire from 3 m breaks the crystal in ~3 s', !blue.alive && shots > 25 && shots < 45 && m.events.some((e) => e.type === 'bedBroken' && e.team === 'blue' && e.byPlayer),
+    `shots=${shots}`);
   check('death with own bed = respawn', m.onDeath() === true && m.result === null);
   for (const t of TEAMS) if (t.id !== 'red') m.destroyBed(t.id);
   check('all enemy beds broken = win', m.result === 'win' && m.events.some((e) => e.type === 'win'));
@@ -1105,6 +1131,172 @@ for (const deg of [20, 37, 45]) {
   c2.targets.push(t4, t5);
   c2.damage(t4, 30, 3, false, t4.center);
   check('damage is a third and knocks the victim away from the attacker', Math.abs(t4.hp - 90) < 1e-6 && pushed.x > 0.5, `hp=${t4.hp} push=${pushed.x.toFixed(2)}`);
+}
+
+// GravWars weapons and tools: shotgun, rocket launcher, punches and kicks that hit everyone in front, crates that
+// fly, the grappling hook.
+{
+  const aw = new R.World({ x: 0, y: 0, z: 0 });
+  aw.createCollider(R.ColliderDesc.cuboid(60, 1, 60).setTranslation(0, -1, 0));
+  aw.createCollider(R.ColliderDesc.cuboid(10, 15, 0.5).setTranslation(0, 15, -25)); // a tall wall 24.5 m ahead
+  aw.step();
+  const c = new Combat(R, aw, map);
+  c.windMul = 0;
+  const Y = new Vector3(0, 1, 0);
+  const pushes = new Map<number, Vector3>();
+  const dummy = (id: number, x: number, y: number, z: number): Target => ({ id, team: 'blue', center: new Vector3(x, y, z), up: Y, hp: MAX_HP,
+    alive: true, respawnIn: -1, onImpulse: (v) => pushes.set(id, (pushes.get(id) ?? new Vector3()).add(v)) });
+  const shooter = dummy(0, 0, 1, 0);
+  shooter.team = 'red';
+  c.targets.push(shooter);
+  const settle = (ticks = 64) => { for (let k = 0; k < ticks; k++) c.tick(TICK_DT); };
+  const only = (...ts: Target[]) => { c.targets.length = 0; c.targets.push(shooter, ...ts); pushes.clear(); c.events.length = 0; };
+
+  // shotgun: 8 pellets; up close they all land, at 20 m most of them miss and the rest are weak
+  const shotgunAt = (dist: number) => {
+    const d = dummy(1, 0, 1, -dist);
+    only(d);
+    c.fire('shotgun', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
+    const pellets = c.volley.length;
+    settle();
+    return { pellets, hits: c.events.filter((e) => e.type === 'hit').length, dmg: MAX_HP - d.hp };
+  };
+  const sgNear = shotgunAt(4), sgFar = shotgunAt(20);
+  check('shotgun: 8 pellets, nearly all hit at 4 m for ~a third of the HP', sgNear.pellets === 8 && sgNear.hits >= 7 && sgNear.dmg > 30 && sgNear.dmg < 40,
+    `hits=${sgNear.hits} dmg=${sgNear.dmg.toFixed(1)}`);
+  check('shotgun: at 20 m few pellets land and they are weak', sgFar.hits <= 4 && sgFar.dmg < sgNear.dmg / 3, `hits=${sgFar.hits} dmg=${sgFar.dmg.toFixed(1)}`);
+
+  // rocket: flies straight and slow, blows up on the wall; 2.5 m radius; a direct hit takes 50 HP (not divided by 3)
+  const near = dummy(1, 1.5, 1, -23.4), far = dummy(2, 4.6, 1, -23.4);
+  only(near, far);
+  const rocket = c.fire('rocket', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
+  let boomT = 0;
+  for (let k = 0; k < 64 * 2 && !boomT; k++) { c.tick(TICK_DT); if (c.events.some((e) => e.type === 'explode')) boomT = (k + 1) * TICK_DT; }
+  check('rocket flies straight at ~36 m/s and blows up on the wall', boomT > 0.6 && boomT < 0.75 && Math.abs(rocket.pos.y - 1) < 0.01 && rocket.pos.z > -24.6,
+    `t=${boomT.toFixed(2)} at ${rocket.pos.toArray().map((v) => v.toFixed(2)).join(',')}`);
+  check('rocket splash: 1.5 m away hurts, 4.6 m away does not', near.hp < MAX_HP - 20 && far.hp === MAX_HP, `near=${near.hp.toFixed(0)} far=${far.hp}`);
+  const victim = dummy(1, 0, 1, -8);
+  only(victim);
+  c.fire('rocket', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
+  settle();
+  check('direct rocket hit: ~50 HP and a big shove', MAX_HP - victim.hp >= 45 && MAX_HP - victim.hp <= 50 && (pushes.get(1)?.length() ?? 0) > 10,
+    `dmg=${MAX_HP - victim.hp} push=${pushes.get(1)?.length().toFixed(1)}`);
+  shooter.center.set(0, 1, 10);
+  shooter.hp = MAX_HP;
+  only();
+  c.fire('rocket', 0, new Vector3(0, 1.6, 10), new Vector3(0, -1, -0.05).normalize(), new Vector3(), Y.clone().negate());
+  settle(20);
+  const rj = pushes.get(0) ?? new Vector3();
+  check('rocket jump: a rocket at your feet throws you up for a fraction of the damage', rj.y > 8 && shooter.hp < MAX_HP && shooter.hp > MAX_HP - 25,
+    `vy=${rj.y.toFixed(1)} hp=${shooter.hp.toFixed(0)}`);
+  shooter.center.set(0, 1, 0);
+  {
+    // the launcher holds one rocket: it reloads by itself after the shot (no dry click needed)
+    const ws = createWeaponState();
+    giveWeapon(ws, 'rocket');
+    ws.reserve.rocket = 2;
+    weaponTick(ws, { fire: false, reload: false, select: 'rocket' }, TICK_DT);
+    let fired = 0, t = 0;
+    for (; t < 4 && fired < 2; t += TICK_DT) if (weaponTick(ws, { fire: ws.cooldown <= 0 && ws.reloadT <= 0 && ws.ammo.rocket > 0, reload: false, select: null }, TICK_DT)) fired++;
+    check('rocket launcher reloads itself after each shot', fired === 2 && t > WEAPONS.rocket.reloadEmpty
+      && t < WEAPONS.rocket.interval + WEAPONS.rocket.reloadEmpty + 0.5, `t=${t.toFixed(2)}`);
+  }
+
+  // fists: everyone in front within reach takes the punch and is shoved back; nobody behind
+  const eye = new Vector3(0, 1.6, 0);
+  const left = dummy(1, -0.5, 1, -1.5), right = dummy(2, 0.6, 1, -1.4), behind = dummy(3, 0, 1, 1.5);
+  only(left, right, behind);
+  c.use('fists', 0, eye, new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
+  const punched = MAX_HP - Math.round(WEAPONS.fists.damage * DAMAGE_SCALE * 10) / 10;
+  check('a punch lands on both people in front, not on the one behind', left.hp === punched && right.hp === punched && behind.hp === MAX_HP,
+    `${left.hp} ${right.hp} ${behind.hp}`);
+  check('punched people fly back', [1, 2].every((id) => (pushes.get(id)?.z ?? 0) < -MELEE.push * 0.8) && !pushes.has(3));
+
+  // kick: 10 HP flat, a long shove; 3 s cooldown after a hit, a short one after a miss
+  const kicked1 = dummy(1, 0.3, 1, -1.6);
+  only(kicked1);
+  const kn = c.kick(0, eye, new Vector3(0, 0, -1), Y);
+  check('kick: 10 HP and a long shove', kn === 1 && kicked1.hp === MAX_HP - KICK.damage && (pushes.get(1)?.length() ?? 0) > KICK.push * 0.95,
+    `hp=${kicked1.hp} push=${pushes.get(1)?.length().toFixed(1)}`);
+  const kws = createWeaponState();
+  kicked(kws, true);
+  const ready = (t: number) => { for (let k = 0; k < t * 64; k++) weaponTick(kws, { fire: false, reload: false, select: null }, TICK_DT); return kickReady(kws); };
+  const after2 = ready(2), after3 = ready(1.1);
+  kicked(kws, false);
+  check('kick cooldown: 3 s after a hit, under a second after a miss', !after2 && after3 && kws.kickCd === KICK.cdMiss && ready(KICK.cdMiss + 0.05));
+
+  // crates on the real map: kicked ones fly and fall along their own face's gravity, bullets nudge them
+  const mw = buildPhysicsWorld(R, map);
+  const props = new Props(mw, map);
+  const cm = new Combat(R, mw, map);
+  cm.props = props;
+  // a lone crate on the ground with 8 m of open street on one side: kicked that way
+  const open = (i: number, up: Vector3): Vector3 | null => {
+    const p = new Vector3(...map.crates[i].pos);
+    for (const d of [new Vector3(1, 0, 0), new Vector3(-1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, -1, 0), new Vector3(0, 0, 1), new Vector3(0, 0, -1)]) {
+      if (Math.abs(d.dot(up)) > 0.5) continue;
+      const from = p.clone().addScaledVector(d, map.crates[i].half[0] + 0.05);
+      if (!mw.castRay(new R.Ray(from, d), 8, true) && !mw.castRay(new R.Ray(p.clone().addScaledVector(d, -map.crates[i].half[0] - 0.05), d.clone().negate()), 2, true)) return d;
+    }
+    return null;
+  };
+  const onGround = (face: (p: number[]) => boolean, up: Vector3) => map.crates.findIndex((cr, i) => cr.kind === 'crate' && face(cr.pos) && !!open(i, up));
+  const kickCrate = (i: number, up: Vector3) => {
+    const p0 = props.pos(i);
+    const h = map.crates[i].half[1];
+    const d = open(i, up)!;
+    const kEye = p0.clone().addScaledVector(up, -h + 1.6).addScaledVector(d, -1.4);
+    const n = cm.kick(0, kEye, d, up);
+    for (let k = 0; k < 64 * 3; k++) props.tick(TICK_DT);
+    return { n, p0, p1: props.pos(i) };
+  };
+  const redCrate = onGround((p) => Math.abs(p[1] - G) < 1.5, Y);
+  const rk = kickCrate(redCrate, Y);
+  check('a kicked crate flies a few metres and lands', rk.n >= 1 && rk.p1.distanceTo(rk.p0) > 2 && Math.abs(rk.p1.y - rk.p0.y) < 1.5,
+    `moved ${rk.p1.distanceTo(rk.p0).toFixed(1)} m`);
+  const topCrate = onGround((p) => Math.abs(p[1] + G) < 1.5, new Vector3(0, -1, 0));
+  const tk = kickCrate(topCrate, new Vector3(0, -1, 0));
+  check('a crate on the opposite face falls towards its own ground (up there)', tk.p1.distanceTo(tk.p0) > 2 && tk.p1.y > -G - 2,
+    `y ${tk.p0.y.toFixed(1)} → ${tk.p1.y.toFixed(1)}`);
+  const shotCrate = map.crates.findIndex((cr, i) => i !== redCrate && cr.kind === 'barrel' && Math.abs(cr.pos[1] - G) < 1.5);
+  const b0 = props.pos(shotCrate);
+  for (let k = 0; k < 3; k++) {
+    const from = b0.clone().add(new Vector3(0, 0, 4));
+    cm.fire('rifle', 0, from, new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
+    for (let j = 0; j < 4; j++) { cm.tick(TICK_DT); props.tick(TICK_DT); }
+  }
+  for (let k = 0; k < 64; k++) props.tick(TICK_DT);
+  check('bullets nudge a barrel', props.pos(shotCrate).distanceTo(b0) > 0.03, `moved ${(props.pos(shotCrate).distanceTo(b0) * 100).toFixed(0)} cm`);
+  let idle = performance.now();
+  for (let k = 0; k < 64 * 4; k++) props.tick(TICK_DT);
+  idle = performance.now() - idle;
+  check('resting crates cost nothing', !props.active && idle < 20, `${idle.toFixed(1)} ms for 4 s`);
+
+  // grappling hook: bites the wall 20 m away and pulls you there; nothing within 30 m = it comes back empty
+  const hs = new PlayerSim(R, aw, map, 'red');
+  hs.surfaces = false;
+  const hst = hs.state;
+  hst.pos.set(0, 0.92, 0); hst.vel.set(0, 0, 0); hst.frame.identity(); hs.mover.place(hst);
+  for (let k = 0; k < 20; k++) hs.tick(emptyInput(), TICK_DT);
+  const heye = hst.pos.clone().add(new Vector3(0, 0.71, 0));
+  const anchorAim = new Vector3(0, 9, -24.5).sub(heye).normalize();
+  const thrown = hs.throwHook(heye, anchorAim);
+  let minD = Infinity, events: string[] = [];
+  for (let k = 0; k < 64 * 3; k++) {
+    hs.tick(emptyInput(), TICK_DT);
+    minD = Math.min(minD, hst.pos.distanceTo(new Vector3(0, 9, -24.5)));
+    for (const e of hs.events.splice(0)) if (e.type === 'hook') events.push(e.what);
+  }
+  check('hook bites a wall ~26 m away and pulls you up to it', thrown && events[0] === 'attach' && events.includes('release') && minD < 1.6,
+    `closest ${minD.toFixed(2)} m, ${events.join(',')}`);
+  hst.pos.set(0, 0.92, 0); hst.vel.set(0, 0, 0); hs.mover.place(hst); hs.hook = null; hs.hookCd = 0;
+  for (let k = 0; k < 64; k++) hs.tick(emptyInput(), TICK_DT);
+  events = [];
+  hs.throwHook(hst.pos.clone().add(new Vector3(0, 0.71, 0)), new Vector3(0, 0.3, 1).normalize());
+  for (let k = 0; k < 64; k++) { hs.tick(emptyInput(), TICK_DT); for (const e of hs.events.splice(0)) if (e.type === 'hook') events.push(e.what); }
+  check(`hook: nothing within ${HOOK.range} m → it comes back, you stay`, events.join() === 'miss' && hs.hook === null && Math.hypot(hst.pos.x, hst.pos.z) < 0.1,
+    events.join());
+  hs.mover.dispose();
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

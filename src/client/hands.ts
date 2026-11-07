@@ -1,7 +1,7 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { Economy, ItemId, ITEMS } from '../shared/economy';
-import { Holdable, holdables, Hotbar, HOTBAR_SIZE, isItem, SlotRef } from '../shared/inventory';
-import type { PlayerSim } from '../shared/sim';
+import { Holdable, holdables, Hotbar, HOTBAR_SIZE, isHeldGun, isItem, SlotRef } from '../shared/inventory';
+import { HOOK, PlayerSim } from '../shared/sim';
 import { THROW, Throws } from '../shared/throwables';
 import { isGun, WEAPONS } from '../shared/weapons';
 import type { GameAudio } from './audio';
@@ -17,15 +17,18 @@ const $ = (id: string) => document.getElementById(id)!;
 const _dir = new Vector3();
 
 export const HOLD_ICON: Record<Holdable, IconName> = {
-  pistol: 'pistol', rifle: 'rifle', grenade: 'grenade', build: 'shovel', rod: 'rod', apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
+  pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook', rod: 'rod',
+  apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
 };
 export const HOLD_NAME: Record<Holdable, string> = {
-  pistol: 'Пистолет', rifle: 'Автомат', grenade: 'Гранаты', build: 'Строительство', rod: 'Удочка',
-  apple: ITEMS.apple.name, bottle: ITEMS.bottle.name, fish: ITEMS.fish.name, medkit: ITEMS.medkit.name,
+  pistol: 'Пистолет', shotgun: 'Дробовик', rifle: 'Автомат', rocket: 'Ракетница', grenade: 'Гранаты', build: 'Строительство',
+  hook: 'Крюк-кошка', rod: 'Удочка', apple: ITEMS.apple.name, bottle: ITEMS.bottle.name, fish: ITEMS.fish.name, medkit: ITEMS.medkit.name,
 };
 /** What the buttons do with it in hand (inventory tooltip, weapon panel). */
 const HOLD_USE: Record<Holdable, string> = {
-  pistol: 'ЛКМ — огонь · R — перезарядка', rifle: 'ЛКМ — огонь · R — перезарядка', grenade: 'ЛКМ — бросить гранату',
+  pistol: 'ЛКМ — огонь · R — перезарядка', shotgun: 'ЛКМ — выстрел дробью · R — перезарядка', rifle: 'ЛКМ — огонь · R — перезарядка',
+  rocket: `ЛКМ — ракета: взрыв ${WEAPONS.rocket.radius} м · R — перезарядка`, grenade: 'ЛКМ — бросить гранату',
+  hook: `ЛКМ — зацепиться (до ${HOOK.range} м) и подтянуться · ЛКМ или пробел — отпустить`,
   build: 'ЛКМ — строить · ПКМ — забрать свою постройку · Q/Z — материал', rod: 'ЛКМ — забросить в пруд, ЛКМ — подсечь',
   apple: `ЛКМ или F — съесть (+${ITEMS.apple.heal}) · G — бросить`, fish: `ЛКМ — съесть (+${ITEMS.fish.heal}) · G — бросить`,
   bottle: `ЛКМ или G — бросить: разбивается, оглушает на ${THROW.stun} с`, medkit: 'ЛКМ — вылечиться полностью · G — бросить',
@@ -50,6 +53,11 @@ export class Hands {
   private invKey = '';
   /** Inventory cell under the cursor (number keys move it to that hotbar slot). */
   hovered: SlotRef | null = null;
+  /** Colliders the grappling hook can bite (not people). */
+  hookFilter: ((c: { handle: number }) => boolean) | undefined;
+  /** The hook was thrown / let go (sound, viewmodel). */
+  onHook: (thrown: boolean) => void = () => {};
+  private fireWas = false;
 
   constructor(private eco: Economy, private player: PlayerCombat, private build: BlockController, private pockets: Pockets,
     private throws: Throws, private sim: PlayerSim, private audio: GameAudio, private hud: Hud, private viewModel: ViewModel,
@@ -81,7 +89,7 @@ export class Hands {
   /** What the hands show instead of a weapon (viewmodel, weapon panel). */
   get tool(): ViewTool {
     const h = this.held;
-    return h === 'build' || h === 'rod' ? h : isItem(h) ? h : null;
+    return h === 'build' || h === 'rod' || h === 'hook' ? h : isItem(h) ? h : null;
   }
 
   /** G: throw one of the held item. */
@@ -139,9 +147,17 @@ export class Hands {
     // hands: weapons through the weapon state; build tool, rod and items instead of it
     this.build.active = h === 'build';
     this.pockets.setRod(h === 'rod');
-    const weapon = h === 'pistol' || h === 'rifle' || h === 'grenade' ? h : h === null ? 'fists' : null;
+    const weapon = isHeldGun(h) || h === 'grenade' ? h : h === null ? 'fists' : null;
     if (weapon && this.player.weapons.current !== weapon) this.player.pendingSelect = weapon;
     if (fire && isItem(h)) this.use(camera);
+    // grappling hook: a click throws it, a click while it pulls lets go
+    const pressed = fire && !this.fireWas;
+    this.fireWas = fire;
+    if (h !== 'hook' && this.sim.hook?.phase === 'pull') this.sim.releaseHook();
+    if (h === 'hook' && pressed && this.player.me.alive) {
+      if (this.sim.hook?.phase === 'pull') { this.sim.releaseHook(); this.onHook(false); }
+      else if (this.sim.throwHook(camera.position, camera.getWorldDirection(_dir), this.hookFilter)) this.onHook(true);
+    }
     this.viewModel.setTool(this.tool);
     this.renderHotbar();
     if (this.invOpen) this.renderInventory(click);
@@ -153,7 +169,7 @@ export class Hands {
     const ws = this.eco.weapons;
     if (isItem(h)) return this.eco.items[h];
     if (h === 'grenade') return ws.ammo.grenade;
-    if (h === 'pistol' || h === 'rifle') return ws.ammo[h] + ws.reserve[h];
+    if (isHeldGun(h)) return ws.ammo[h] + ws.reserve[h];
     return null;
   }
 
@@ -203,7 +219,7 @@ export class Hands {
     let info = '<p class="dim">Наведи на предмет</p>';
     if (show) {
       const n = this.count(show);
-      const ammo = (show === 'pistol' || show === 'rifle') && isGun(show) ? `в магазине ${ws.ammo[show]} из ${WEAPONS[show].mag}, запас ${ws.reserve[show]}`
+      const ammo = isHeldGun(show) && isGun(show) ? `в магазине ${ws.ammo[show]} из ${WEAPONS[show].mag}, запас ${ws.reserve[show]}`
         : show === 'build' ? Object.entries(this.eco.blocks.inventory).map(([m, c]) => `${m === 'wood' ? 'дерево' : m === 'stone' ? 'камень' : 'металл'} ${c}`).join(' · ')
           : n !== null ? `${n} шт.${isItem(show) && ITEMS[show].sell ? ` · продаётся по ${ITEMS[show].sell}` : ''}` : '';
       info = `<h4>${icon(HOLD_ICON[show])}${HOLD_NAME[show]}</h4>${ammo ? `<p class="dim">${ammo}</p>` : ''}<p>${HOLD_USE[show]}</p>`;

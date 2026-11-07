@@ -33,6 +33,8 @@ export class LocalPlayer {
   landed = 0;
   /** Walked distance on the ground (footsteps), m. */
   stride = 0;
+  /** No movement input (dead: the death screen). */
+  frozen = false;
 
   constructor(readonly sim: PlayerSim, private keys: Input) {
     this.snap();
@@ -49,13 +51,14 @@ export class LocalPlayer {
   private sampleInput() {
     const k = this.keys;
     const i = this.input;
-    i.forward = k.locked ? k.axis('KeyW', 'KeyS') : 0;
-    i.right = k.locked ? k.axis('KeyD', 'KeyA') : 0;
-    i.up = k.locked ? (k.down('Space') ? 1 : 0) - (k.down('ControlLeft') || k.down('KeyC') ? 1 : 0) : 0;
-    i.jump = k.locked && k.jump();
-    i.sprint = k.locked && (k.down('ShiftLeft') || k.down('ShiftRight'));
+    const on = k.locked && !this.frozen;
+    i.forward = on ? k.axis('KeyW', 'KeyS') : 0;
+    i.right = on ? k.axis('KeyD', 'KeyA') : 0;
+    i.up = on ? (k.down('Space') ? 1 : 0) - (k.down('ControlLeft') || k.down('KeyC') ? 1 : 0) : 0;
+    i.jump = on && k.jump();
+    i.sprint = on && (k.down('ShiftLeft') || k.down('ShiftRight'));
     i.walk = false;
-    i.crouch = k.locked && !this.sim.state.noclip && (k.down('ControlLeft') || k.down('KeyC'));
+    i.crouch = on && !this.sim.state.noclip && (k.down('ControlLeft') || k.down('KeyC'));
     i.yaw = k.yaw;
     i.pitch = k.pitch;
   }

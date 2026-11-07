@@ -1,6 +1,7 @@
 import { BLOCK_MATERIALS } from '../shared/blocks';
 import { CURRENCY_LABEL, Economy, ITEMS, MAX_MEDKITS, SELLABLE, SHOP_GROUPS, ShopItem, shopGroup } from '../shared/economy';
-import { Bed, Match, MatchEvent } from '../shared/match';
+import { Bed, BED_HP, Match, MatchEvent } from '../shared/match';
+import { CRYSTAL } from '../shared/combat';
 import { getTeam, TEAMS } from '../shared/teams';
 import { WEAPONS } from '../shared/weapons';
 import type { GameAudio } from './audio';
@@ -20,8 +21,8 @@ function shopIcon(item: ShopItem): string {
   if (item.kind === 'blocks') return icon(item.material);
   if (item.kind === 'ammo') return icon('ammo');
   if (item.kind === 'item') return icon(ITEM_ICON[item.item]);
-  if (item.kind === 'weapon') return icon(item.weapon === 'grenade' ? 'grenade' : item.weapon === 'pistol' ? 'pistol' : 'rifle');
-  return icon(item.id === 'rod' ? 'rod' : 'shovel');
+  if (item.kind === 'weapon') return icon(item.weapon === 'fists' ? 'rifle' : item.weapon);
+  return icon(item.id === 'rod' ? 'rod' : item.id === 'hook' ? 'hook' : 'shovel');
 }
 
 /** Bedwars UI: wallet, bed status row, interaction prompt, bed-break progress, shop (buy / sell), result banner. */
@@ -37,6 +38,11 @@ export class MatchUi {
   private readonly resultEl = $('result');
   private bedsKey = '';
   private shopKey = '';
+  /** When the "your crystal is under attack" warning last went off (it repeats at most every few seconds). */
+  private alarmAt = -1e9;
+  /** The crystal you hit last and when (its HP bar stays up for a moment after). */
+  private hitBed: Bed | null = null;
+  private hitAt = -1e9;
 
   constructor(private match: Match, private eco: Economy, private hud: Hud, private audio: GameAudio, private cursor: Cursor) {}
 
@@ -96,7 +102,19 @@ export class MatchUi {
       return `<span style="color:${teamHex(t.color)}">${t.name}</span>`;
     };
     if (e.type === 'pickup') this.audio.select();
-    else if (e.type === 'bedBroken') {
+    else if (e.type === 'bedHit') {
+      const now = performance.now() / 1000;
+      if (e.team === this.match.team && !e.byPlayer) {
+        if (now - this.alarmAt > 6 && e.hp > 0) {
+          this.alarmAt = now;
+          this.hud.toast('Твой кристалл атакуют!', '#ff8e83', 1.6);
+          this.audio.alarm();
+        }
+      } else if (e.byPlayer) {
+        this.hitBed = this.match.bed(e.team);
+        this.hitAt = now;
+      }
+    } else if (e.type === 'bedBroken') {
       this.hud.killfeed(e.team === this.match.team ? 'Твой кристалл разрушен!' : `Кристалл: ${name(e.team)} — разрушен`);
       this.hud.toast(e.team === this.match.team ? 'Кристалл потерян — смерть станет последней' : `Кристалл разрушен · осталось ${this.match.enemiesLeft}`,
         e.team === this.match.team ? '#ff6b6b' : '#ffe08a', 2.2);
@@ -111,8 +129,11 @@ export class MatchUi {
     this.resultEl.classList.add('show');
   }
 
-  /** `extraPrompt`: interaction hint from elsewhere (pick up an item, fishing); `click`: cursor click this frame. */
-  update(nearShop: boolean, reachable: Bed | null, extraPrompt = '', click: HTMLElement | null = null) {
+  /**
+   * `sight`: the enemy crystal under the crosshair; `extraPrompt`: interaction hint from elsewhere (pick up an item,
+   * fishing); `click`: cursor click this frame.
+   */
+  update(nearShop: boolean, sight: { bed: Bed; dist: number } | null, extraPrompt = '', click: HTMLElement | null = null) {
     const m = this.match;
     if (this.shopOpen && !nearShop) this.toggleShop();
     if (this.shopOpen && click) this.click(click);
@@ -136,14 +157,23 @@ export class MatchUi {
     }
 
     let prompt = '';
-    if (m.breaking) prompt = `Ломаешь кристалл: ${getTeam(m.breaking.bed.team).name}`;
-    else if (reachable) prompt = `<b>E</b> держи — сломать кристалл (${getTeam(reachable.team).name})`;
-    else if (nearShop && !this.shopOpen) prompt = '<b>E</b> магазин';
+    const near = sight && sight.dist <= CRYSTAL.range;
+    if (sight && !this.shopOpen && sight.dist < 20) {
+      const name = getTeam(sight.bed.team).name;
+      prompt = near ? `Кристалл: ${name} — стреляй или бей` : `Кристалл: ${name} — подойди ближе, ломается только с ${CRYSTAL.range} м`;
+    } else if (nearShop && !this.shopOpen) prompt = '<b>E</b> магазин';
     else if (!this.shopOpen) prompt = extraPrompt;
     this.prompt.innerHTML = prompt;
     this.prompt.style.opacity = prompt ? '1' : '0';
-    this.breakEl.style.opacity = m.breaking ? '1' : '0';
-    this.breakBar.style.width = `${(m.breaking?.progress ?? 0) * 100}%`;
+    // HP bar of the crystal you aim at within reach (or hit a moment ago)
+    const recent = performance.now() / 1000 - this.hitAt < 2.5 ? this.hitBed : null;
+    const bar = near ? sight!.bed : recent && sight?.bed === recent ? recent : null;
+    const show = !!bar && bar.alive;
+    this.breakEl.style.opacity = show ? '1' : '0';
+    if (show) {
+      this.breakBar.style.width = `${(bar!.hp / BED_HP) * 100}%`;
+      this.breakBar.style.background = teamHex(getTeam(bar!.team).color);
+    }
 
     this.shopEl.hidden = !this.shopOpen;
     if (this.shopOpen) this.renderShop();
@@ -154,7 +184,7 @@ export class MatchUi {
     const ws = eco.weapons;
     const offers = this.tab === 'buy' ? eco.offers() : [];
     const key = [this.tab, eco.wallet.cash, eco.wallet.crystal, ...SELLABLE.map((i) => eco.items[i]), eco.items.medkit, offers.map((o) => o.item.id + o.state).join(),
-      ws.reserve.pistol, ws.reserve.rifle, ws.ammo.grenade, ...Object.values(eco.blocks.inventory)].join('|');
+      ...Object.values(ws.reserve), ws.ammo.grenade, eco.has('hook'), ...Object.values(eco.blocks.inventory)].join('|');
     if (key === this.shopKey) return;
     this.shopKey = key;
     const tab = (id: ShopTab, label: string) => `<button class="${this.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}">${label}</button>`;

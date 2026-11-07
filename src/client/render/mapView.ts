@@ -201,6 +201,8 @@ export interface MapView {
   cull(eye: Vector3, far: number): void;
   /** Show / hide a team's bed crystal. */
   setBedAlive(team: string, alive: boolean): void;
+  /** Move crate / barrel `i` (map.crates index) to where its physics body is; `shown` false hides it (fell off). */
+  setCrate(i: number, pos: Vector3, quat: Quaternion, shown: boolean): void;
 }
 
 export function buildMapView(map: MapData): MapView {
@@ -260,7 +262,9 @@ export function buildMapView(map: MapData): MapView {
     if (mat === 'window') im.renderOrder = 1; // after the opaque world, so the rooms show through
   }
 
-  // --- crates (wooden boxes) and barrels
+  // --- crates (wooden boxes) and barrels: they can be kicked around, so each remembers its batch and slot
+  const crateSlots: { im: InstancedMesh; slot: number; scale: Vector3 }[] = [];
+  const crateDirty = new Set<InstancedMesh>();
   {
     const byRegion = new Map<string, typeof map.crates>();
     for (const c of map.crates) {
@@ -277,9 +281,11 @@ export function buildMapView(map: MapData): MapView {
         if (!items.length) continue;
         const im = new InstancedMesh(kind === 'crate' ? unit : barrelGeo, kind === 'crate' ? mats.wood : barrelMat, items.length);
         items.forEach((c, i) => {
-          m4.compose(p.set(...c.pos), q.set(...c.quat), sc.set(c.half[0] * 2, c.half[1] * 2, c.half[2] * 2).multiplyScalar(kind === 'crate' ? 1 : 0.5).setY(c.half[1] * 2));
+          sc.set(c.half[0] * 2, c.half[1] * 2, c.half[2] * 2).multiplyScalar(kind === 'crate' ? 1 : 0.5).setY(c.half[1] * 2);
+          m4.compose(p.set(...c.pos), q.set(...c.quat), sc);
           im.setMatrixAt(i, m4);
           im.setColorAt(i, col.setHex(c.color));
+          crateSlots[map.crates.indexOf(c)] = { im, slot: i, scale: sc.clone() };
         });
         im.computeBoundingSphere();
         regions.get(k)!.group.add(shadowy(im));
@@ -444,10 +450,21 @@ export function buildMapView(map: MapData): MapView {
     setBedAlive(team, alive) {
       for (const o of beds.get(team) ?? []) o.visible = alive;
     },
+    setCrate(i, pos, quat, shown) {
+      const c = crateSlots[i];
+      if (!c) return;
+      c.im.setMatrixAt(c.slot, m4.compose(pos, quat, shown ? c.scale : sc.set(0, 0, 0)));
+      crateDirty.add(c.im);
+    },
     cull(eye, far) {
       for (const r of regions.values()) r.group.visible = r.box.distanceToPoint(eye) < far;
     },
     update(time, dt) {
+      for (const im of crateDirty) {
+        im.instanceMatrix.needsUpdate = true;
+        im.computeBoundingSphere();
+      }
+      crateDirty.clear();
       water.userData.update(time);
       for (const c of clusters) if (c.group.visible) c.update(time, dt);
       for (const s of spinners) {

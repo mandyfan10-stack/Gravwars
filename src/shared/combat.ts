@@ -2,8 +2,9 @@ import { Vector3 } from 'three';
 import { DEFAULT_MOVEMENT, PLAYER_HALF_SEGMENT, PLAYER_RADIUS } from './constants';
 import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
+import type { Props } from './props';
 import type { TeamId } from './teams';
-import { energyLeft, PENETRATION, WeaponId, WEAPONS } from './weapons';
+import { energyLeft, KICK, MELEE, PENETRATION, WeaponId, WEAPONS } from './weapons';
 import { Wind } from './wind';
 
 /**
@@ -64,6 +65,17 @@ export interface Projectile {
   alive: boolean;
 }
 
+/** What dealt a blow (death screen, kill feed). */
+export type HitSource = WeaponId | 'kick';
+
+/**
+ * A team's crystal as combat sees it: a vertical capsule (CRYSTAL) around `pos` along `up`. Only shots and blows of
+ * other teams hurt it, and only from within CRYSTAL.range (match.ts keeps its HP).
+ */
+export interface Crystal { team: TeamId; pos: Vector3; up: Vector3; alive: boolean }
+/** Crystal hit volume (radius, half length of its axis) and how close the attacker has to be to hurt it, m. */
+export const CRYSTAL = { radius: 0.75, half: 1.3, range: 5 };
+
 export type CombatEvent =
   | { type: 'fire'; weapon: WeaponId; owner: number; origin: Vector3; dir: Vector3; projectile: number }
   | { type: 'impact'; pos: Vector3; normal: Vector3; material?: BulletMaterial }
@@ -72,9 +84,14 @@ export type CombatEvent =
   | { type: 'bounce'; pos: Vector3; speed: number }
   | { type: 'fizzle'; pos: Vector3 }
   | { type: 'explode'; pos: Vector3; radius: number }
-  | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3; cause?: DamageCause }
-  /** A punch: `pos` = what it landed on (null = swung at the air). */
-  | { type: 'melee'; owner: number; pos: Vector3 | null; target: number | null }
+  | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3; cause?: DamageCause; weapon?: HitSource }
+  /**
+   * A punch or a kick: `pos` = what it landed on first (null = into the air), `target` = the first one hit, `hits` =
+   * how many people / crates it got.
+   */
+  | { type: 'melee'; kind: 'punch' | 'kick'; owner: number; pos: Vector3 | null; target: number | null; hits: number }
+  /** A shot / blow reached an enemy crystal: `far` = from too far away (no damage). */
+  | { type: 'crystal'; team: TeamId; owner: number; pos: Vector3; damage: number; far: boolean }
   /** A hit on a target under spawn protection: no damage. */
   | { type: 'guarded'; target: number; pos: Vector3 };
 
@@ -109,7 +126,10 @@ export interface DamageOpts {
   noPush?: boolean;
   /** Where the blow came from, for the knockback (default: the attacker's centre, else the hit point). */
   from?: Vector3;
+  /** Knockback × this (shotgun pellets). */
+  pushMul?: number;
   cause?: DamageCause;
+  weapon?: HitSource;
 }
 /** Spawn protection: seconds, and how far from the spawn point it holds. */
 export const SPAWN_GUARD = { time: 3, radius: 6 };
@@ -189,6 +209,13 @@ export class Combat {
   onExplosion: (pos: Vector3, radius: number, damage: number) => void = () => {};
   /** Material of a world collider for bullets (placed blocks); null = map geometry, not penetrable. */
   materialOf: (handle: number) => BulletMaterial | null = () => null;
+  /** Loose crates and barrels: shots and blasts push them, a kick sends them flying. */
+  props: Props | null = null;
+  /** Team crystals (match beds) and what to do when one is hurt (`damage` already final). */
+  crystals: Crystal[] = [];
+  onCrystal: (c: Crystal, damage: number, owner: number) => void = () => {};
+  /** Every projectile of the last shot (a shotgun fires several). */
+  readonly volley: Projectile[] = [];
   /** Handles of character-controller colliders: rays pass through them (capsules are tested analytically). */
   private readonly characters = new Set<number>();
   /** Ray filter that skips every character capsule. */
@@ -230,17 +257,39 @@ export class Combat {
     if (t) t.guard = null;
   }
 
+  /**
+   * Fire a gun / throw a grenade. Several pellets (shotgun) go out in a fixed pattern over the cone: one in the
+   * middle, the rest on a ring turned a little differently every shot (deterministic per shot). Returns the first.
+   */
   fire(weapon: WeaponId, owner: number, origin: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3) {
     this.unguard(owner);
     const def = WEAPONS[weapon];
-    const p: Projectile = {
-      id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(), origin: origin.clone(),
-      vel: dir.clone().normalize().multiplyScalar(def.speed).addScaledVector(ownerVel, def.inherit),
-      down: down.clone().normalize(), age: 0, ricochets: 0, resting: false, alive: true,
-    };
-    this.projectiles.push(p);
+    const d = dir.clone().normalize();
+    const u = new Vector3(), v = new Vector3();
+    if (def.pellets > 1) {
+      u.set(Math.abs(d.y) < 0.9 ? 0 : 1, Math.abs(d.y) < 0.9 ? 1 : 0, 0).cross(d).normalize();
+      v.crossVectors(d, u);
+    }
+    const turn = Math.sin(this.nextId * 78.233) * 43758.5453;
+    this.volley.length = 0;
+    for (let k = 0; k < def.pellets; k++) {
+      const pd = d.clone();
+      if (k > 0) {
+        const a = ((k - 1) / (def.pellets - 1)) * Math.PI * 2 + (turn - Math.floor(turn)) * Math.PI * 2;
+        const r = Math.tan(def.cone * (k % 2 ? 1 : 0.6));
+        pd.addScaledVector(u, Math.cos(a) * r).addScaledVector(v, Math.sin(a) * r).normalize();
+      }
+      const p: Projectile = {
+        id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(), origin: origin.clone(),
+        vel: pd.multiplyScalar(def.speed).addScaledVector(ownerVel, def.inherit),
+        down: down.clone().normalize(), age: 0, ricochets: 0, resting: false, alive: true,
+      };
+      this.projectiles.push(p);
+      this.volley.push(p);
+    }
+    const p = this.volley[0];
     if (weapon !== 'grenade') this.noises.push({ pos: origin.clone(), radius: NOISE.gun, owner });
-    this.events.push({ type: 'fire', weapon, owner, origin: origin.clone(), dir: dir.clone(), projectile: p.id });
+    this.events.push({ type: 'fire', weapon, owner, origin: origin.clone(), dir: d, projectile: p.id });
     return p;
   }
 
@@ -253,30 +302,122 @@ export class Combat {
     return this.fire(weapon, owner, eye, dir, ownerVel, down);
   }
 
-  /** Instant short-range hit along the view: the first capsule or world surface within reach. Walls stop it. */
+  /**
+   * Targets within `reach` of `from` (to the capsule surface) inside the cone around `dir` (cos of the half-angle),
+   * not behind a wall, nearest first. One right on the line counts whatever the cone.
+   */
+  inReach(owner: number, from: Vector3, dir: Vector3, reach: number, cos: number): { target: Target; pos: Vector3; dist: number }[] {
+    const team = this.target(owner)?.team ?? null;
+    const out: { target: Target; pos: Vector3; dist: number }[] = [];
+    const tip = _a.copy(from).addScaledVector(dir, reach);
+    const line = this.rayTargets({ owner, team }, from, tip);
+    for (const tg of this.targets) {
+      if (!tg.alive || tg.id === owner || tg.team === team) continue;
+      // nearest point of the capsule's axis to the attacker
+      _c0.copy(tg.center).addScaledVector(tg.up, -PLAYER_HALF_SEGMENT);
+      const k = Math.max(-1, Math.min(1, _seg.copy(from).sub(tg.center).dot(tg.up) / PLAYER_HALF_SEGMENT));
+      const q = tg.center.clone().addScaledVector(tg.up, k * PLAYER_HALF_SEGMENT);
+      const v = _rel.copy(q).sub(from);
+      const len = v.length();
+      const dist = Math.max(0, len - PLAYER_RADIUS);
+      if (dist > reach) continue;
+      const onLine = line?.target === tg;
+      if (!onLine && len > 1e-4 && v.dot(dir) / len < cos) continue;
+      // a wall in between stops the blow
+      const wall = len > 1e-4 ? this.rayWorld(from, q) : null;
+      if (wall && wall.t * len < len - PLAYER_RADIUS - 0.05) continue;
+      const pos = len > 1e-4 ? from.clone().addScaledVector(v, Math.max(0, len - PLAYER_RADIUS) / len) : q;
+      out.push({ target: tg, pos, dist });
+    }
+    return out.sort((x, y) => x.dist - y.dist);
+  }
+
+  /** Shove a target away from the attacker along its own ground (`speed` m/s) and a little up. */
+  private shove(tg: Target, from: Vector3, speed: number, lift: number) {
+    if (!tg.onImpulse) return;
+    const d = _push.copy(tg.center).sub(from);
+    d.addScaledVector(tg.up, -d.dot(tg.up));
+    if (d.lengthSq() < 1e-6) return;
+    tg.onImpulse(d.normalize().multiplyScalar(speed).addScaledVector(tg.up, speed * lift));
+  }
+
+  /**
+   * Punch: lands on everyone within reach in front (splash), each one shoved back. Nobody there: the first wall /
+   * crate along the view takes it.
+   */
   melee(weapon: WeaponId, owner: number, eye: Vector3, dir: Vector3) {
     this.unguard(owner);
     const def = WEAPONS[weapon];
-    const to = eye.clone().addScaledVector(dir.clone().normalize(), def.reach);
-    const fake = { owner, team: this.target(owner)?.team ?? null } as Projectile;
+    const d = dir.clone().normalize();
     this.noises.push({ pos: eye.clone(), radius: NOISE.punch, owner });
-    const wh = this.rayWorld(eye, to);
-    const th = this.rayTargets(fake, eye, to);
-    if (th && (!wh || th.t <= wh.t)) {
-      const pos = eye.clone().lerp(to, th.t);
-      this.events.push({ type: 'melee', owner, pos: pos.clone(), target: th.target.id });
-      const push = to.clone().sub(eye).normalize().addScaledVector(th.target.up, 0.3).multiplyScalar(2.2);
-      th.target.onImpulse?.(push);
-      this.damage(th.target, Math.round(def.damage * (th.head ? def.headMul : 1)), owner, th.head, pos, { noPush: true });
+    const hits = this.inReach(owner, eye, d, def.reach, MELEE.cos);
+    const to = eye.clone().addScaledVector(d, def.reach);
+    const line = this.rayTargets({ owner, team: this.target(owner)?.team ?? null }, eye, to);
+    for (const h of hits) {
+      const head = line?.target === h.target && line.head;
+      this.shove(h.target, eye, MELEE.push, MELEE.lift);
+      this.damage(h.target, Math.round(def.damage * (head ? def.headMul : 1)), owner, head, h.pos, { noPush: true, weapon });
+    }
+    const crystal = this.crystalInReach(owner, eye, d, def.reach);
+    if (crystal) this.hurtCrystal(crystal.c, def.damage * DAMAGE_SCALE, owner, eye, crystal.pos);
+    if (hits.length || crystal) {
+      this.events.push({ type: 'melee', kind: 'punch', owner, pos: (hits[0]?.pos ?? crystal!.pos).clone(), target: hits[0]?.target.id ?? null, hits: hits.length });
       return;
     }
+    const wh = this.rayWorld(eye, to);
     if (wh) {
       const pos = eye.clone().lerp(to, wh.t);
-      this.onWorldDamage(wh.handle, Math.round(def.blockDamage * 0.5));
-      this.events.push({ type: 'melee', owner, pos, target: null });
+      const prop = this.props?.of(wh.handle) ?? -1;
+      if (prop >= 0) this.props!.push(prop, d.clone().multiplyScalar(2.5), pos);
+      else this.onWorldDamage(wh.handle, Math.round(def.blockDamage * 0.5));
+      this.events.push({ type: 'melee', kind: 'punch', owner, pos, target: null, hits: prop >= 0 ? 1 : 0 });
       return;
     }
-    this.events.push({ type: 'melee', owner, pos: null, target: null });
+    this.events.push({ type: 'melee', kind: 'punch', owner, pos: null, target: null, hits: 0 });
+  }
+
+  /**
+   * Kick (V): from the hip, along the ground the attacker stands on, a wide cone. Everyone in it takes KICK.damage HP
+   * and flies back; crates and barrels fly off. Returns how many it got (the caller sets the cooldown).
+   */
+  kick(owner: number, eye: Vector3, dir: Vector3, up: Vector3): number {
+    this.unguard(owner);
+    const hip = eye.clone().addScaledVector(up, -0.85);
+    // aim along the ground, but a look down / up still tilts it a little (a crate on a step)
+    const d = dir.clone().addScaledVector(up, -dir.dot(up) * 0.7);
+    if (d.lengthSq() < 1e-4) d.copy(dir);
+    d.normalize();
+    this.noises.push({ pos: eye.clone(), radius: NOISE.punch, owner });
+    let first: Vector3 | null = null;
+    let target: number | null = null;
+    const hits = [...this.inReach(owner, hip, d, KICK.reach, KICK.cos), ...this.inReach(owner, eye, d, KICK.reach * 0.8, KICK.cos)]
+      .filter((h, i, all) => all.findIndex((o) => o.target === h.target) === i);
+    for (const h of hits) {
+      first ??= h.pos;
+      target ??= h.target.id;
+      this.shove(h.target, hip, KICK.push, KICK.lift);
+      this.damage(h.target, KICK.damage, owner, false, h.pos, { raw: true, noPush: true, weapon: 'kick' });
+    }
+    let n = hits.length;
+    if (this.props) {
+      for (const i of this.props.inCone(hip, d, KICK.reach, KICK.cos)) {
+        const at = this.props.pos(i);
+        // into the crate a bit above its middle: it tumbles away
+        const push = d.clone().multiplyScalar(KICK.propSpeed).addScaledVector(up, KICK.propSpeed * 0.3);
+        this.props.push(i, push, at.clone().addScaledVector(up, 0.15).addScaledVector(d, -0.2));
+        first ??= at;
+        n++;
+      }
+    }
+    if (!n) {
+      const wh = this.rayWorld(hip, hip.clone().addScaledVector(d, KICK.reach));
+      if (wh) {
+        first = hip.clone().addScaledVector(d, KICK.reach * wh.t);
+        this.onWorldDamage(wh.handle, Math.round(WEAPONS.fists.blockDamage));
+      }
+    }
+    this.events.push({ type: 'melee', kind: 'kick', owner, pos: first?.clone() ?? null, target, hits: n });
+    return n;
   }
 
   rayWorld(from: Vector3, to: Vector3) {
@@ -312,6 +453,51 @@ export class Combat {
     return best;
   }
 
+  /** Nearest point of a crystal's axis to `p`. */
+  private crystalAxis(c: Crystal, p: Vector3, out = new Vector3()) {
+    const k = Math.max(-CRYSTAL.half, Math.min(CRYSTAL.half, _q.copy(p).sub(c.pos).dot(c.up)));
+    return out.copy(c.pos).addScaledVector(c.up, k);
+  }
+
+  /** How far `p` is from a crystal (its axis): the 5 m rule. */
+  crystalDistance(c: Crystal, p: Vector3) {
+    return this.crystalAxis(c, p, _p).distanceTo(p);
+  }
+
+  /** Enemy crystal a segment from → to passes through (as a fraction of it), for projectiles of `team`. */
+  private rayCrystals(team: Faction | null, from: Vector3, to: Vector3): { t: number; c: Crystal } | null {
+    let best: { t: number; c: Crystal } | null = null;
+    const st = { s: 0, t: 0 };
+    for (const c of this.crystals) {
+      if (!c.alive || c.team === team || !team || team.includes(':')) continue;
+      _c0.copy(c.pos).addScaledVector(c.up, -CRYSTAL.half);
+      _c1.copy(c.pos).addScaledVector(c.up, CRYSTAL.half);
+      const d2 = segSeg(from, to, _c0, _c1, st);
+      if (d2 > CRYSTAL.radius ** 2) continue;
+      const len = from.distanceTo(to);
+      const t = Math.max(0, st.s - Math.sqrt(CRYSTAL.radius ** 2 - d2) / Math.max(len, 1e-6));
+      if (!best || t < best.t) best = { t, c };
+    }
+    return best;
+  }
+
+  /** An enemy crystal within a blow's reach in front of `eye`. */
+  private crystalInReach(owner: number, eye: Vector3, dir: Vector3, reach: number): { c: Crystal; pos: Vector3 } | null {
+    const hit = this.rayCrystals(this.target(owner)?.team ?? null, eye, _b.copy(eye).addScaledVector(dir, reach + CRYSTAL.radius));
+    return hit ? { c: hit.c, pos: eye.clone().lerp(_b, hit.t) } : null;
+  }
+
+  /**
+   * A shot / blow reaches an enemy crystal: it hurts only if the attacker (`from`: where the shot left, where the
+   * fist is) is within CRYSTAL.range of it.
+   */
+  private hurtCrystal(c: Crystal, damage: number, owner: number, from: Vector3, pos: Vector3) {
+    const far = this.crystalDistance(c, from) > CRYSTAL.range;
+    const dmg = far ? 0 : Math.round(damage * 10) / 10;
+    this.events.push({ type: 'crystal', team: c.team, owner, pos: pos.clone(), damage: dmg, far });
+    if (dmg > 0) this.onCrystal(c, dmg, owner);
+  }
+
   /**
    * Hurt a target. `amount` is the listed damage (scaled by DAMAGE_SCALE unless `opts.raw`); the hit also shoves the
    * target away from the attacker (HIT_PUSH).
@@ -334,7 +520,7 @@ export class Combat {
       dir.addScaledVector(tg.up, -dir.dot(tg.up));
       if (dir.lengthSq() < 1e-6) dir.copy(tg.center).sub(pos).addScaledVector(tg.up, -_push.dot(tg.up));
       if (dir.lengthSq() > 1e-6) {
-        const v = Math.min(HIT_PUSH.max, Math.max(HIT_PUSH.min, dmg * HIT_PUSH.perHp));
+        const v = Math.min(HIT_PUSH.max, Math.max(HIT_PUSH.min, dmg * HIT_PUSH.perHp)) * (opts.pushMul ?? 1);
         tg.onImpulse(dir.normalize().addScaledVector(tg.up, HIT_PUSH.lift).multiplyScalar(v));
       }
     }
@@ -342,7 +528,7 @@ export class Combat {
       tg.alive = false;
       if (tg.respawnIn >= 0) tg.respawnIn = DUMMY_RESPAWN;
     }
-    this.events.push({ type: 'hit', target: tg.id, owner, damage: dmg, head, killed, pos: pos.clone(), cause: opts.cause });
+    this.events.push({ type: 'hit', target: tg.id, owner, damage: dmg, head, killed, pos: pos.clone(), cause: opts.cause, weapon: opts.weapon });
   }
 
   /** Fall damage for a landing at `speed` m/s (FALL); returns the damage dealt. */
@@ -359,6 +545,17 @@ export class Combat {
     this.events.push({ type: 'explode', pos: p.pos.clone(), radius: def.radius });
     this.noises.push({ pos: p.pos.clone(), radius: NOISE.grenade, owner: p.owner });
     this.onExplosion(p.pos.clone(), def.radius, def.blockDamage);
+    this.props?.explosion(p.pos, def.radius * 1.6, def.knockback * 0.8);
+    // an enemy crystal in the blast: hurt if the thrower / shooter stands close to it now
+    const team = p.team;
+    for (const c of this.crystals) {
+      if (!c.alive || c.team === team || !team || team.includes(':')) continue;
+      const d = this.crystalDistance(c, p.pos) - CRYSTAL.radius;
+      if (d > def.radius) continue;
+      const k = Math.max(0, 1 - Math.max(0, d) / def.radius);
+      const from = this.target(p.owner)?.center ?? p.origin;
+      this.hurtCrystal(c, def.damage * (0.3 + 0.7 * k) * (def.raw ? 1 : DAMAGE_SCALE), p.owner, from, this.crystalAxis(c, p.pos));
+    }
     for (const tg of this.targets) {
       if (!tg.alive || tg.guard || (tg.team === p.team && tg.id !== p.owner)) continue;
       const d = tg.center.distanceTo(p.pos);
@@ -375,7 +572,7 @@ export class Combat {
         dir.normalize().addScaledVector(tg.up, 0.35).normalize();
         tg.onImpulse(dir.multiplyScalar(def.knockback * (0.35 + 0.65 * k)));
       }
-      this.damage(tg, dmg, p.owner, false, tg.center, { noPush: true });
+      this.damage(tg, dmg, p.owner, false, tg.center, { noPush: true, raw: def.raw, weapon: p.weapon });
     }
   }
 
@@ -390,9 +587,11 @@ export class Combat {
     const material = this.materialOf(handle);
     const cos = -dir.dot(normal);
     // measure the wall before the damage can remove it
-    const thick = material && material !== 'metal' ? this.thickness(handle, end, dir) : null;
-    this.onWorldDamage(handle, Math.max(1, Math.round(def.blockDamage * energyLeft(def, speed))));
-    this.events.push({ type: 'impact', pos: end.clone(), normal: normal.clone(), material: material ?? undefined });
+    const thick = material && material !== 'metal' && def.power ? this.thickness(handle, end, dir) : null;
+    const prop = this.props?.of(handle) ?? -1;
+    if (prop >= 0) this.props!.push(prop, _rel.copy(dir).multiplyScalar(def.pellets > 1 ? 0.35 : 0.8), end);
+    else this.onWorldDamage(handle, Math.max(1, Math.round(def.blockDamage * energyLeft(def, speed))));
+    this.events.push({ type: 'impact', pos: end.clone(), normal: normal.clone(), material: material ?? (prop >= 0 ? 'wood' : undefined) });
     if (material !== 'wood' && cos < RICOCHET.cos && p.ricochets === 0) {
       p.ricochets++;
       p.vel.addScaledVector(normal, -2 * p.vel.dot(normal)).multiplyScalar(RICOCHET.keep);
@@ -404,9 +603,11 @@ export class Combat {
       return;
     }
     if (material && thick !== null) {
-      const left = speed - thick * PENETRATION[material];
+      // reckoned in real bullet speed: `power` at the muzzle, slowed down as the tracer is
+      const power = speed * def.power / def.speed;
+      const left = power - thick * PENETRATION[material];
       if (left > PIERCE_MIN_SPEED) {
-        p.vel.multiplyScalar(left / speed);
+        p.vel.multiplyScalar(left / power);
         p.pos.copy(end).addScaledVector(dir, thick + 0.02);
         this.events.push({ type: 'impact', pos: p.pos.clone(), normal: dir.clone(), material });
         return;
@@ -447,7 +648,7 @@ export class Combat {
       if (!p.alive) continue;
       const def = WEAPONS[p.weapon];
       p.age += dt;
-      if (p.weapon === 'grenade' && p.age >= def.fuse) {
+      if (def.fuse && p.age >= def.fuse) {
         this.explode(p);
         continue;
       }
@@ -468,19 +669,34 @@ export class Combat {
       _b.copy(p.pos).addScaledVector(p.vel, dt);
 
       const wh = this.rayWorld(_a, _b);
-      const th = p.weapon !== 'grenade' ? this.rayTargets(p, _a, _b) : null;
-      const tEnd = Math.min(wh ? wh.t : 1, th ? th.t : 1);
+      const grenade = !!def.fuse;
+      const th = !grenade ? this.rayTargets(p, _a, _b) : null;
+      const ch = !grenade ? this.rayCrystals(p.team, _a, _b) : null;
+      const tEnd = Math.min(wh ? wh.t : 1, th ? th.t : 1, ch ? ch.t : 1);
       const end = _a.clone().lerp(_b, tEnd);
+      if (def.explodeOnHit && (wh || th || ch)) {
+        p.pos.copy(end);
+        if (wh && tEnd === wh.t) p.pos.addScaledVector(wh.normal, 0.15);
+        this.explode(p);
+        continue;
+      }
+      if (ch && tEnd === ch.t) {
+        p.alive = false;
+        p.pos.copy(end);
+        const energy = energyLeft(def, p.vel.length());
+        this.hurtCrystal(ch.c, def.damage * energy * (def.raw ? 1 : DAMAGE_SCALE), p.owner, p.origin, end);
+        continue;
+      }
       if (th && (!wh || th.t <= wh.t)) {
         p.alive = false;
         p.pos.copy(end);
         const energy = energyLeft(def, p.vel.length());
         this.damage(th.target, Math.max(1, Math.round(def.damage * energy * (th.head ? def.headMul : 1))), p.owner, th.head, end,
-          { from: _push2.copy(end).addScaledVector(p.vel, -1 / Math.max(1, p.vel.length())) });
+          { from: _push2.copy(end).addScaledVector(p.vel, -1 / Math.max(1, p.vel.length())), pushMul: def.push, weapon: p.weapon });
         continue;
       }
       if (wh) {
-        if (p.weapon !== 'grenade') {
+        if (!grenade) {
           this.bulletHitsWorld(p, end, wh.normal, wh.handle);
           continue;
         }

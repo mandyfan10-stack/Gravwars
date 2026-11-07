@@ -1,14 +1,14 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
-import { Combat, CombatEvent, Faction, MAX_HP, Target } from '../shared/combat';
+import { Combat, CombatEvent, Faction, HitSource, MAX_HP, Target } from '../shared/combat';
 import { CROUCH_EYE_DROP, EYE_OFFSET, TICK_DT } from '../shared/constants';
 import { Rng, upOf } from '../shared/math';
 import { viewQuat } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
-import { createWeaponState, hasAmmo, isGun, shotSpread, WEAPON_ORDER, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
+import { createWeaponState, hasAmmo, isGun, kicked, kickReady, shotSpread, WEAPON_ORDER, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
-import { icon } from './icons';
+import { icon, IconName } from './icons';
 import type { Fx } from './render/fx';
 import type { ViewModel } from './render/viewmodel';
 
@@ -20,8 +20,37 @@ const RECOIL_RETURN = 0.6;
 /** Crouching steadies the aim: spread × this. */
 export const CROUCH_ACCURACY = 0.65;
 
-const KILL = icon('swords');
 const SELF = icon('skull');
+/** Seconds between a death and the respawn (the death screen). */
+export const DEATH_TIME = 4;
+const SOURCE_ICON: Record<HitSource, IconName> = {
+  fists: 'fist', kick: 'kick', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', rocket: 'rocket', grenade: 'grenade',
+};
+export const SOURCE_NAME: Record<HitSource, string> = {
+  fists: 'кулаки', kick: 'пинок', pistol: 'пистолет', shotgun: 'дробовик', rifle: 'автомат', rocket: 'ракетница', grenade: 'граната',
+};
+/** Kill-feed separator: the weapon that did it. */
+const killIcon = (w?: HitSource) => icon(w ? SOURCE_ICON[w] : 'swords');
+
+/** How the local player died: shown on the death screen. */
+export interface Death {
+  /** Seconds left until the respawn (counts down; stays at 0 when `final`). */
+  t: number;
+  /** Where the body was and its up. */
+  pos: Vector3;
+  up: Vector3;
+  eye: Vector3;
+  /** Looking direction at the moment of death. */
+  look: Vector3;
+  killer?: Target;
+  weapon?: HitSource;
+  head: boolean;
+  /** Killer's distance at the moment, m. */
+  dist: number;
+  cause: 'killed' | 'self' | 'fall' | 'void';
+  /** No crystal left: no respawn. */
+  final: boolean;
+}
 /** Coloured name of a team, or a muted NPC name. */
 const teamSpan = (id: Faction, label?: string) => {
   if (id.startsWith('bum:')) return '<span class="npc">Бродяга</span>';
@@ -55,6 +84,8 @@ export class PlayerCombat {
   onKill: (target: Target) => void = () => {};
   /** Any kill (players, bots, NPCs): killer is undefined for falls and unknown sources. */
   onFrag: (killer: Target | undefined, victim: Target, head: boolean) => void = () => {};
+  /** Set while the local player is dead (the death screen); null when alive. */
+  death: Death | null = null;
 
   constructor(private sim: PlayerSim, private combat: Combat, private hud: Hud, private fx: Fx,
     private audio: GameAudio, private viewModel: ViewModel) {
@@ -68,6 +99,7 @@ export class PlayerCombat {
 
   /** Restore HP after death / respawn. Bought weapons and ammo are kept. */
   reset() {
+    this.death = null;
     this.me.hp = MAX_HP;
     this.me.alive = true;
     this.combat.guard(this.me);
@@ -94,7 +126,61 @@ export class PlayerCombat {
     }
   }
 
-  /** Cone half-angle the next shot would have right now (null: not holding a gun). */
+  /** V: a kick (splash in front, pushes people and crates). Cooldown 3 s after a hit, short after a miss. */
+  kick() {
+    const { sim, me, weapons } = this;
+    if (!me.alive || !kickReady(weapons)) return;
+    const eye = this.eye();
+    viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
+    const dir = new Vector3(0, 0, -1).applyQuaternion(_vq);
+    const hits = this.combat.kick(0, eye, dir, me.up);
+    kicked(weapons, hits > 0);
+    this.viewModel.kick();
+    this.punch = Math.min(this.punch + (hits ? 0.9 : 0.4), 1.5);
+    if (hits) this.shake = Math.max(this.shake, 0.25);
+  }
+
+  /** Kick cooldown 0..1 left (0 = ready). */
+  get kickCooldown() {
+    const ws = this.weapons;
+    return ws.kickCd > 0 ? ws.kickCd / ws.kickCdTotal : 0;
+  }
+
+  private eye() {
+    const { sim, me } = this;
+    return sim.state.pos.clone().addScaledVector(me.up, EYE_OFFSET - (sim.state.crouched ? CROUCH_EYE_DROP : 0));
+  }
+
+  /**
+   * The local player died (killed, or fell into the void): the body bursts, the death screen runs, and after
+   * DEATH_TIME the player is back at the spawn (unless the crystal is gone). The sim is moved to the spawn right away
+   * (the body must not stay around to block or be shot), the controls stay off until the respawn.
+   */
+  die(cause: Death['cause'], killer?: Target, weapon?: HitSource, head = false) {
+    const { sim, me } = this;
+    if (this.death) return;
+    const pos = sim.state.pos.clone(), up = me.up.clone();
+    viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
+    const look = new Vector3(0, 0, -1).applyQuaternion(_vq);
+    const final = !this.canRespawn();
+    this.death = {
+      t: DEATH_TIME, pos, up, eye: this.eye(), look, killer, weapon, head, cause, final,
+      dist: killer ? killer.center.distanceTo(pos) : 0,
+    };
+    me.alive = false;
+    me.hp = 0;
+    this.hud.setHp(0);
+    this.recoilDebt = 0;
+    if (cause !== 'void') {
+      this.onDeath(pos, up);
+      this.fx.blood(pos);
+      this.audio.gore(0);
+    }
+    this.audio.death();
+    sim.releaseHook();
+    if (cause !== 'void') sim.respawn('killed');
+  }
+
   get nextSpread(): number | null {
     const ws = this.weapons, s = this.sim.state;
     if (!isGun(ws.current)) return null;
@@ -114,11 +200,17 @@ export class PlayerCombat {
     upOf(sim.state.frame, me.up);
     const fire = fireHeld || this.forceFire > 0;
     if (this.forceFire > 0) this.forceFire--;
+    if (this.death && !this.death.final) {
+      this.death.t -= TICK_DT;
+      if (this.death.t <= 0) this.reset();
+    }
     const fired = weaponTick(weapons, { fire: fire && me.alive, reload: this.pendingReload, select: this.pendingSelect }, TICK_DT);
     if (this.pendingSelect) this.viewModel.setWeapon(weapons.current);
     const reloadStarted = weapons.reloadT > 0 && weapons.reloadT === weapons.reloadTotal;
     if (reloadStarted) {
-      this.audio.reload(weapons.current === 'pistol', weapons.reloadTotal, weapons.reloadTotal === WEAPONS[weapons.current].reloadEmpty);
+      const w = weapons.current;
+      this.audio.reload(w === 'pistol', weapons.reloadTotal, weapons.reloadTotal === WEAPONS[w].reloadEmpty,
+        w === 'shotgun' ? 'shells' : w === 'rocket' ? 'rocket' : 'mag');
       this.viewModel.reload(weapons.reloadTotal === WEAPONS[weapons.current].reloadEmpty);
     }
     if (weapons.dry) this.audio.dry();
@@ -126,7 +218,7 @@ export class PlayerCombat {
     this.pendingSelect = null;
     this.sinceShot += TICK_DT;
     if (fired) {
-      const eye = sim.state.pos.clone().addScaledVector(me.up, EYE_OFFSET - (sim.state.crouched ? CROUCH_EYE_DROP : 0));
+      const eye = this.eye();
       viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
       const dir = new Vector3(0, 0, -1).applyQuaternion(_vq);
       const def = WEAPONS[fired];
@@ -150,11 +242,13 @@ export class PlayerCombat {
       if (!sim.state.onGround && def.airPush) sim.applyImpulse(dir.clone().multiplyScalar(-def.airPush));
       const p = this.combat.use(fired, 0, eye, dir, sim.state.vel, sim.gravityDown());
       if (p && isGun(fired)) {
+        // every pellet of a shotgun blast starts from the muzzle
         const muzzle = this.viewModel.muzzleCameraSpace().applyQuaternion(_vq).add(eye);
-        this.fx.setMuzzle(p.id, eye, muzzle);
+        for (const q of this.combat.volley) this.fx.setMuzzle(q.id, eye, muzzle);
       }
       this.viewModel.fire();
-      this.punch = Math.min(this.punch + (fired === 'rifle' ? 0.5 : fired === 'pistol' ? 0.6 : fired === 'fists' ? 0.15 : 0.3), 1.5);
+      const kick: Partial<Record<WeaponId, number>> = { rifle: 0.5, pistol: 0.6, shotgun: 1.1, rocket: 0.9, fists: 0.15 };
+      this.punch = Math.min(this.punch + (kick[fired] ?? 0.3), 1.5);
       // threw the last grenade: back to the best thing in hand
       if (fired === 'grenade' && weapons.ammo.grenade === 0) this.pendingSelect = this.best();
     }
@@ -171,16 +265,32 @@ export class PlayerCombat {
   /** Best weapon with something to shoot. */
   best(): WeaponId {
     const ws = this.weapons;
-    return (['rifle', 'pistol'] as const).find((w) => hasAmmo(ws, w)) ?? 'fists';
+    return (['rifle', 'shotgun', 'pistol'] as const).find((w) => hasAmmo(ws, w)) ?? 'fists';
   }
 
   private onCombat(e: CombatEvent) {
     const { hud, me } = this;
+    const at = this.sim.state.pos;
     this.fx.handle(e);
-    if (e.type === 'fire' && isGun(e.weapon)) this.audio.shot(e.weapon === 'pistol', e.owner === 0 ? 0 : e.origin.distanceTo(this.sim.state.pos));
-    if (e.type === 'ricochet') this.audio.ricochet(e.pos.distanceTo(this.sim.state.pos));
-    if (e.type === 'impact' && e.pos.distanceTo(this.sim.state.pos) < 25) this.audio.impact(e.material ?? 'concrete', e.pos.distanceTo(this.sim.state.pos));
-    if (e.type === 'melee' && e.owner === 0) this.audio.punch(e.pos !== null);
+    if (e.type === 'fire') {
+      const d = e.owner === 0 ? 0 : e.origin.distanceTo(at);
+      if (e.weapon === 'shotgun') this.audio.shotgun(d, e.owner === 0);
+      else if (e.weapon === 'rocket') this.audio.rocket(d);
+      else if (isGun(e.weapon)) this.audio.shot(e.weapon === 'pistol', d);
+    }
+    if (e.type === 'ricochet') this.audio.ricochet(e.pos.distanceTo(at));
+    if (e.type === 'impact' && e.pos.distanceTo(at) < 25) this.audio.impact(e.material ?? 'concrete', e.pos.distanceTo(at));
+    if (e.type === 'melee') {
+      if (e.owner === 0) {
+        if (e.kind === 'kick') this.audio.kick(e.hits > 0);
+        else this.audio.punch(e.pos !== null);
+        if (e.kind === 'punch' && e.target !== null) this.shake = Math.max(this.shake, 0.12);
+      } else if (e.pos && e.pos.distanceTo(at) < 20 && e.hits > 0) {
+        if (e.kind === 'kick') this.audio.kick(true);
+        else this.audio.punch(true);
+      }
+    }
+    if (e.type === 'crystal' && (e.owner === 0 || e.pos.distanceTo(at) < 30)) this.audio.crystalHit(e.far, e.owner === 0 ? 0 : e.pos.distanceTo(at));
     if (e.type === 'explode') this.audio.explosion();
     if (e.type === 'hit') {
       const tg = this.combat.target(e.target)!;
@@ -188,30 +298,29 @@ export class PlayerCombat {
       if (e.owner === 0 && e.target !== 0) {
         hud.hitmarker(e.killed, e.head);
         if (e.killed) {
-          hud.killfeed(`${teamSpan(me.team, 'Ты')}${KILL}${teamSpan(tg.team)}${e.head ? ' · в голову' : ''}`);
+          hud.killfeed(`${teamSpan(me.team, 'Ты')}${killIcon(e.weapon)}${teamSpan(tg.team)}${e.head ? ' · в голову' : ''}`);
           this.onKill(tg);
         }
       }
       // street fights between city NPCs are not news: the feed is about players and bots
       if (e.killed && e.owner !== 0 && e.target !== 0 && !(tg.npc && this.combat.target(e.owner)?.npc)) {
         const killer = this.combat.target(e.owner);
-        hud.killfeed(e.owner === e.target || !killer ? `${SELF}${teamSpan(tg.team)} ${e.cause === 'fall' ? 'разбился' : 'подорвался'}` : `${teamSpan(killer.team)}${KILL}${teamSpan(tg.team)}`);
+        hud.killfeed(e.owner === e.target || !killer ? `${SELF}${teamSpan(tg.team)} ${e.cause === 'fall' ? 'разбился' : 'подорвался'}`
+          : `${teamSpan(killer.team)}${killIcon(e.weapon)}${teamSpan(tg.team)}${e.head ? ' · в голову' : ''}`);
       }
       if (e.target === 0) {
         hud.hurt(e.damage);
         if (e.cause === 'fall') this.audio.fallHurt();
         hud.setHp(me.hp);
         if (e.killed) {
-          this.onDeath(this.sim.state.pos.clone(), me.up.clone());
-          hud.killfeed(e.owner === 0 ? `${SELF}${teamSpan(me.team, 'Ты')} ${e.cause === 'fall' ? 'разбился' : 'подорвался'}` : `${teamSpan(this.combat.target(e.owner)?.team ?? 'red')}${KILL}${teamSpan(me.team, 'Ты')}`);
-          if (this.canRespawn()) {
-            this.sim.respawn('killed');
-            this.reset();
-          }
+          const killer = e.owner !== 0 ? this.combat.target(e.owner) : undefined;
+          hud.killfeed(e.owner === 0 || !killer ? `${SELF}${teamSpan(me.team, 'Ты')} ${e.cause === 'fall' ? 'разбился' : 'подорвался'}`
+            : `${teamSpan(killer.team)}${killIcon(e.weapon)}${teamSpan(me.team, 'Ты')}`);
+          this.die(killer ? 'killed' : e.cause === 'fall' ? 'fall' : 'self', killer, e.weapon, e.head);
         }
       }
     } else if (e.type === 'explode') {
-      const d = e.pos.distanceTo(this.sim.state.pos);
+      const d = e.pos.distanceTo(at);
       this.shake = Math.max(this.shake, Math.max(0, 1 - d / 18));
     }
   }

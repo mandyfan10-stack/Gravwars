@@ -3,13 +3,13 @@ import { BlockSystem, PiecePlan } from './blocks';
 import { Combat, MAX_HP, Target } from './combat';
 import { EYE_OFFSET, PLAYER_HEIGHT } from './constants';
 import { FaceId, FaceNav, HALL_H, LaneDef, MapData, navPath, nearestNode } from './map';
-import { BED_BREAK_TIME, Match } from './match';
+import { Match } from './match';
 import { Rng, upOf } from './math';
 import { emptyInput, MoveInput, moveBasis } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
 import { PlayerSim } from './sim';
 import { TeamId } from './teams';
-import { createWeaponState, giveWeapon, isGun, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
+import { createWeaponState, giveWeapon, isGun, KICK, kicked, kickReady, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
 
 /** Tuning. Times in seconds, distances in metres. */
 export const BOT = {
@@ -21,6 +21,8 @@ export const BOT = {
   reaction: 0.45,
   /** Aim error, radians (1 sigma-ish). */
   spread: 0.03,
+  /** Share of a moving target's lead the bot gets right (bullets are slow: aim where the enemy will be). */
+  lead: 0.8,
   burst: 5,
   burstPause: 0.6,
   respawnDelay: 4,
@@ -47,12 +49,12 @@ export const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Лёгка�
 const NORMAL = { ...BOT };
 const DIFFICULTY: Record<Difficulty, Partial<typeof BOT>> = {
   easy: {
-    sightRange: 24, reaction: 0.8, spread: 0.06, burst: 3, burstPause: 0.9,
+    sightRange: 24, reaction: 0.8, spread: 0.06, lead: 0.45, burst: 3, burstPause: 0.9,
     firstAttack: 120, attackStagger: 45, reattack: 50, targetPlayerChance: 0.4, pistolAt: 45, rifleAt: 240,
   },
   normal: {},
   hard: {
-    sightRange: 36, reaction: 0.3, spread: 0.02, burst: 6, burstPause: 0.45,
+    sightRange: 36, reaction: 0.3, spread: 0.02, lead: 1, burst: 6, burstPause: 0.45,
     firstAttack: 40, attackStagger: 18, reattack: 15, targetPlayerChance: 0.7, pistolAt: 15, rifleAt: 110, respawnDelay: 3,
   },
 };
@@ -115,6 +117,8 @@ export interface Bot {
   shots: number;
   /** All shots fired (views animate on change). */
   shotsTotal: number;
+  /** All kicks made (views animate on change). */
+  kicksTotal: number;
   pauseT: number;
   /** Current route (local XZ points of the current surface, frozen while the key stays the same) and progress. */
   routeKey: string;
@@ -132,7 +136,6 @@ export interface Bot {
   wedgeT: number;
   /** Next bridge-piece check. */
   buildT: number;
-  bedT: number;
   stand: number;
   standT: number;
   patrol: number;
@@ -176,6 +179,7 @@ export class BotManager {
     })));
     match.membersAlive = (team) => this.bots.filter((b) => b.team === team && !b.out).length;
     match.characterFilter = combat.notCharacter;
+    match.attach(combat);
     let id = 100;
     let wave = 0;
     for (const tid of this.teams) {
@@ -192,16 +196,16 @@ export class BotManager {
         blocks.characters.push(sim.mover.collider); // building must not trap it (nor measure the ground on it)
         combat.addCharacter(sim.mover.collider);
         const target: Target = {
-          id: id++, team: t.id, center: sim.state.pos, up: upOf(sim.state.frame), hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
+          id: id++, team: t.id, center: sim.state.pos, up: upOf(sim.state.frame), vel: sim.state.vel, hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
           onImpulse: (v) => sim.applyImpulse(v),
         };
         combat.targets.push(target);
         const bot: Bot = {
           id: target.id, team: t.id, role, slot, tune, sim, target, weapons: createWeaponState(), goal: null, trip: slot,
           departAt: role === 'attack' ? tune.firstAttack + tune.attackStagger * wave++ : Infinity,
-          respawnT: 0, out: false, enemy: null, seenT: 0, scanT: this.rng.range(0, 0.15), shots: 0, shotsTotal: 0, pauseT: 0,
+          respawnT: 0, out: false, enemy: null, seenT: 0, scanT: this.rng.range(0, 0.15), shots: 0, shotsTotal: 0, kicksTotal: 0, pauseT: 0,
           routeKey: '', routePts: [], wp: 0, detour: null, checkT: 0, progressT: 0, bestDist: Infinity, stuckT: 0, jumpT: 0,
-          breach: null, wedgeT: 0, buildT: 0, bedT: 0, stand: 0, standT: 0, patrol: slot, patrolT: 0, prevPos: new Vector3(), status: '',
+          breach: null, wedgeT: 0, buildT: 0, stand: 0, standT: 0, patrol: slot, patrolT: 0, prevPos: new Vector3(), status: '',
         };
         this.placeAtSpawn(bot);
         this.bots.push(bot);
@@ -231,7 +235,6 @@ export class BotManager {
     Object.assign(bot.weapons, createWeaponState());
     bot.routeKey = '';
     bot.enemy = null;
-    bot.bedT = 0;
     bot.trip++;
   }
 
@@ -447,7 +450,7 @@ export class BotManager {
         continue;
       }
       bot.prevPos.copy(bot.sim.state.pos);
-      const { input, fire, aim } = this.think(bot, dt);
+      const { input, fire, aim, kick } = this.think(bot, dt);
       bot.sim.tick(input, dt);
       for (const e of bot.sim.events.splice(0)) {
         if (e.type === 'land') this.combat.fall(bot.target, e.speed);
@@ -461,6 +464,12 @@ export class BotManager {
         }
       }
       upOf(bot.sim.state.frame, bot.target.up);
+      // an enemy right in its face: a kick shoves it away (and off a bridge, with luck)
+      if (kick && kickReady(bot.weapons)) {
+        const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
+        kicked(bot.weapons, this.combat.kick(bot.id, eye, kick, bot.target.up) > 0);
+        bot.kicksTotal++;
+      }
       const select = this.arm(bot);
       // semi-automatic guns fire on the press: release the trigger every other tick
       const pull = fire && (WEAPONS[bot.weapons.current].auto || !bot.weapons.held);
@@ -493,7 +502,7 @@ export class BotManager {
     return bot.weapons.current === 'fists' ? WEAPONS.fists.reach : bot.tune.sightRange;
   }
 
-  private think(bot: Bot, dt: number): { input: MoveInput; fire: boolean; aim: Vector3 | null } {
+  private think(bot: Bot, dt: number): { input: MoveInput; fire: boolean; aim: Vector3 | null; kick: Vector3 | null } {
     const sim = bot.sim;
     const s = sim.state;
     const input = emptyInput();
@@ -601,12 +610,11 @@ export class BotManager {
         const bed = this.match.bed(this.heading(bot));
         const hit = this.match.firstHit(eye, bed.pos, sim.mover.collider);
         if (!hit) {
+          // shoot it from the stand (within the 5 m of the rule)
           aimAt = bed.pos.clone();
-          bot.bedT += dt;
+          wantFire = true;
           bot.status = `ломает кристалл ${bed.team}`;
-          if (bot.bedT >= BED_BREAK_TIME) { this.match.destroyBed(bed.team); bot.bedT = 0; }
         } else {
-          bot.bedT = 0;
           const block = this.blocks.byCollider(hit.collider.handle);
           const dir = bed.pos.clone().sub(eye).normalize();
           if (block) {
@@ -618,13 +626,19 @@ export class BotManager {
             if (bot.standT > 2) { bot.standT = 0; bot.stand++; }
           }
         }
-      } else bot.bedT = 0;
+      }
     }
 
     // combat overrides the view: shoot the enemy while still walking the route
+    let kick: Vector3 | null = null;
     if (bot.enemy && bot.seenT > bot.tune.reaction && eye.distanceTo(bot.enemy.center) < this.range(bot) + 0.3) {
-      aimAt = bot.enemy.center.clone().addScaledVector(bot.enemy.up, 0.25);
+      const e = bot.enemy;
+      aimAt = e.center.clone().addScaledVector(e.up, 0.25);
+      // slow bullets: aim ahead of a moving target by the flight time (as well as this bot can judge it)
+      const speed = WEAPONS[bot.weapons.current].speed;
+      if (speed > 0 && e.vel) aimAt.addScaledVector(e.vel, (eye.distanceTo(aimAt) / speed) * bot.tune.lead);
       wantFire = true;
+      if (eye.distanceTo(e.center) < KICK.reach + 0.3) kick = e.center.clone().sub(eye).normalize();
     }
 
     let aim: Vector3 | null = null;
@@ -645,7 +659,7 @@ export class BotManager {
       input.right = Math.sin(this.match.time * 2.3 + bot.id) > 0 ? 1 : -1; // strafe while holding a position
     }
     if (bot.jumpT > 0) { input.jump = true; bot.jumpT -= dt; }
-    return { input, fire: wantFire && bot.pauseT <= 0, aim };
+    return { input, fire: wantFire && bot.pauseT <= 0, aim, kick };
   }
 
   /** Best intermediate point (rings around the bot) that sees both the bot and the goal. */

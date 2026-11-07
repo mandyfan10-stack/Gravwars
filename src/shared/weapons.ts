@@ -1,12 +1,29 @@
 /** Weapon definitions + per-player weapon state machine (shared by client prediction and server). */
-export type WeaponId = 'fists' | 'pistol' | 'rifle' | 'grenade';
-export const WEAPON_ORDER: WeaponId[] = ['fists', 'pistol', 'rifle', 'grenade'];
+export type WeaponId = 'fists' | 'pistol' | 'shotgun' | 'rifle' | 'rocket' | 'grenade';
+export const WEAPON_ORDER: WeaponId[] = ['fists', 'pistol', 'shotgun', 'rifle', 'rocket', 'grenade'];
 
 export interface WeaponDef {
   id: WeaponId;
   name: string;
-  /** Muzzle speed, m/s (0 = melee). */
+  /**
+   * Flight speed, m/s (0 = melee). GravWars bullets are slow on purpose (you see them fly and can lead a target);
+   * how hard they hit walls is `power`.
+   */
   speed: number;
+  /**
+   * Bullets: the real muzzle speed the wall penetration is reckoned with, m/s (a slow tracer of a rifle still goes
+   * through planks like a real 5.45 round). 0 = never pierces.
+   */
+  power: number;
+  /** Projectiles per shot (shotgun pellets) spread evenly over a cone of `cone` rad (half-angle). */
+  pellets: number;
+  cone: number;
+  /** Knockback of a hit × this (pellets push a little each, the sum is one good shove). */
+  push: number;
+  /** `damage` is final, not scaled by DAMAGE_SCALE (the rocket: 50 HP). */
+  raw: boolean;
+  /** Blows up on the first thing it touches (the rocket); grenades bounce and wait for the fuse. */
+  explodeOnHit: boolean;
   /** Share of the shooter's gravity applied to the projectile. */
   gravityScale: number;
   /** Share of the wind applied to the projectile. */
@@ -57,24 +74,38 @@ export interface WeaponDef {
   airPush: number;
 }
 
-const base = { reloadEmpty: 0, drag: 0, minEnergy: 1, spread: 0, bloom: 0, moveSpread: 0, recoil: 0, recoilYaw: 0, airPush: 0, headMul: 1, fuse: 0, radius: 0, bounce: 0, knockback: 0, selfMul: 0, reach: 0, auto: false, reload: 0, inherit: 0 };
+const base = { power: 0, pellets: 1, cone: 0, push: 1, raw: false, explodeOnHit: false, reloadEmpty: 0, drag: 0, minEnergy: 1, spread: 0, bloom: 0, moveSpread: 0, recoil: 0, recoilYaw: 0, airPush: 0, headMul: 1, fuse: 0, radius: 0, bounce: 0, knockback: 0, selfMul: 0, reach: 0, auto: false, reload: 0, inherit: 0 };
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
+  // punches land on everyone in front (MELEE) and shove them back
   fists: {
     ...base, id: 'fists', name: 'Кулаки', speed: 0, gravityScale: 0, windScale: 0, damage: 10, blockDamage: 12, headMul: 1.25,
     interval: 0.42, auto: true, mag: 0, life: 0, reach: 2.3,
   },
-  // 9×19 mm self-loading pistol: subsonic-ish, slows down fast, stopped by a wooden wall
+  // 9×19 mm self-loading pistol: a slow bright tracer, stopped by a wooden wall. gravityScale keeps the drop of a
+  // real 360 m/s bullet at the slow flight speed: (150 / 360)²
   pistol: {
-    ...base, id: 'pistol', name: 'Пистолет', speed: 360, gravityScale: 1, windScale: 1, damage: 9, blockDamage: 26, headMul: 2,
-    interval: 0.12, mag: 15, reload: 1.5, reloadEmpty: 1.9, life: 2.5, drag: 0.0019, minEnergy: 0.3,
+    ...base, id: 'pistol', name: 'Пистолет', speed: 150, power: 360, gravityScale: 0.17, windScale: 1, damage: 9, blockDamage: 26, headMul: 2,
+    interval: 0.12, mag: 15, reload: 1.5, reloadEmpty: 1.9, life: 3, drag: 0.0019, minEnergy: 0.3,
     spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008, airPush: 1.6,
   },
-  // 5.45×39 mm assault rifle, 650 rounds per minute: flat and fast, goes through a wooden wall
+  // pump shotgun: 8 pellets in a fixed cone, deadly up close, the pellets lose their bite after ~20 m
+  shotgun: {
+    ...base, id: 'shotgun', name: 'Дробовик', speed: 140, power: 420, pellets: 8, cone: 0.065, push: 0.35, gravityScale: 0.15, windScale: 1,
+    damage: 14, blockDamage: 12, headMul: 1.5, interval: 0.8, mag: 6, reload: 2.4, reloadEmpty: 2.8, life: 1.2, drag: 0.012, minEnergy: 0.15,
+    moveSpread: 0.02, recoil: 0.075, recoilYaw: 0.012, airPush: 4.5,
+  },
+  // 5.45×39 mm assault rifle, 650 rounds per minute: the flattest tracer, goes through a wooden wall
   rifle: {
-    ...base, id: 'rifle', name: 'Автомат', speed: 880, gravityScale: 1, windScale: 1, damage: 7, blockDamage: 28, headMul: 2,
-    interval: 0.092, auto: true, mag: 30, reload: 2.1, reloadEmpty: 2.6, life: 2.5, drag: 0.0008, minEnergy: 0.3,
+    ...base, id: 'rifle', name: 'Автомат', speed: 210, power: 880, gravityScale: 0.06, windScale: 1, damage: 7, blockDamage: 28, headMul: 2,
+    interval: 0.092, auto: true, mag: 30, reload: 2.1, reloadEmpty: 2.6, life: 3, drag: 0.0008, minEnergy: 0.3,
     spread: 0.0025, bloom: 0.0045, moveSpread: 0.035, recoil: 0.013, recoilYaw: 0.006, airPush: 0.7,
+  },
+  // single-shot rocket launcher: a slow rocket flying straight, it blows up on contact (2.5 m, 50 HP at the centre)
+  rocket: {
+    ...base, id: 'rocket', name: 'Ракетница', speed: 36, gravityScale: 0, windScale: 0, damage: 50, raw: true, explodeOnHit: true,
+    blockDamage: 95, interval: 0.9, mag: 1, reload: 1.7, reloadEmpty: 1.7, life: 5,
+    radius: 2.5, knockback: 15, selfMul: 0.4, recoil: 0.05, recoilYaw: 0.01, airPush: 3,
   },
   grenade: {
     ...base, id: 'grenade', name: 'Граната', speed: 22, gravityScale: 1, windScale: 0.6, damage: 45, blockDamage: 75,
@@ -83,8 +114,18 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   },
 };
 
+/** Punches: everyone within the reach and this cone (cos of the half-angle) is hit; the push, m/s. */
+export const MELEE = { cos: Math.cos(0.8), push: 5.5, lift: 0.3 };
+/**
+ * Kick (V): everyone and every crate / barrel in a wide cone in front. `damage` is final (HP); cooldown `cdHit` s
+ * after kicking something, `cdMiss` after a kick into the air.
+ */
+export const KICK = { reach: 2.4, cos: Math.cos(1), damage: 10, push: 9, lift: 0.35, propSpeed: 9, cdHit: 3, cdMiss: 0.7 };
+
 /** Guns that use a magazine + spare ammo bought in the shop. */
-export const isGun = (w: WeaponId) => w === 'pistol' || w === 'rifle';
+export const isGun = (w: WeaponId) => w === 'pistol' || w === 'rifle' || w === 'shotgun' || w === 'rocket';
+/** Guns in the order a fighter prefers them when nothing better is said. */
+export const GUNS_BEST_FIRST: WeaponId[] = ['rifle', 'shotgun', 'pistol', 'rocket'];
 
 export interface WeaponState {
   current: WeaponId;
@@ -104,6 +145,9 @@ export interface WeaponState {
   heat: number;
   /** Tried to fire an empty gun with nothing to reload: dry click (for the sound). */
   dry: boolean;
+  /** Kick (V) cooldown left, s, and its full length (HUD). */
+  kickCd: number;
+  kickCdTotal: number;
 }
 
 export interface ShootInput {
@@ -112,13 +156,13 @@ export interface ShootInput {
   select: WeaponId | null;
 }
 
-const none = (): Record<WeaponId, number> => ({ fists: 0, pistol: 0, rifle: 0, grenade: 0 });
+const none = (): Record<WeaponId, number> => ({ fists: 0, pistol: 0, shotgun: 0, rifle: 0, rocket: 0, grenade: 0 });
 
 /** Everyone starts with bare fists; guns, grenades and ammo come from the shop. */
 export function createWeaponState(): WeaponState {
   return {
-    current: 'fists', owned: { fists: true, pistol: false, rifle: false, grenade: false },
-    ammo: none(), reserve: none(), cooldown: 0, reloadT: 0, reloadTotal: 0, held: false, heat: 0, dry: false,
+    current: 'fists', owned: { fists: true, pistol: false, shotgun: false, rifle: false, rocket: false, grenade: false },
+    ammo: none(), reserve: none(), cooldown: 0, reloadT: 0, reloadTotal: 0, held: false, heat: 0, dry: false, kickCd: 0, kickCdTotal: 0,
   };
 }
 
@@ -136,6 +180,7 @@ export function hasAmmo(ws: WeaponState, w: WeaponId) {
 /** Advances timers; returns the weapon that fires / swings this tick (or null). */
 export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): WeaponId | null {
   ws.cooldown = Math.max(0, ws.cooldown - dt);
+  ws.kickCd = Math.max(0, ws.kickCd - dt);
   ws.dry = false;
   const pressed = input.fire && !ws.held;
   ws.held = input.fire;
@@ -161,8 +206,10 @@ export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): Weap
     }
     return null;
   }
-  // reload on R, or automatically when trying to fire an empty gun (only if there are spare rounds)
-  if (isGun(w) && ws.ammo[w] < def.mag && ws.reserve[w] > 0 && (input.reload || (input.fire && ws.ammo[w] === 0))) {
+  // reload on R, or automatically when trying to fire an empty gun (only if there are spare rounds); a single-shot
+  // launcher reloads by itself right after the shot
+  const single = def.mag === 1 && ws.ammo[w] === 0 && ws.cooldown <= 0;
+  if (isGun(w) && ws.ammo[w] < def.mag && ws.reserve[w] > 0 && (input.reload || (input.fire && ws.ammo[w] === 0) || single)) {
     ws.reloadTotal = ws.reloadT = ws.ammo[w] > 0 ? def.reload : def.reloadEmpty;
     ws.heat = 0;
     return null;
@@ -181,6 +228,13 @@ export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): Weap
   return w;
 }
 
+/** Can kick now (V)? */
+export const kickReady = (ws: WeaponState) => ws.kickCd <= 0;
+/** A kick was made: `hit` = it landed on someone / something (the long cooldown). */
+export function kicked(ws: WeaponState, hit: boolean) {
+  ws.kickCdTotal = ws.kickCd = hit ? KICK.cdHit : KICK.cdMiss;
+}
+
 /** Damage multiplier of a bullet still flying at `speed` (kinetic energy left; 1 for melee / grenades). */
 export function energyLeft(def: WeaponDef, speed: number): number {
   if (!def.drag) return 1;
@@ -195,5 +249,5 @@ export function shotSpread(def: WeaponDef, heat: number, moving: number, airborn
   return def.spread + def.bloom * Math.max(0, Math.min(heat, 12) - 1) + def.moveSpread * Math.min(1, moving) + (airborne ? def.moveSpread : 0);
 }
 
-/** Bullet resistance of materials: m/s of speed lost per metre. Map concrete / brick is not shot through. */
+/** Bullet resistance of materials: m/s of `power` lost per metre. Map concrete / brick is not shot through. */
 export const PENETRATION = { wood: 1600, stone: 9000, metal: 22000 } as const;

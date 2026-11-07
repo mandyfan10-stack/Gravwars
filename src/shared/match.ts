@@ -1,5 +1,6 @@
 import { Vector3 } from 'three';
 import { BlockSystem } from './blocks';
+import { Combat, CRYSTAL } from './combat';
 import type { Currency } from './economy';
 import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
@@ -11,19 +12,26 @@ export const GENERATORS: Record<'crystal', { interval: number; cap: number }> = 
 };
 /** Walk this close (player centre → generator pad) to collect. */
 export const PICKUP_RADIUS = 2.4;
-/** Reach to the enemy crystal (eye → crystal centre) and hold time to break it. */
-export const BED_REACH = 4.5;
-export const BED_BREAK_TIME = 1.5;
+/**
+ * Team crystal: HP (final damage: ~3 s of rifle fire point blank, 2 rockets, a long beating with the fists), healed
+ * back at `regen` HP/s once nobody has hit it for `regenDelay` s. Only shots from within CRYSTAL.range hurt it.
+ */
+export const BED_HP = 80;
+export const BED_REGEN = { delay: 10, rate: 8 };
+/** The UI points at an enemy crystal you look at from this far (and says to come closer beyond CRYSTAL.range). */
+export const BED_SIGHT = 40;
 export const SHOP_RADIUS = 4.5;
 /** Money for killing an enemy. */
 export const KILL_REWARD = 3;
 
 export interface Generator { currency: 'crystal'; pos: Vector3; up: Vector3; stored: number; timer: number }
-export interface Bed { team: TeamId; pos: Vector3; up: Vector3; alive: boolean }
+export interface Bed { team: TeamId; pos: Vector3; up: Vector3; alive: boolean; hp: number; calm: number }
 
 export type MatchEvent =
   | { type: 'pickup'; currency: 'crystal'; amount: number }
   | { type: 'bedBroken'; team: TeamId; byPlayer: boolean }
+  /** A crystal took damage (HP bar, "your crystal is under attack"). */
+  | { type: 'bedHit'; team: TeamId; hp: number; byPlayer: boolean }
   | { type: 'win'; time: number }
   | { type: 'lose' };
 
@@ -42,8 +50,6 @@ export class Match {
   characterFilter?: (collider: { handle: number }) => boolean;
   /** Living members of a team other than the local player (bots). Set by the bot manager. */
   membersAlive: (team: TeamId) => number = () => 0;
-  /** Bed currently being broken and progress 0..1. */
-  breaking: { bed: Bed; progress: number } | null = null;
 
   /** Own shop kiosk, if the team has a base. */
   readonly shop: Vector3 | null;
@@ -56,7 +62,7 @@ export class Match {
     const base = map.bases.find((b) => b.team === team);
     this.shop = base ? new Vector3(...base.shop) : null;
     this.shops = map.bases.filter((b) => b.team === team || b.team === '').map((b) => new Vector3(...b.shop));
-    this.beds = map.statues.map((s) => ({ team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up), alive: true }));
+    this.beds = map.statues.map((s) => ({ team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up), alive: true, hp: BED_HP, calm: 0 }));
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
     // fortify enemy beds
     for (const s of map.statues) {
@@ -71,6 +77,22 @@ export class Match {
 
   bed(team: TeamId) {
     return this.beds.find((b) => b.team === team)!;
+  }
+
+  /** Shots and blows of `combat` hurt the crystals (it tells who hit and how hard; `owner` 0 = the local player). */
+  attach(combat: Combat) {
+    combat.crystals = this.beds;
+    combat.onCrystal = (c, damage, owner) => this.damageBed(c.team, damage, owner === 0);
+  }
+
+  /** A crystal takes `damage` (final HP); at 0 it breaks. */
+  damageBed(team: TeamId, damage: number, byPlayer = false) {
+    const bed = this.bed(team);
+    if (!bed.alive || this.result) return;
+    bed.hp = Math.max(0, bed.hp - damage);
+    bed.calm = 0;
+    this.events.push({ type: 'bedHit', team, hp: bed.hp, byPlayer });
+    if (bed.hp <= 0) this.destroyBed(team, byPlayer);
   }
 
   get ownBedAlive() {
@@ -99,6 +121,11 @@ export class Match {
   tick(dt: number, playerPos: Vector3) {
     if (!this.result) this.time += dt;
     this.checkWin();
+    for (const b of this.beds) {
+      if (!b.alive || b.hp >= BED_HP) continue;
+      b.calm += dt;
+      if (b.calm >= BED_REGEN.delay) b.hp = Math.min(BED_HP, b.hp + BED_REGEN.rate * dt);
+    }
     for (const g of this.generators) {
       const def = GENERATORS[g.currency];
       if (g.stored >= def.cap) g.timer = 0;
@@ -117,16 +144,24 @@ export class Match {
     }
   }
 
-  /** Nearest enemy bed within reach and not walled off by blocks / map geometry. */
-  reachableBed(eye: Vector3, team: TeamId = this.team, exclude = this.playerCollider): Bed | null {
-    let best: Bed | null = null;
-    let bestD = BED_REACH;
+  /**
+   * The enemy crystal you look at (within BED_SIGHT, not walled off) and how far it is (to its axis: the 5 m rule).
+   */
+  bedInSight(eye: Vector3, dir: Vector3, team: TeamId = this.team, exclude = this.playerCollider): { bed: Bed; dist: number } | null {
+    let best: { bed: Bed; dist: number } | null = null;
     for (const b of this.beds) {
       if (!b.alive || b.team === team) continue;
-      const d = eye.distanceTo(b.pos);
-      if (d > bestD || !this.lineOfSight(eye, b.pos, exclude)) continue;
-      best = b;
-      bestD = d;
+      const to = b.pos.clone().sub(eye);
+      const along = to.dot(dir);
+      if (along <= 0 || along > BED_SIGHT) continue;
+      // the view passes close to the crystal (its height counts: it is tall)
+      const off = to.clone().addScaledVector(dir, -along);
+      const offUp = off.dot(b.up);
+      if (off.addScaledVector(b.up, -offUp).length() > CRYSTAL.radius + 0.6 || Math.abs(offUp) > CRYSTAL.half + 0.8) continue;
+      if (best && along >= best.dist) continue;
+      if (!this.lineOfSight(eye, b.pos, exclude)) continue;
+      const k = Math.max(-CRYSTAL.half, Math.min(CRYSTAL.half, eye.clone().sub(b.pos).dot(b.up)));
+      best = { bed: b, dist: b.pos.clone().addScaledVector(b.up, k).distanceTo(eye) };
     }
     return best;
   }
@@ -144,26 +179,11 @@ export class Match {
       undefined, this.characterFilter);
   }
 
-  /** Hold-to-break the enemy crystal. Returns the bed being broken (for the HUD), if any. */
-  breakTick(dt: number, eye: Vector3, holding: boolean): Bed | null {
-    const bed = holding && !this.result ? this.reachableBed(eye) : null;
-    if (!bed) {
-      this.breaking = null;
-      return null;
-    }
-    if (this.breaking?.bed !== bed) this.breaking = { bed, progress: 0 };
-    this.breaking.progress += dt / BED_BREAK_TIME;
-    if (this.breaking.progress >= 1) {
-      this.breaking = null;
-      this.destroyBed(bed.team, true);
-    }
-    return bed;
-  }
-
   destroyBed(team: TeamId, byPlayer = false) {
     const bed = this.bed(team);
     if (!bed.alive) return;
     bed.alive = false;
+    bed.hp = 0;
     this.events.push({ type: 'bedBroken', team, byPlayer });
     this.checkWin();
   }
