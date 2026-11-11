@@ -35,6 +35,22 @@
       <div id="hotbar"></div>
       <div id="kick" title="Пинок"><span class="k-ic"></span><kbd>V</kbd><b><i></i></b></div>
       <div id="weapon" class="panel"><span id="weapon-ic"></span><div><div id="weapon-name">Кулаки</div><div id="ammo"></div></div></div>
+      <div id="spectator-hud" class="panel" hidden>
+        <div class="spec-top">
+          <span id="spec-mode-badge">🎥 АВТОРЕЖИССЁР</span>
+          <div class="spec-modes">
+            <span><kbd>1</kbd> За ботом</span>
+            <span><kbd>2</kbd> Полёт</span>
+            <span><kbd>3</kbd> Авто</span>
+            <span><kbd>V</kbd> 1-е/3-е лицо</span>
+            <span><kbd>4-7</kbd> Команды</span>
+            <span><kbd>Esc</kbd> Меню</span>
+          </div>
+        </div>
+        <div id="spec-teams-bar" class="spec-teams-bar"></div>
+        <div id="spec-title">Обзор арены</div>
+        <div id="spec-sub">Автоматическое переключение на ключевые события матча</div>
+      </div>
       <div id="shop" class="panel" hidden></div>
       <div id="inv" class="panel" hidden></div>
       <div id="death" aria-live="polite"><div class="card"><div class="kicker"></div><h2></h2><p class="by"></p><div class="bar"><i></i></div><p class="t"></p></div></div>
@@ -47,14 +63,36 @@
     <div id="overlay">
       <div class="menu-shell">
         <div id="menu-state" hidden>Матч идёт</div>
-        <h1 class="logo" aria-label="GravWars"><span class="logo-top"><i class="g-down" style="--c:var(--red)">G</i><i class="g-up" style="--c:var(--blue)">R</i><i class="g-right" style="--c:var(--green)">A</i><i class="g-left" style="--c:var(--yellow)">V</i><i class="w">W</i><i class="w">A</i><i class="w">R</i><i class="w">S</i></span></h1>
+        <div class="menu-kicker">ГРАВИТАЦИОННАЯ АРЕНА · 6 ГРАНЕЙ КУБА</div>
+        <h1 class="logo" aria-label="GravWars">
+          <span class="logo-top"><i class="g-down" style="--c:var(--red)">G</i><i class="g-up" style="--c:var(--blue)">R</i><i class="g-right" style="--c:var(--green)">A</i><i class="g-left" style="--c:var(--yellow)">V</i><i class="w">W</i><i class="w">A</i><i class="w">R</i><i class="w">S</i></span>
+          <span class="logo-sub">Битва за двухстадийные кристаллы на гранях куба</span>
+        </h1>
         <nav class="menu-list">
           <button id="start-game" class="btn btn-play" disabled>Загрузка…</button>
+          <button id="spectate-btn" class="btn btn-spec">Режим наблюдателя</button>
           <button id="show-help" class="btn">Управление</button>
           <button id="show-settings" class="btn">Настройки</button>
           <button id="new-match" class="btn" hidden>Новый матч</button>
+          <button id="exit-menu" class="btn btn-exit" hidden>Выйти в главное меню</button>
         </nav>
-        <div id="menu-help" class="menu-details keymap" hidden><div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div><div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок: держать — выше (до 3 м), зажать — автобхоп</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>то, что в руке: удар, огонь, постройка, удочка, съесть, бросить бутылку</span></div><div class="row"><span class="keys"><kbd>1</kbd>–<kbd>9</kbd></span><span>слоты пояса; та же цифра ещё раз — кулаки</span></div><div class="row"><span class="keys"><kbd>Q</kbd></span><span>следующий слот; с лопаткой держать — форма постройки; в магазине — вкладка</span></div><div class="row"><span class="keys"><kbd>G</kbd></span><span>бросить предмет из руки (бутылка оглушает жителя)</span></div><div class="row"><span class="keys"><kbd>I</kbd></span><span>инвентарь — разложить пояс мышью</span></div><div class="row"><span class="keys"><kbd>E</kbd></span><span>подобрать; магазин</span></div><div class="row"><span class="keys"><kbd>V</kbd></span><span>пинок: 10 урона всем перед тобой, отталкивает людей, бочки и ящики (после попадания — 3 с отдыха)</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>с крюком-кошкой — зацепиться за стену до 30 м и подтянуться; ещё раз или прыжок — отпустить</span></div><div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>по чужому кристаллу — ломать (только ближе 5 м; без урона он восстанавливается)</span></div><div class="row"><span class="keys"><kbd>F</kbd></span><span>съесть яблоко</span></div><div class="row"><span class="keys"><kbd>Tab</kbd></span><span>держать — счёт матча</span></div><div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка</span></div><div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>забрать свою постройку</span></div><div class="row"><span class="keys"><kbd>Shift</kbd></span><span>бег — намного быстрее, хватает на 8 секунд</span></div><div class="row"><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span><span>присесть — тихо (бандиты замечают позже), точнее, но медленно</span></div><div class="row"><span class="keys"><kbd>Shift</kbd><kbd>1–4</kbd></span><span>стоя на месте — сменить гравитацию (отладка)</span></div><div class="row"><span class="keys"><kbd>K</kbd></span><span>респавн</span></div><div class="row"><span class="keys"><kbd>Esc</kbd></span><span>меню (игра не останавливается)</span></div></div>
+        <div id="menu-help" class="menu-details keymap" hidden>
+          <div class="row"><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>движение</span></div>
+          <div class="row"><span class="keys"><kbd>Пробел</kbd></span><span>прыжок: держать — выше (до 3 м), зажать — автобхоп</span></div>
+          <div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>огонь, зажим арбалета (до 3 ур.), зажим 1 с — съесть яблоко</span></div>
+          <div class="row"><span class="keys"><kbd>ПКМ</kbd></span><span>зум с арбалетом; в стройке — забрать свою постройку</span></div>
+          <div class="row"><span class="keys"><kbd>X</kbd></span><span>плавный 2× зум камеры</span></div>
+          <div class="row"><span class="keys"><kbd>1</kbd>–<kbd>9</kbd></span><span>9 слотов пояса; в режиме наблюдателя 1–3 меняют камеру</span></div>
+          <div class="row"><span class="keys"><kbd>B</kbd></span><span>строительный режим (вкл/выкл); держать <kbd>Q</kbd> — форма постройки</span></div>
+          <div class="row"><span class="keys"><kbd>E</kbd></span><span>магазин / подобрать; зажать <kbd>E</kbd> — подобрать всё в радиусе 1 м спереди</span></div>
+          <div class="row"><span class="keys"><kbd>F</kbd></span><span>взять яблоко в руки (зажать ЛКМ 1 с — съесть +20 HP)</span></div>
+          <div class="row"><span class="keys"><kbd>V</kbd></span><span>пинок: урон и отталкивание на 1.5 м при попадании (промах — 0.1 с КД)</span></div>
+          <div class="row"><span class="keys"><kbd>ЛКМ</kbd></span><span>с крюком-кошкой — захват до 35 м с магнитом 0.25 м и мгновенным импульсом</span></div>
+          <div class="row"><span class="keys"><kbd>G</kbd></span><span>бросить предмет из руки (бутылка оглушает)</span></div>
+          <div class="row"><span class="keys"><kbd>R</kbd></span><span>перезарядка оружия</span></div>
+          <div class="row"><span class="keys"><kbd>Tab</kbd></span><span>держать — счёт матча</span></div>
+          <div class="row"><span class="keys"><kbd>Esc</kbd></span><span>меню паузы / выход в главное меню</span></div>
+        </div>
         <div id="menu-settings" class="menu-details" hidden>
           <label>Громкость <input id="volume" type="range" min="0" max="1" step="0.05" value="0.45"><output id="volume-value">45%</output></label>
           <label>Чувствительность <input id="sensitivity" type="range" min="0.0008" max="0.005" step="0.0002" value="0.0022"><output id="sensitivity-value">100%</output></label>

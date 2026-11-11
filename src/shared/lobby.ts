@@ -8,6 +8,8 @@ export const TEAM_SEATS = 5;
 /** Who plays: four teams × five seats. A team with nobody in it gets no face. */
 export interface LobbyConfig {
   seats: Record<TeamId, Seat[]>;
+  /** Pre-match mode: the player's wallet never runs out. */
+  infiniteMoney?: boolean;
 }
 
 const empty = (): Seat[] => Array(TEAM_SEATS).fill(null);
@@ -30,10 +32,19 @@ export function activeTeams(c: LobbyConfig): TeamId[] {
   return TEAMS.filter((t) => c.seats[t.id].some((s) => s)).map((t) => t.id);
 }
 
-export function botRoster(c: LobbyConfig): BotRoster {
+export function botRoster(c: LobbyConfig, spectator = false): BotRoster {
   const r: BotRoster = {};
+  const active = activeTeams(c);
   for (const t of TEAMS) {
-    const bots = c.seats[t.id].filter((s): s is { kind: 'bot'; difficulty: Difficulty } => s?.kind === 'bot').map((s) => s.difficulty);
+    let bots = c.seats[t.id].filter((s): s is { kind: 'bot'; difficulty: Difficulty } => s?.kind === 'bot').map((s) => s.difficulty);
+    if (spectator) {
+      if (c.seats[t.id].some((s) => s?.kind === 'player')) {
+        bots = ['normal', ...bots];
+      }
+      if (active.includes(t.id)) {
+        while (bots.length < 2) bots.push('normal');
+      }
+    }
     if (bots.length) r[t.id] = bots;
   }
   return r;
@@ -59,7 +70,7 @@ export function parseLobby(raw: string | null, difficulty: Difficulty = 'normal'
     const ok = TEAMS.every((t) => Array.isArray(c.seats?.[t.id]) && c.seats[t.id].length === TEAM_SEATS
       && c.seats[t.id].every((s) => s === null || s.kind === 'player' || (s.kind === 'bot' && ['easy', 'normal', 'hard'].includes(s.difficulty))));
     const players = TEAMS.reduce((n, t) => n + c.seats[t.id].filter((s) => s?.kind === 'player').length, 0);
-    if (ok && players <= 1) return c;
+    if (ok && players <= 1) return { ...c, infiniteMoney: c.infiniteMoney === true };
   } catch { /* default */ }
   return defaultLobby(difficulty);
 }

@@ -3,12 +3,16 @@ import { MAX_HP } from '../shared/combat';
 import { EAT_COOLDOWN, Economy, ItemId, ITEMS, Pickup, PickupKind, Pickups } from '../shared/economy';
 import { Fishing, FISHING } from '../shared/fishing';
 import type { PlayerSim } from '../shared/sim';
+import { refillAmmo } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import type { Hud } from './hud';
 import type { PlayerCombat } from './playerCombat';
 
 const $ = (id: string) => document.getElementById(id)!;
-const PICK_NAME: Record<PickupKind, string> = { apple: 'яблоко', bottle: 'бутылку', cash: 'деньги', fish: 'рыбу', medkit: 'аптечку' };
+const PICK_NAME: Record<PickupKind, string> = {
+  apple: 'яблоко', bottle: 'бутылку', cash: 'деньги', fish: 'рыбу', medkit: 'аптечку',
+  ammo: 'патроны', wood: 'дерево', stone: 'камень', metal: 'металл',
+};
 const _dir = new Vector3();
 const _side = new Vector3();
 const _fwd = new Vector3();
@@ -37,19 +41,45 @@ export class Pockets {
   interact(): boolean {
     const it = this.near;
     if (!it) return false;
+    this.takePickup(it);
+    this.near = null;
+    return true;
+  }
+
+  /** Hold E: pick up everything within a 1-meter radius in front of the player. */
+  pickupFrontRadius(camera: PerspectiveCamera): number {
+    if (!this.player.me.alive) return 0;
+    camera.getWorldDirection(_dir);
+    const list = this.pickups.inFrontRadius(this.sim.state.pos, _dir, this.player.me.up, 1.0);
+    for (const it of list) {
+      this.takePickup(it);
+      if (this.near === it) this.near = null;
+    }
+    return list.length;
+  }
+
+  private takePickup(it: Pickup) {
     this.pickups.take(it);
     if (it.kind === 'cash') {
       this.eco.wallet.cash += it.amount;
       this.audio.coins();
       this.hud.toast(`+${it.amount} денег`, '#e2c27a', 0.9);
+    } else if (it.kind === 'ammo') {
+      refillAmmo(this.player.weapons, Math.max(1, it.amount));
+      this.audio.pickup();
+      this.hud.toast('+патроны', '#ffd685', 0.9);
+    } else if (it.kind === 'wood' || it.kind === 'stone' || it.kind === 'metal') {
+      const n = Math.max(1, it.amount);
+      this.eco.blocks.inventory[it.kind] += n;
+      this.audio.pickup();
+      const label = it.kind === 'wood' ? 'дерева' : it.kind === 'stone' ? 'камня' : 'металла';
+      this.hud.toast(`+${n} ${label}`, '#d8c8a8', 0.9);
     } else {
       const n = Math.max(1, it.amount);
       this.eco.items[it.kind] += n;
       this.audio.pickup();
       this.hud.toast(`+${n} ${(n > 1 ? ITEMS[it.kind].plural : ITEMS[it.kind].name).toLowerCase()}`, '#e8e2d6', 0.8);
     }
-    this.near = null;
-    return true;
   }
 
   /** F: eat an apple. */

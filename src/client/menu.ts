@@ -11,32 +11,66 @@ export interface MenuHooks {
   onToggles: () => void;
   /** The match summary (teams table + personal numbers) for the side panel. */
   statsHtml: () => string;
+  /** Toggle or enter spectator mode during a match. */
+  onToggleSpectate?: () => boolean;
+  /** User exited back to the main menu lobby from a match. */
+  onExitToMainMenu?: () => void;
 }
 
 /**
- * Main / pause / end-of-match menu: play / resume, new match, help & settings panels.
+ * Main / pause / end-of-match menu: play / resume, spectator mode, new match, exit to main menu, help & settings panels.
  * Settings are applied from `settings` on start and saved whenever they change.
  */
 export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCamera, toggles: DebugToggles, settings: Settings, hooks: MenuHooks) {
   const start = $('start-game');
+  const spectateBtn = $('spectate-btn');
   const newMatch = $('new-match');
+  const exitMenu = $('exit-menu');
   start.addEventListener('click', () => audio.unlock());
 
   let started = false;
   let over = false;
+  let returnedToLobby = false;
+
   const showMatch = () => {
-    $('menu-lobby').hidden = started;
-    $('menu-match').hidden = !started;
-    if (started) $('menu-match-body').innerHTML = hooks.statsHtml();
+    $('menu-lobby').hidden = started && !returnedToLobby;
+    $('menu-match').hidden = !started || returnedToLobby;
+    if (started && !returnedToLobby) $('menu-match-body').innerHTML = hooks.statsHtml();
   };
+
   document.addEventListener('game-lock', () => {
     if (input.locked) {
       started = true;
+      returnedToLobby = false;
       start.textContent = over ? 'Осмотреться' : 'Продолжить';
       newMatch.hidden = false;
-    } else if (started) {
+      exitMenu.hidden = false;
+    } else if (started && !returnedToLobby) {
       $('menu-state').hidden = false;
+      exitMenu.hidden = false;
       showMatch();
+    }
+  });
+
+  // If the user returned to the main menu lobby during/after a match and clicks "В бой", start a fresh match
+  start.addEventListener('click', (e) => {
+    if (returnedToLobby) {
+      e.stopImmediatePropagation();
+      location.reload();
+    }
+  }, true);
+
+  spectateBtn.addEventListener('click', () => {
+    audio.unlock();
+    if (returnedToLobby) {
+      sessionStorage.setItem('gravwars-start-spectate', '1');
+      location.reload();
+      return;
+    }
+    if (started && hooks.onToggleSpectate) {
+      const specOn = hooks.onToggleSpectate();
+      spectateBtn.textContent = specOn ? 'Вернуться в тело игрока' : 'Режим наблюдателя';
+      input.lock();
     }
   });
 
@@ -47,6 +81,22 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     confirmT = performance.now() + 3000;
     newMatch.textContent = 'Точно? Матч начнётся заново';
     setTimeout(() => { if (!over) newMatch.textContent = 'Новый матч'; }, 3000);
+  });
+
+  // Exit to main menu during a match or after its end: returns immediately to the Main Menu & Lobby configurator
+  exitMenu.addEventListener('click', () => {
+    returnedToLobby = true;
+    $('menu-state').hidden = true;
+    $('menu-state').classList.remove('over');
+    $('menu-lobby').hidden = false;
+    $('menu-match').hidden = true;
+    newMatch.hidden = true;
+    exitMenu.hidden = true;
+    start.textContent = 'В бой';
+    start.classList.add('btn-play');
+    newMatch.classList.remove('btn-play');
+    spectateBtn.textContent = 'Режим наблюдателя';
+    hooks.onExitToMainMenu?.();
   });
 
   const sections = ['help', 'settings'];
@@ -141,13 +191,15 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
   });
 
   return {
-    /** Match over: summary in the menu, "New match" becomes the main button. */
+    /** Match over: summary in the menu, "New match" and "Exit to main menu" shown prominently. */
     showResult(title: string) {
       over = true;
+      returnedToLobby = false;
       $('menu-state').hidden = false;
       $('menu-state').textContent = title;
       $('menu-state').classList.add('over');
       newMatch.hidden = false;
+      exitMenu.hidden = false;
       newMatch.textContent = 'Новый матч';
       newMatch.classList.add('btn-play');
       start.classList.remove('btn-play');

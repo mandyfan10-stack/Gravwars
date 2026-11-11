@@ -270,9 +270,15 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
     if (door) {
       for (const s of [-1, 1]) b.block(w, s * (H + DOOR) / 2, SW, z, (H - DOOR) / 2, HALL_H / 2, T / 2, WALL, 'concrete');
       b.block(w, 0, SW + DH, z, DOOR, (HALL_H - DH) / 2, T / 2, WALL, 'concrete');
-      for (const s of [-1, 1]) b.block(w, s * (DOOR + 0.06), SW, z, 0.06, DH / 2 + 0.06, T / 2 + 0.04, DARK, 'metal', false);
+      for (const s of [-1, 1]) {
+        b.block(w, s * (DOOR + 0.06), SW, z, 0.06, DH / 2 + 0.06, T / 2 + 0.04, DARK, 'metal', false);
+        // Sculpted portal buttresses flanking the entrance with vertical team-colored energy strips
+        b.block(w, s * (DOOR + 0.55), SW, H + 0.22, 0.28, (DH + 0.8) / 2, 0.22, DARK, 'metal', false);
+        b.box(w, s * (DOOR + 0.55), SW + (DH + 0.4) / 2, H + 0.46, 0.08, (DH - 0.2) / 2, 0.03, team.color, 'glow', false);
+      }
       b.block(w, 0, SW + DH, z, DOOR + 0.12, 0.06, T / 2 + 0.04, DARK, 'metal', false);
-      b.box(w, 0, SW + DH + 0.35, H + 0.04, DOOR + 1, 0.06, 0.03, team.color, 'glow', false);
+      b.block(w, 0, SW + DH + 0.28, H + 0.28, DOOR + 0.9, 0.16, 0.28, DARK, 'metal', false);
+      b.box(w, 0, SW + DH + 0.35, H + 0.58, DOOR + 0.8, 0.06, 0.03, team.color, 'glow', false);
     } else b.block(w, 0, SW, z, H, HALL_H / 2, T / 2, WALL, 'concrete');
     // two ribbon windows on both faces (around the door opening)
     for (const [y0, y1] of [[1.1, 3.0], [4.7, 7.6]]) for (const face of [H + 0.03, H - T - 0.03]) {
@@ -308,10 +314,14 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
       b.block(w, c, RT + 1, H - 0.15, len + 0.02, 0.04, 0.18, team.color, 'paint', false);
     }
   }
-  b.signDecal(h, 0, SW + 6.2, -H - 0.04, 7, 1.2, Math.PI, team.color, team.name.toUpperCase());
-  b.signDecal(h, 0, SW + 6.2, H + 0.04, 7, 1.2, 0, team.color, team.name.toUpperCase());
+  b.box(h, 0, SW + 4.05, -H - 0.05, 3.8, 0.58, 0.04, DARK, 'metal', false);
+  b.box(h, 0, SW + 4.05, H + 0.05, 3.8, 0.58, 0.04, DARK, 'metal', false);
+  b.signDecal(h, 0, SW + 4.05, -H - 0.11, 7, 1.1, Math.PI, team.color, team.name.toUpperCase());
+  b.signDecal(h, 0, SW + 4.05, H + 0.11, 7, 1.1, 0, team.color, team.name.toUpperCase());
 
   // the crystal on its pedestal + fortification ring
+  b.box(h, 0, SW + 0.05, 0, 2.2, 0.05, 2.2, DARK, 'metal', false);
+  b.box(h, 0, SW + 0.11, 0, 1.85, 0.02, 1.85, team.color, 'glow', false);
   b.block(h, 0, SW, 0, 1.5, 0.6, 1.5, 0xd8d2c4, 'stone');
   b.block(h, 0, SW + 1.2, 0, 1.0, 0.4, 1.0, 0xe4dfd2, 'stone');
   const cy = SW + 4;
@@ -323,6 +333,19 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
   });
   b.data.statues.push({ team: team.id, pos: h.p(0, cy + 2.5, 0), bed: h.p(0, cy, 0), up: f.up(), color: team.color, fort });
 
+  // Interior energy pylons and roof corner beacons (replacing old team flags)
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const px = sx * 4.2, pz = sz * (-H + T + 1.1);
+    b.block(h, px, SW, pz, 0.32, 1.8, 0.32, DARK, 'metal', false);
+    b.block(h, px, SW, pz, 0.44, 0.22, 0.44, 0xd8d2c4, 'stone', false);
+    b.box(h, px, SW + 2.1, pz, 0.22, 1.35, 0.22, team.color, 'glow', false);
+    b.block(h, px, SW + 3.5, pz, 0.38, 0.14, 0.38, DARK, 'metal', false);
+    // Roof corner architectural beacons
+    const rx = sx * (H - 0.9), rz = sz * (H - 0.9);
+    b.block(h, rx, RT, rz, 0.36, 0.85, 0.36, DARK, 'metal', false);
+    b.box(h, rx, RT + 1.85, rz, 0.24, 0.22, 0.24, team.color, 'glow', false);
+  }
+
   // spawn in the back-right quarter, looking towards the front door
   const [spx, spz] = [5, 6];
   b.floorDecal(h, 'spawn', spx, SW, spz, 3.2, 3.2, 0, team.color);
@@ -331,7 +354,6 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
 
   // shop against the back wall, west of the door, open towards the crystal
   shopStall(b, h.sub(-6, 0, H - T - 1.5, Math.PI), SW, team.color, team.id);
-  for (const s of [-1, 1]) b.prop(h, 'banner', s * 3.4, SW, -H + T + 0.4, 2.6, 0, team.color);
 }
 
 /** Hall doors and the crystal stands, hall-local → face-local. */

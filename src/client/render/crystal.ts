@@ -1,7 +1,7 @@
 import { pixelDot } from './pixelart';
 import {
-  AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, Color, Group, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, PointLight,
-  Points, PointsMaterial, Vector3,
+  AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Group, IcosahedronGeometry, Mesh, MeshBasicMaterial,
+  MeshPhysicalMaterial, PointLight, Points, PointsMaterial, TorusGeometry, Vector3,
 } from 'three';
 import { Rng } from '../../shared/math';
 
@@ -65,6 +65,7 @@ function crystalMesh(geo: BufferGeometry, mats: ReturnType<typeof crystalMateria
 
 export interface CrystalCluster {
   group: Group;
+  setStage(stage: 1 | 2, invulnT: number): void;
   update(time: number, dt: number): void;
 }
 
@@ -95,6 +96,35 @@ export function crystalCluster(color: number, seed: number): CrystalCluster {
   light.position.set(0, 0.3, 0);
   group.add(light);
 
+  // Invulnerability barrier (shown during the 10s countdown between Stage 1 and Stage 2)
+  const shieldGroup = new Group();
+  shieldGroup.visible = false;
+  const shieldMat = new MeshBasicMaterial({
+    color: new Color(color).lerp(new Color(0xffffff), 0.55).multiplyScalar(2.2),
+    transparent: true,
+    opacity: 0.28,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    side: DoubleSide,
+    wireframe: true,
+  });
+  const shieldDome = new Mesh(new IcosahedronGeometry(2.15, 2), shieldMat);
+  const ringMat = new MeshBasicMaterial({
+    color: new Color(color).lerp(new Color(0xffffff), 0.7).multiplyScalar(3.2),
+    transparent: true,
+    opacity: 0.75,
+    blending: AdditiveBlending,
+    depthWrite: false,
+  });
+  const ring1 = new Mesh(new TorusGeometry(2.25, 0.045, 8, 36), ringMat);
+  const ring2 = new Mesh(new TorusGeometry(2.25, 0.045, 8, 36), ringMat);
+  ring2.rotation.x = Math.PI / 2;
+  shieldGroup.add(shieldDome, ring1, ring2);
+  group.add(shieldGroup);
+
+  let stage: 1 | 2 = 1;
+  let invulnT = 0;
+
   // sparks: rise along the crystal and fade at the top
   const N = 36;
   const pos = new Float32Array(N * 3);
@@ -110,17 +140,39 @@ export function crystalCluster(color: number, seed: number): CrystalCluster {
 
   return {
     group,
+    setStage(st, inv) {
+      stage = st;
+      invulnT = inv;
+      shieldGroup.visible = inv > 0;
+    },
     update(time, dt) {
-      float.position.y = Math.sin(time * 1.1 + seed) * 0.12;
-      float.rotation.y += dt * 0.25;
-      // the core breathes
-      const k = 0.8 + 0.2 * Math.sin(time * 2.1 + seed);
-      mats.core.color.set(color).multiplyScalar(1.6 + k);
-      light.intensity = 5 + 3 * k;
+      const spinMult = invulnT > 0 ? 4.5 + (10 - invulnT) * 0.6 : stage === 2 ? 1.85 : 1;
+      float.position.y = Math.sin(time * (stage === 2 ? 1.8 : 1.1) + seed) * (stage === 2 ? 0.18 : 0.12);
+      float.rotation.y += dt * 0.25 * spinMult;
+      if (invulnT > 0) {
+        const urgency = 1 + (10 - invulnT) * 0.9;
+        const pulse = 0.5 + 0.5 * Math.sin(time * 6 * urgency);
+        shieldMat.opacity = 0.22 + 0.25 * pulse;
+        shieldDome.rotation.y -= dt * 1.4;
+        ring1.rotation.x += dt * 2.6 * urgency;
+        ring1.rotation.y += dt * 1.8;
+        ring2.rotation.y -= dt * 2.9 * urgency;
+        ring2.rotation.z += dt * 2.1;
+        const scalePulse = 1 + 0.06 * Math.sin(time * 8 * urgency);
+        shieldGroup.scale.setScalar(scalePulse);
+        mats.core.color.set(color).lerp(new Color(0xffffff), 0.65).multiplyScalar(3.2 + 1.8 * pulse);
+        light.intensity = 9 + 6 * pulse;
+      } else {
+        // the core breathes (stage 2 glows hotter and satellites float slightly higher)
+        const k = 0.8 + 0.2 * Math.sin(time * (stage === 2 ? 3.4 : 2.1) + seed);
+        mats.core.color.set(color).multiplyScalar((stage === 2 ? 2.2 : 1.6) + k);
+        light.intensity = (stage === 2 ? 6.5 : 5) + 3 * k;
+      }
+      main.scale.setScalar(stage === 2 && invulnT <= 0 ? 0.88 : 1);
       for (let i = 0; i < N; i++) {
         const s = seeds[i];
-        const t = (time * s.s + s.o) % 1;
-        const a = s.a + time * 0.4;
+        const t = (time * s.s * (invulnT > 0 ? 2.4 : stage === 2 ? 1.4 : 1) + s.o) % 1;
+        const a = s.a + time * 0.4 * spinMult;
         pos[i * 3] = Math.cos(a) * s.r * (1 - t * 0.5);
         pos[i * 3 + 1] = -1.9 + t * 4.2;
         pos[i * 3 + 2] = Math.sin(a) * s.r * (1 - t * 0.5);

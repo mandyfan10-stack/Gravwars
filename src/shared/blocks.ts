@@ -15,7 +15,7 @@ export const BLOCK_ORDER: BlockMaterial[] = ['wood', 'stone', 'metal'];
 /** Edge length of a fortification block, m. */
 export const BLOCK_SIZE = 1;
 /** How far from the eye a piece / block can be aimed at (pick-up with RMB), m. */
-export const BLOCK_REACH = 6;
+export const BLOCK_REACH = 7.5;
 /** Material in the inventory at the start (one piece costs PIECE_COST). */
 export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 30, stone: 0, metal: 0 };
 
@@ -23,10 +23,10 @@ export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 30, stone: 0,
 export type PieceKind = 'wall' | 'floor' | 'ramp';
 export const PIECE_KINDS: PieceKind[] = ['wall', 'floor', 'ramp'];
 export const PIECE_LABEL: Record<PieceKind, string> = { wall: 'Стена', floor: 'Пол', ramp: 'Лестница' };
-/** Horizontal grid cell, m (GravWars: 6 m, a bridge over the 48 m gap at a cube edge is 8 floors + 16 ramps + 1). */
-export const PIECE_CELL = 6;
+/** Horizontal grid cell, m (square cells: width = height = 4.5 m, +50% larger, so walls are square and ramps are 45°). */
+export const PIECE_CELL = 4.5;
 /** Height of one building level (wall height, ramp rise), m. */
-export const PIECE_LEVEL = 3;
+export const PIECE_LEVEL = 4.5;
 export const PIECE_THICK = 0.25;
 /** Material units one piece costs: a resource is a piece (1 wood = 1 wall / floor / ramp). */
 export const PIECE_COST = 1;
@@ -139,6 +139,8 @@ export class BlockSystem {
   readonly inventory: Record<BlockMaterial, number> = { ...START_BLOCKS };
   /** Bumped on every change, so views know when to rebuild. */
   version = 0;
+  /** Called when a block/piece is destroyed by damage or an explosion. */
+  onBreak?: (block: Block) => void;
   private nextId = 1;
 
   constructor(private R: Rapier, private world: PhysicsWorld, private playerCollider?: Collider) {
@@ -275,7 +277,10 @@ export class BlockSystem {
     if (!block || damage <= 0) return false;
     block.hp = Math.max(0, block.hp - damage);
     this.version++;
-    if (!block.hp) this.remove(block);
+    if (!block.hp) {
+      this.onBreak?.(block);
+      this.remove(block);
+    }
     return true;
   }
 

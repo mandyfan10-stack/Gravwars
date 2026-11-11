@@ -40,11 +40,17 @@ export class Props {
   readonly moved = new Set<number>();
 
   private readonly mass: number[];
+  readonly maxHp: number[];
+  readonly hp: number[];
+  /** Called when a crate / barrel is broken by damage. */
+  onBreak?: (index: number, pos: Vector3, up: Vector3, kind: 'crate' | 'barrel') => void;
 
   constructor(private world: PhysicsWorld, private map: MapData) {
     this.bodies = crateBodies.get(world) ?? [];
     this.bodies.forEach((b, i) => this.index.set(b.collider(0).handle, i));
     this.mass = map.crates.map(crateMass);
+    this.maxHp = map.crates.map((c) => (c.kind === 'barrel' ? 80 : 30));
+    this.hp = [...this.maxHp];
   }
 
   /** Crate index of a collider, or -1. */
@@ -89,8 +95,30 @@ export class Props {
     return out;
   }
 
-  /** A blast: every crate within `radius` flies away from it, up to `speed` m/s at the centre. */
-  explosion(pos: Vector3, radius: number, speed: number) {
+  /** Deal damage to a crate / barrel; breaks it and triggers `onBreak` when HP reaches 0. */
+  damage(i: number, amount: number): boolean {
+    if (i < 0 || i >= this.bodies.length || this.away.has(i) || amount <= 0) return false;
+    this.hp[i] = Math.max(0, this.hp[i] - amount);
+    if (this.hp[i] > 0) return false;
+    const pos = this.pos(i);
+    const c = this.map.crates[i];
+    const up = new Vector3(0, 1, 0).applyQuaternion(new Quaternion(...c.quat));
+    const b = this.bodies[i];
+    b.setLinvel({ x: 0, y: 0, z: 0 }, false);
+    b.setAngvel({ x: 0, y: 0, z: 0 }, false);
+    b.setTranslation({ x: 0, y: -4000 - i * 3, z: 0 }, true);
+    for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(false);
+    b.setEnabled(false);
+    this.away.set(i, RETURN_AFTER);
+    this.moved.add(i);
+    // Update the physics query pipeline immediately so the broken crate's collider never lingers
+    this.world.propagateModifiedBodyPositionsToColliders();
+    this.onBreak?.(i, pos, up, c.kind);
+    return true;
+  }
+
+  /** A blast: every crate within `radius` flies away from it (or breaks if close enough). */
+  explosion(pos: Vector3, radius: number, speed: number, maxDamage = 0) {
     const p = new Vector3();
     this.bodies.forEach((_, i) => {
       if (this.away.has(i)) return;
@@ -98,6 +126,7 @@ export class Props {
       const d = p.distanceTo(pos);
       if (d > radius + 1) return;
       const k = Math.max(0.25, 1 - d / (radius + 1));
+      if (maxDamage > 0 && this.damage(i, maxDamage * k)) return;
       p.sub(pos);
       if (p.lengthSq() < 1e-4) p.set(0, 1, 0);
       this.push(i, p.normalize().multiplyScalar(speed * k));
@@ -114,12 +143,14 @@ export class Props {
       if (left !== undefined) {
         if (left - dt > 0) { this.away.set(i, left - dt); continue; }
         this.away.delete(i);
+        this.hp[i] = this.maxHp[i];
         const c = this.map.crates[i];
         b.setTranslation({ x: c.pos[0], y: c.pos[1], z: c.pos[2] }, false);
         b.setRotation({ x: c.quat[0], y: c.quat[1], z: c.quat[2], w: c.quat[3] }, false);
         b.setLinvel({ x: 0, y: 0, z: 0 }, false);
         b.setAngvel({ x: 0, y: 0, z: 0 }, false);
         b.setEnabled(true);
+        for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(true);
         b.sleep();
         this.moved.add(i);
         awake = true;
@@ -130,6 +161,7 @@ export class Props {
       this.moved.add(i);
       const t = b.translation();
       if (Math.max(Math.abs(t.x), Math.abs(t.y), Math.abs(t.z)) > lim) {
+        for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(false);
         b.setEnabled(false);
         this.away.set(i, RETURN_AFTER);
       }
@@ -137,6 +169,17 @@ export class Props {
     if (awake) {
       this.world.timestep = dt;
       this.world.step();
+      for (let i = 0; i < this.bodies.length; i++) {
+        if (this.away.has(i)) continue;
+        const b = this.bodies[i];
+        if (b.isSleeping()) continue;
+        const lv = b.linvel(), av = b.angvel();
+        if (lv.x * lv.x + lv.y * lv.y + lv.z * lv.z < 0.02 && av.x * av.x + av.y * av.y + av.z * av.z < 0.04) {
+          b.setLinvel({ x: 0, y: 0, z: 0 }, false);
+          b.setAngvel({ x: 0, y: 0, z: 0 }, false);
+          b.sleep();
+        }
+      }
     }
   }
 

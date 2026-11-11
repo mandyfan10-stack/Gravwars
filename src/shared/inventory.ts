@@ -2,8 +2,8 @@ import type { Economy, ItemId } from './economy';
 import { ITEM_ORDER } from './economy';
 
 /** Guns that go into a hand (bought in the shop). */
-export type GunId = 'pistol' | 'shotgun' | 'rifle' | 'rocket';
-export const HELD_GUNS: GunId[] = ['pistol', 'shotgun', 'rifle', 'rocket'];
+export type GunId = 'pistol' | 'shotgun' | 'rifle' | 'crossbow' | 'rocket';
+export const HELD_GUNS: GunId[] = ['pistol', 'shotgun', 'rifle', 'crossbow', 'rocket'];
 export const isHeldGun = (h: Holdable | null): h is GunId => !!h && (HELD_GUNS as string[]).includes(h);
 /** Everything that can go into a hand besides the bare fists (an empty hand punches). */
 export type Holdable = GunId | 'grenade' | 'build' | 'hook' | 'rod' | ItemId;
@@ -19,7 +19,7 @@ export function holdables(eco: Economy): Holdable[] {
   return HOLD_ORDER.filter((h) => {
     if (isHeldGun(h)) return ws.owned[h];
     if (h === 'grenade') return ws.ammo.grenade > 0;
-    if (h === 'build') return eco.has('builder');
+    if (h === 'build') return false; // toggled directly with B (KeyB)
     if (h === 'hook') return eco.has('hook');
     if (h === 'rod') return eco.has('rod');
     return eco.items[h] > 0;
@@ -30,12 +30,12 @@ export function holdables(eco: Economy): Holdable[] {
 export interface SlotRef { where: 'bar' | 'pack'; i: number }
 
 /**
- * Hotbar (keys 1–9) + backpack. Things you get go to their old slot if it is free, else to the first free one,
- * else into the backpack; things you run out of disappear but remember their slot. An empty selected slot = fists.
+ * Hotbar (keys 1–9, 9 slots total, no separate inventory screen). Things you get go to their old slot if it is free,
+ * else to the first free one; things you run out of disappear but remember their slot. An empty selected slot = fists.
  */
 export class Hotbar {
   readonly bar: (Holdable | null)[] = Array(HOTBAR_SIZE).fill(null);
-  readonly pack: (Holdable | null)[] = Array(HOTBAR_SIZE).fill(null);
+  readonly pack: (Holdable | null)[] = [];
   /** Selected hotbar slot. */
   sel = 0;
   private readonly home = new Map<Holdable, SlotRef>();
@@ -54,27 +54,22 @@ export class Hotbar {
   }
 
   private set(r: SlotRef, h: Holdable | null) {
-    this.list(r.where)[r.i] = h;
+    if (r.where !== 'bar') return;
+    this.bar[r.i] = h;
     if (h) this.home.set(h, { ...r });
   }
 
-  /** Bring the slots in line with what is owned. */
+  /** Bring the slots in line with what is owned (9 hotbar slots only). */
   sync(owned: Holdable[]) {
     const have = new Set(owned);
-    for (const where of ['bar', 'pack'] as const) {
-      const l = this.list(where);
-      for (let i = 0; i < l.length; i++) if (l[i] && !have.has(l[i]!)) l[i] = null;
-    }
+    for (let i = 0; i < this.bar.length; i++) if (this.bar[i] && !have.has(this.bar[i]!)) this.bar[i] = null;
     for (const h of owned) {
-      if (this.bar.includes(h) || this.pack.includes(h)) continue;
+      if (this.bar.includes(h)) continue;
       const home = this.home.get(h);
-      if (home && !this.get(home)) { this.set(home, h); continue; }
-      // the first free hotbar slot; a pocket item never into the empty hand (picking up an apple mid-fight must not
-      // replace the fists), a bought gun or tool may
+      if (home && home.where === 'bar' && !this.get(home)) { this.set(home, h); continue; }
       let i = this.bar.findIndex((s, k) => !s && (k !== this.sel || !isItem(h)));
-      if (i >= 0) { this.set({ where: 'bar', i }, h); continue; }
-      i = this.pack.indexOf(null);
-      if (i >= 0) this.set({ where: 'pack', i }, h);
+      if (i < 0) i = this.bar.findIndex((s) => !s);
+      if (i >= 0) this.set({ where: 'bar', i }, h);
     }
   }
 

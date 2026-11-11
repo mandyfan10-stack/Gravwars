@@ -185,3 +185,38 @@ export function hookGunModel(teamColor: number): GunModel {
   root.add(mag);
   return { root, mag, slide: new Group(), muzzle: new Vector3(0, 0.04, -0.36) };
 }
+
+export function crossbowModel(): GunModel {
+  const root = new Group();
+  const st = steel(), bl = blued(), wd = wood(), pl = polymer();
+  const cyanGlow = new MeshStandardMaterial({ color: 0x38d8ff, emissive: 0x18a0d8, emissiveIntensity: 1.6, roughness: 0.25 });
+  // Stock, flight track, pistol grip, and scope rail
+  root.add(part(box(0.042, 0.048, 0.48, 0.006), wd, 0, 0.02, -0.14));
+  root.add(part(box(0.028, 0.016, 0.46, 0.002), st, 0, 0.048, -0.15)); // flight rail
+  root.add(part(box(0.038, 0.068, 0.22, 0.01), wd, 0, -0.005, 0.18, 0.1)); // buttstock
+  root.add(part(box(0.034, 0.095, 0.042, 0.006), pl, 0, -0.045, 0.04, -0.32)); // pistol grip
+  root.add(part(box(0.006, 0.006, 0.06, 0), bl, 0, -0.012, 0.0)); // guard
+  // Optical scope on top of the receiver
+  root.add(part(tube(0.014, 0.15, 10), bl, 0, 0.082, -0.04));
+  root.add(part(box(0.012, 0.022, 0.02, 0), st, 0, 0.064, -0.08));
+  root.add(part(box(0.012, 0.022, 0.02, 0), st, 0, 0.064, 0.0));
+  // Front bow prod & limbs (left and right)
+  root.add(part(box(0.11, 0.028, 0.045, 0.006), bl, 0, 0.038, -0.38));
+  for (const s of [-1, 1]) {
+    root.add(part(box(0.22, 0.018, 0.028, 0.004), st, s * 0.14, 0.04, -0.35, 0, s * 0.28, 0));
+    root.add(part(new CylinderGeometry(0.024, 0.024, 0.016, 10), bl, s * 0.24, 0.04, -0.32)); // cam wheel
+  }
+  // Bowstring + nock carrier (`slide` moves back along +Z as charge increases)
+  const slide = new Group();
+  for (const s of [-1, 1]) {
+    slide.add(part(box(0.24, 0.004, 0.004, 0), st, s * 0.12, 0.056, -0.26, 0, -s * 0.24, 0));
+  }
+  slide.add(part(box(0.024, 0.016, 0.024, 0.003), bl, 0, 0.056, -0.22));
+  root.add(slide);
+  // Loaded bolt (`mag` glows and widens with charge level)
+  const mag = new Group();
+  mag.add(part(tube(0.006, 0.34, 8), st, 0, 0.058, -0.25));
+  mag.add(part(new CylinderGeometry(0.002, 0.014, 0.055, 6).rotateX(-Math.PI / 2), cyanGlow, 0, 0.058, -0.44));
+  root.add(mag);
+  return { root, mag, slide, muzzle: new Vector3(0, 0.058, -0.46) };
+}

@@ -5,7 +5,7 @@ import { Rng, upOf } from '../shared/math';
 import { viewQuat } from '../shared/movement';
 import type { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
-import { createWeaponState, hasAmmo, isGun, kicked, kickReady, shotSpread, WEAPON_ORDER, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
+import { crossbowSpec, createWeaponState, hasAmmo, isGun, kicked, kickReady, shotSpread, WEAPON_ORDER, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
 import type { GameAudio } from './audio';
 import { Hud, teamHex } from './hud';
 import { icon, IconName } from './icons';
@@ -24,10 +24,10 @@ const SELF = icon('skull');
 /** Seconds between a death and the respawn (the death screen). */
 export const DEATH_TIME = 4;
 const SOURCE_ICON: Record<HitSource, IconName> = {
-  fists: 'fist', kick: 'kick', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', rocket: 'rocket', grenade: 'grenade',
+  fists: 'fist', kick: 'kick', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade',
 };
 export const SOURCE_NAME: Record<HitSource, string> = {
-  fists: 'кулаки', kick: 'пинок', pistol: 'пистолет', shotgun: 'дробовик', rifle: 'автомат', rocket: 'ракетница', grenade: 'граната',
+  fists: 'кулаки', kick: 'пинок', pistol: 'пистолет', shotgun: 'дробовик', rifle: 'автомат', crossbow: 'арбалет', rocket: 'ракетница', grenade: 'граната',
 };
 /** Kill-feed separator: the weapon that did it. */
 const killIcon = (w?: HitSource) => icon(w ? SOURCE_ICON[w] : 'swords');
@@ -55,6 +55,7 @@ export interface Death {
 const teamSpan = (id: Faction, label?: string) => {
   if (id.startsWith('bum:')) return '<span class="npc">Бродяга</span>';
   if (id.startsWith('gang:')) return '<span class="npc">Бандит</span>';
+  if (id.startsWith('car:')) return '<span class="npc">Машина</span>';
   const t = getTeam(id as TeamId);
   return `<span style="color:${teamHex(t.color)}">${label ?? t.name}</span>`;
 };
@@ -80,6 +81,8 @@ export class PlayerCombat {
   canRespawn: () => boolean = () => true;
   /** The local player was killed (before the respawn): where the body fell and its up. */
   onDeath: (pos: Vector3, up: Vector3) => void = () => {};
+  /** The local player respawned after being dead. */
+  onRespawn: () => void = () => {};
   /** The local player killed someone. */
   onKill: (target: Target) => void = () => {};
   /** Any kill (players, bots, NPCs): killer is undefined for falls and unknown sources. */
@@ -91,6 +94,7 @@ export class PlayerCombat {
     private audio: GameAudio, private viewModel: ViewModel) {
     this.me = {
       id: 0, team: sim.team.id, center: sim.state.pos, up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
+      airborne: () => !sim.state.onGround,
       onImpulse: (v) => sim.applyImpulse(v),
     };
     combat.targets.push(this.me);
@@ -99,13 +103,17 @@ export class PlayerCombat {
 
   /** Restore HP after death / respawn. Bought weapons and ammo are kept. */
   reset() {
+    const wasDead = this.death !== null;
     this.death = null;
     this.me.hp = MAX_HP;
     this.me.alive = true;
     this.combat.guard(this.me);
     this.weapons.reloadT = 0;
     this.weapons.cooldown = 0;
+    this.weapons.chargeT = 0;
+    this.weapons.lastChargeT = 0;
     this.hud.setHp(this.me.hp);
+    if (wasDead) this.onRespawn();
   }
 
   /** Heal by `amount` (medkit: to full). False if already full. */
@@ -126,7 +134,7 @@ export class PlayerCombat {
     }
   }
 
-  /** V: a kick (splash in front, pushes people and crates). Cooldown 3 s after a hit, short after a miss. */
+  /** V: a kick (splash in front, pushes people and crates). Cooldown 2 s after hitting a fighter/NPC, 0.1 s otherwise. */
   kick() {
     const { sim, me, weapons } = this;
     if (!me.alive || !kickReady(weapons)) return;
@@ -134,7 +142,9 @@ export class PlayerCombat {
     viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
     const dir = new Vector3(0, 0, -1).applyQuaternion(_vq);
     const hits = this.combat.kick(0, eye, dir, me.up);
-    kicked(weapons, hits > 0);
+    const lastEv = this.combat.events[this.combat.events.length - 1];
+    const hitLiving = lastEv?.type === 'melee' && lastEv.target !== null;
+    kicked(weapons, hitLiving);
     this.viewModel.kick();
     this.punch = Math.min(this.punch + (hits ? 0.9 : 0.4), 1.5);
     if (hits) this.shake = Math.max(this.shake, 0.25);
@@ -204,13 +214,20 @@ export class PlayerCombat {
       this.death.t -= TICK_DT;
       if (this.death.t <= 0) this.reset();
     }
-    const fired = weaponTick(weapons, { fire: fire && me.alive, reload: this.pendingReload, select: this.pendingSelect }, TICK_DT);
+    const prevChargeLvl = weapons.current === 'crossbow' ? Math.min(3, Math.floor(weapons.chargeT)) : 0;
+    const fired = weaponTick(weapons, { fire: fire && me.alive, reload: this.pendingReload, select: this.pendingSelect, airborne: !sim.state.onGround }, TICK_DT);
+    if (weapons.current === 'crossbow' && weapons.chargeT > 0) {
+      const newChargeLvl = Math.min(3, Math.floor(weapons.chargeT));
+      if (newChargeLvl > prevChargeLvl) this.audio.crossbowCharge(newChargeLvl);
+    }
     if (this.pendingSelect) this.viewModel.setWeapon(weapons.current);
     const reloadStarted = weapons.reloadT > 0 && weapons.reloadT === weapons.reloadTotal;
     if (reloadStarted) {
       const w = weapons.current;
-      this.audio.reload(w === 'pistol', weapons.reloadTotal, weapons.reloadTotal === WEAPONS[w].reloadEmpty,
-        w === 'shotgun' ? 'shells' : w === 'rocket' ? 'rocket' : 'mag');
+      if (w !== 'crossbow') {
+        this.audio.reload(w === 'pistol', weapons.reloadTotal, weapons.reloadTotal === WEAPONS[w].reloadEmpty,
+          w === 'shotgun' ? 'shells' : w === 'rocket' ? 'rocket' : 'mag');
+      }
       this.viewModel.reload(weapons.reloadTotal === WEAPONS[weapons.current].reloadEmpty);
     }
     if (weapons.dry) this.audio.dry();
@@ -238,16 +255,25 @@ export class PlayerCombat {
         this.recoilDebt += climb * RECOIL_RETURN;
         this.sinceShot = 0;
       }
-      // in the air a shot pushes you back (on the ground the legs take it)
-      if (!sim.state.onGround && def.airPush) sim.applyImpulse(dir.clone().multiplyScalar(-def.airPush));
-      const p = this.combat.use(fired, 0, eye, dir, sim.state.vel, sim.gravityDown());
+      // in the air a shot pushes you back; shotgun also kicks the shooter back on the ground
+      if (fired === 'crossbow') {
+        const spec = crossbowSpec(weapons.lastChargeT);
+        const xbowRecoil = 2.0 + spec.level * 2.8; // scale owner pushback with charge level
+        sim.applyImpulse(dir.clone().multiplyScalar(-xbowRecoil));
+      } else if (!sim.state.onGround && def.airPush) {
+        sim.applyImpulse(dir.clone().multiplyScalar(-def.airPush));
+      } else if (sim.state.onGround && fired === 'shotgun') {
+        sim.applyImpulse(dir.clone().multiplyScalar(-def.airPush * 0.38));
+      }
+      const p = this.combat.use(fired, 0, eye, dir, sim.state.vel, sim.gravityDown(), weapons.lastChargeT);
       if (p && isGun(fired)) {
         // every pellet of a shotgun blast starts from the muzzle
         const muzzle = this.viewModel.muzzleCameraSpace().applyQuaternion(_vq).add(eye);
         for (const q of this.combat.volley) this.fx.setMuzzle(q.id, eye, muzzle);
       }
       this.viewModel.fire();
-      const kick: Partial<Record<WeaponId, number>> = { rifle: 0.5, pistol: 0.6, shotgun: 1.1, rocket: 0.9, fists: 0.15 };
+      const cbLvl = fired === 'crossbow' ? Math.min(3, Math.floor(weapons.lastChargeT)) : 0;
+      const kick: Partial<Record<WeaponId, number>> = { rifle: 0.5, pistol: 0.6, shotgun: 1.1, crossbow: 0.35 + cbLvl * 0.2, rocket: 0.9, fists: 0.15 };
       this.punch = Math.min(this.punch + (kick[fired] ?? 0.3), 1.5);
       // threw the last grenade: back to the best thing in hand
       if (fired === 'grenade' && weapons.ammo.grenade === 0) this.pendingSelect = this.best();
@@ -265,7 +291,7 @@ export class PlayerCombat {
   /** Best weapon with something to shoot. */
   best(): WeaponId {
     const ws = this.weapons;
-    return (['rifle', 'shotgun', 'pistol'] as const).find((w) => hasAmmo(ws, w)) ?? 'fists';
+    return (['rifle', 'crossbow', 'shotgun', 'pistol'] as const).find((w) => hasAmmo(ws, w)) ?? 'fists';
   }
 
   private onCombat(e: CombatEvent) {
@@ -276,6 +302,7 @@ export class PlayerCombat {
       const d = e.owner === 0 ? 0 : e.origin.distanceTo(at);
       if (e.weapon === 'shotgun') this.audio.shotgun(d, e.owner === 0);
       else if (e.weapon === 'rocket') this.audio.rocket(d);
+      else if (e.weapon === 'crossbow') this.audio.crossbowShot(Math.min(3, Math.floor(this.weapons.lastChargeT)), d);
       else if (isGun(e.weapon)) this.audio.shot(e.weapon === 'pistol', d);
     }
     if (e.type === 'ricochet') this.audio.ricochet(e.pos.distanceTo(at));

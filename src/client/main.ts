@@ -21,9 +21,11 @@ import { Props } from '../shared/props';
 import { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
 import { Throws } from '../shared/throwables';
-import { isGun, WeaponId, WEAPONS } from '../shared/weapons';
+import { isGun, refillAmmo, WeaponId, WEAPONS } from '../shared/weapons';
 import { Ambience, Area } from './ambience';
 import { GameAudio } from './audio';
+import { GameMusic } from './music';
+import { SpectatorController } from './spectator';
 import { BlockController } from './blockController';
 import { Cursor } from './cursor';
 import { DeathScreen } from './deathScreen';
@@ -91,8 +93,20 @@ async function main() {
   const input = new Input(canvas, overlay);
   const audio = new GameAudio();
   audio.volume = settings.volume;
+  const music = new GameMusic(audio);
+  // Start menu music on the first user gesture in the menu
+  const startMenuMusicOnce = () => {
+    if (!input.armed) {
+      audio.unlock();
+      music.playMenuMusic();
+    }
+  };
+  overlay.addEventListener('pointerdown', startMenuMusicOnce, { once: true });
+  window.addEventListener('keydown', startMenuMusicOnce, { once: true });
+
   const toggles: DebugToggles = { bloom: settings.bloom, sensitivity: settings.sensitivity, fov: settings.fov, pixel: settings.pixel };
   let viewModel: ViewModel | null = null;
+  let spectator: SpectatorController | null = null;
   const applyToggles = () => {
     gfx.bloom.enabled = toggles.bloom;
     input.sensitivity = toggles.sensitivity;
@@ -108,14 +122,35 @@ async function main() {
   };
   let lastLook = { lines: -1, levels: -1 };
   let statsHtml = () => '';
-  const menu = setupMenu(input, audio, camera, toggles, settings, { onToggles: applyToggles, statsHtml: () => statsHtml() });
+  const menu = setupMenu(input, audio, camera, toggles, settings, {
+    onToggles: applyToggles,
+    statsHtml: () => statsHtml(),
+    onToggleSpectate: () => {
+      if (!spectator) return false;
+      if (spectator.active) {
+        spectator.disable();
+        return false;
+      } else {
+        spectator.enable('auto', camera.position, upOf(sim.state.frame));
+        return true;
+      }
+    },
+    onExitToMainMenu: () => {
+      if (spectator?.active) spectator.disable();
+      music.playMenuMusic();
+    },
+  });
   const lobby = new Lobby(settings.difficulty);
   let loaded = false;
+  const spectateBtn = document.getElementById('spectate-btn') as HTMLButtonElement;
+  let startInSpectator = sessionStorage.getItem('gravwars-start-spectate') === '1';
+  if (startInSpectator) sessionStorage.removeItem('gravwars-start-spectate');
   const syncStart = (problem = lobby.problem) => {
     if (input.armed) return;
     start.disabled = !loaded || !!problem;
     start.textContent = loaded ? 'В бой' : 'Загрузка…';
     start.title = problem ?? '';
+    spectateBtn.disabled = !loaded;
   };
   lobby.onChange = syncStart;
   lobby.onLevel = (d) => { settings.difficulty = d; saveSettings(settings); };
@@ -127,16 +162,40 @@ async function main() {
   (window as unknown as { __menu: MenuBackdrop }).__menu = backdrop;
   loaded = true;
   syncStart();
-  // «В бой»: the click unlocks the audio and takes the mouse right away (a user gesture is needed for both)
-  await new Promise<void>((resolve) => start.addEventListener('click', function go() {
-    if (start.disabled) return;
-    start.removeEventListener('click', go);
-    lobby.save();
-    audio.unlock();
+  // «В бой» or «Режим наблюдателя»: the click unlocks the audio and takes the mouse right away
+  if (!startInSpectator) {
+    await new Promise<void>((resolve) => {
+      function goPlay() {
+        if (start.disabled) return;
+        cleanup();
+        lobby.save();
+        audio.unlock();
+        music.stopMenuMusic();
+        input.armed = true;
+        input.lock();
+        resolve();
+      }
+      function goSpec() {
+        if (spectateBtn.disabled) return;
+        cleanup();
+        startInSpectator = true;
+        lobby.save();
+        audio.unlock();
+        music.stopMenuMusic();
+        input.armed = true;
+        input.lock();
+        resolve();
+      }
+      function cleanup() {
+        start.removeEventListener('click', goPlay);
+        spectateBtn.removeEventListener('click', goSpec);
+      }
+      start.addEventListener('click', goPlay);
+      spectateBtn.addEventListener('click', goSpec);
+    });
+  } else {
     input.armed = true;
-    input.lock();
-    resolve();
-  }));
+  }
   lobby.hidden = true;
   const cfg = lobby.config;
   const myTeam = playerTeam(cfg)!;
@@ -162,7 +221,7 @@ async function main() {
   combat.props = props;
   const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
   match.attach(combat); // crystals take damage from shots / blows (only from close up)
-  const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id, 0, botRoster(cfg));
+  const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id, 0, botRoster(cfg, startInSpectator));
   const pickups = new Pickups(R, world, map);
   bots.pickups = pickups; // bots pick up and sell what lies around, like the player
   const npcs = new NpcManager(R, world, map, combat, pickups);
@@ -194,9 +253,24 @@ async function main() {
   // a killed fighter bursts into blood
   botView.onDeath = (pos) => {
     fx.blood(pos);
-    audio.gore(pos.distanceTo(sim.state.pos));
+    const audioPos = spectator?.active ? camera.position : sim.state.pos;
+    audio.gore(pos.distanceTo(audioPos));
   };
-  fx.bleeds = (id) => (combat.target(id)?.npc ? 0.45 : 1);
+  fx.bleeds = (id) => {
+    const n = combat.target(id)?.npc;
+    return n === 'car' ? 0 : n ? 0.45 : 1;
+  };
+  blocks.onBreak = (b) => {
+    fx.blockBreak(b);
+    const audioPos = spectator?.active ? camera.position : sim.state.pos;
+    audio.blockBreak(b.material, b.center.distanceTo(audioPos));
+  };
+  props.onBreak = (_i, pos, up, kind) => {
+    pickups.dropCrateLoot(pos, up);
+    fx.crateBreak(pos, kind);
+    const audioPos = spectator?.active ? camera.position : sim.state.pos;
+    audio.blockBreak(kind === 'crate' ? 'wood' : 'metal', pos.distanceTo(audioPos));
+  };
   const npcView = new NpcView(scene, npcs, assets);
   const build = new BlockController(sim, input, blocks, audio, hud, scene, sim.team.id);
   build.onPlace = () => viewModel.dig();
@@ -221,9 +295,33 @@ async function main() {
   const keepers = new KeeperView(scene, map, assets);
   const generators = new GeneratorView(scene, match);
   const guide = new Guide(match, bots, sim);
+  spectator = new SpectatorController(input, combat, match, bots);
+  if (startInSpectator) {
+    player.me.alive = false;
+    player.me.guard = { t: Infinity, from: new Vector3() };
+    const pIdx = combat.targets.indexOf(player.me);
+    if (pIdx >= 0) combat.targets.splice(pIdx, 1);
+    sim.state.noclip = true;
+    spectator.enable('auto', camera.position, upOf(sim.state.frame));
+    spectateBtn.textContent = 'Вернуться в тело игрока';
+  }
+  match.onReviveAll = () => {
+    bots.reviveAll();
+    if (!player.me.alive) {
+      sim.respawn('manual');
+      player.reset();
+      hud.toast('Кристалл воскресил всех павших!', '#7cf5ff', 2.4);
+    }
+  };
   player.canRespawn = () => match.onDeath();
-  // killed: the pockets spill out where the body fell
-  player.onDeath = (pos, up) => pockets.spill(pos, up, false);
+  // killed: the pockets spill out where the body fell, and death music plays
+  player.onDeath = (pos, up) => {
+    pockets.spill(pos, up, false);
+    music.playDeathMusic();
+  };
+  player.onRespawn = () => {
+    music.playRespawnMusic();
+  };
   player.onRecoil = (pitch, yaw) => {
     input.pitch = Math.max(-1.55, Math.min(1.55, input.pitch + pitch));
     input.yaw -= yaw;
@@ -256,17 +354,33 @@ async function main() {
   let scoreT = 0;
 
   const local = new LocalPlayer(sim, input);
+  let crystalAmmoT = 0;
   local.onTick = () => {
     // NPCs judge the player by how they move: speed, and whether they sneak (crouch)
     player.me.vel = sim.state.vel;
     player.me.quiet = local.input.crouch;
     player.me.crouched = local.input.crouch;
+    if (cfg.infiniteMoney) { match.wallet.cash = 99999; match.wallet.crystal = 99999; }
     if (!match.result) { bots.tick(TICK_DT); npcs.tick(TICK_DT); }
     throws.tick(TICK_DT);
     props.tick(TICK_DT);
     // LMB fires only with a weapon in hand and no window open
-    player.tick(!hands.tool && !cursor.active && input.locked && input.down('Mouse0'));
+    player.tick(!hands.tool && !cursor.active && !spectator?.active && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
+    // Replenish ammo near own living crystal
+    crystalAmmoT -= TICK_DT;
+    if (crystalAmmoT <= 0 && player.me.alive) {
+      const ownBed = match.bed(sim.team.id);
+      if (ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < 8.5) {
+        crystalAmmoT = 1.4;
+        if (refillAmmo(player.weapons, 0.35)) {
+          audio.pickup();
+          hud.toast('Патроны пополнены у кристалла', '#ffe082', 0.9);
+        }
+      } else {
+        crystalAmmoT = 0.25;
+      }
+    }
   };
   local.onEvent = (e) => {
     if (e.type === 'land') { if (player.me.alive) combat.fall(player.me, e.speed); return; }
@@ -283,6 +397,7 @@ async function main() {
       stats.deaths++;
       pockets.spill(sim.state.pos, upOf(sim.state.frame), true); // the void keeps what you carried
       player.die('void');
+      music.playDeathMusic();
     } else if (e.type === 'hook') {
       if (e.what === 'attach') audio.hookBite(sim.hook ? sim.hook.anchor.distanceTo(sim.state.pos) : 0);
       else if (e.what === 'release') audio.hookRelease();
@@ -297,7 +412,7 @@ async function main() {
   const ambient: Area = { base: 0, forest: 0, park: 0, city: 0, water: 0 };
   const ambience = new Ambience(audio);
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, scene, gfx, combat, props, deathScreen, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, ready: true,
+    sim, local, input, camera, renderer, scene, gfx, combat, props, deathScreen, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, spectator, music, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;
@@ -334,7 +449,7 @@ async function main() {
   // sprint feel: wider view, speed lines at the edges, wind in the ears
   const speedEl = document.getElementById('speedlines')!;
   let sprintT = 0;
-  let wasSprinting = false;
+  let zoomT = 0;
   let fovNow = 0;
 
   // --- the start: the camera flies from the menu's shot (or from above the base) in through the hall door behind the
@@ -344,7 +459,8 @@ async function main() {
   const intro = new Intro(eye, upOf(sim.state.frame), built ? INTRO_LENGTH + 1.2 : INTRO_LENGTH + 0.4, {
     start: built ? menuEye : undefined, door: doorBehind(map, myTeam, eye) ?? undefined,
   });
-  audio.whoosh();
+  if (startInSpectator) intro.skip();
+  else audio.whoosh();
   const fog = scene.fog as FogExp2;
   const FOG = fog.density;
   document.body.classList.remove('building');
@@ -381,20 +497,21 @@ async function main() {
     last = Math.max(last, now);
     time += dt;
     if (intro.active) { introFrame(dt, time); requestAnimationFrame(frame); return; }
-    handleKeys();
+    const specActive = !!spectator?.active;
+    if (!specActive) handleKeys();
     // the world never stops: with the menu open the player just stands (no input), everything else goes on
-    local.frozen = !!player.death;
+    local.frozen = !!player.death || specActive;
     local.update(dt);
     // footsteps and landings
-    if (local.landed) { audio.land(local.landed); local.landed = 0; local.stride = 0; }
-    if (local.stride > STEP_LEN) {
+    if (!specActive && local.landed) { audio.land(local.landed); local.landed = 0; local.stride = 0; }
+    if (!specActive && local.stride > STEP_LEN) {
       local.stride = 0;
       if (!local.input.crouch) audio.step(false);
     }
     ambientT -= dt;
     if (ambientT <= 0) {
       ambientT = 0.5;
-      const pos = sim.state.pos;
+      const pos = specActive ? camera.position : sim.state.pos;
       const base = clamp01(1 - (nearest(map.statues.map((t) => t.bed), pos) - 14) / 8);
       let trees = 0;
       for (const t of map.trees) if (t.kind === 'tree' && (t.pos[0] - pos.x) ** 2 + (t.pos[1] - pos.y) ** 2 + (t.pos[2] - pos.z) ** 2 < 25 * 25) trees++;
@@ -410,32 +527,46 @@ async function main() {
     {
       const st = sim.state, upv = upOf(st.frame);
       const planar = Math.sqrt(Math.max(0, st.vel.lengthSq() - st.vel.dot(upv) ** 2));
-      const fast = st.sprinting && planar > sim.cfg.maxSpeed * 1.1 ? Math.min(1, (planar - sim.cfg.maxSpeed) / (sim.cfg.maxSpeed * 0.5)) : 0;
+      const fast = !specActive && st.sprinting && planar > sim.cfg.maxSpeed * 1.1 ? Math.min(1, (planar - sim.cfg.maxSpeed) / (sim.cfg.maxSpeed * 0.5)) : 0;
       sprintT += (fast - sprintT) * Math.min(1, dt * (fast > sprintT ? 6 : 3));
-      if (st.sprinting && !wasSprinting && player.me.alive) audio.sprint();
-      wasSprinting = st.sprinting;
-      const fall = Math.max(0, -st.vel.dot(upv));
-      audio.loop('wind', Math.max(sprintT * 0.75, Math.min(1, Math.max(0, fall - 9) / 18)));
-      audio.loop('scrape', st.wallSlide ? 1 : 0);
-      const fov = toggles.fov + 12 * sprintT;
+      const fall = specActive ? 0 : Math.max(0, -st.vel.dot(upv));
+      audio.loop('wind', Math.min(1, Math.max(0, fall - 9) / 18));
+      audio.loop('scrape', !specActive && st.wallSlide ? 1 : 0);
+
+      // Smooth 2x camera zoom on holding X or holding RMB with Crossbow
+      const wantZoom = input.locked && !cursor.active && !player.death && !specActive
+        && (input.down('KeyX') || (hands.held === 'crossbow' && input.down('Mouse2')));
+      zoomT += ((wantZoom ? 1 : 0) - zoomT) * Math.min(1, dt * 10);
+      input.sensitivity = toggles.sensitivity * (1 - 0.45 * zoomT);
+
+      const fov = (toggles.fov + 12 * sprintT) * (1 - 0.5 * zoomT);
       if (Math.abs(fov - fovNow) > 0.05) { fovNow = fov; camera.fov = fov; camera.updateProjectionMatrix(); }
       speedEl.style.opacity = (sprintT * 0.9).toFixed(3);
       if (sprintT > 0.01) speedEl.style.transform = `rotate(${(Math.random() * 6).toFixed(2)}deg) scale(${(1.02 + Math.random() * 0.04).toFixed(3)})`;
     }
     local.applyCamera(camera);
-    // dead: the death camera has the view (the sim already waits at the spawn)
-    const dead = deathScreen.update(player.death, camera, dt);
+    // dead: the death camera has the view (unless spectator mode is active)
+    const dead = specActive ? false : deathScreen.update(player.death, camera, dt);
+    if (specActive) spectator!.update(dt, camera);
+    else spectator?.update(dt, camera);
+
+    // Hold E: pick up everything within a 1m radius in front of the player
+    if (input.locked && !ui.shopOpen && !dead && !specActive && input.down('KeyE')) {
+      pockets.pickupFrontRadius(camera);
+    }
+
     CHAR_LOD.eye.copy(camera.position);
     mapView.cull(camera.position, settings.drawDistance);
-    // windows (shop, inventory) take the mouse: the click goes to them, not to the hands
+    // windows (shop) take the mouse: the click goes to them, not to the hands
     const click = cursor.update();
-    hands.update(dt, camera, input.locked && !cursor.active && !dead && input.down('Mouse0'), click);
-    if (cursor.active) build.active = false;
+    hands.update(dt, camera, input.locked && !cursor.active && !dead && !specActive && input.down('Mouse0'), click);
+    if (cursor.active || specActive) build.active = false;
     build.update(dt, camera);
     gfx.updateLighting(local.renderFrame, time);
 
-    // bedwars: the enemy crystal under the crosshair (shoot / hit it from close up), match events, UI
-    const sight = dead ? null : match.bedInSight(camera.position, camera.getWorldDirection(_wf));
+    // Sync two-stage crystal visuals & handle match events
+    for (const b of match.beds) mapView.setBedStage(b.team, b.stage, b.invulnT);
+    const sight = dead || specActive ? null : match.bedInSight(camera.position, camera.getWorldDirection(_wf));
     for (const e of match.events.splice(0)) {
       ui.onEvent(e);
       if (e.type === 'bedBroken' && e.byPlayer) stats.crystals++;
@@ -448,6 +579,11 @@ async function main() {
           else input.setLocked(false);
         }, 2500);
       }
+      if (e.type === 'bedStageBlast') {
+        const bedPos = match.bed(e.team).pos;
+        fx.handle({ type: 'explode', pos: bedPos.clone(), radius: 10 });
+        audio.crystalBlast(bedPos.distanceTo(camera.position));
+      }
       if (e.type === 'bedBroken') {
         mapView.setBedAlive(e.team, false);
         fx.handle({ type: 'explode', pos: match.bed(e.team).pos.clone(), radius: 3 });
@@ -455,23 +591,33 @@ async function main() {
       }
     }
     // rod: LMB casts / strikes
-    if (pockets.rod && input.locked && !cursor.active && input.take('Mouse0')) pockets.useRod(camera);
-    const pocketPrompt = pockets.update(dt, camera, () => viewModel.cast());
-    ui.update(match.nearShop(sim.state.pos), sight, pocketPrompt, click);
+    if (pockets.rod && input.locked && !cursor.active && !specActive && input.take('Mouse0')) pockets.useRod(camera);
+    const pocketPrompt = pockets.update(dt, camera, () => viewModel!.cast());
+    const actionProgress = hands.appleEatProgress > 0
+      ? hands.appleEatProgress
+      : player.weapons.current === 'crossbow' && player.weapons.chargeT > 0
+      ? Math.min(1, player.weapons.chargeT / 3)
+      : 0;
+    const actionColor = hands.appleEatProgress > 0 ? '#7dff8a' : '#66f7ff';
+    ui.update(match.nearShop(sim.state.pos), sight, pocketPrompt, click, actionProgress, actionColor);
     // thrown items: a bottle breaks (and dazes an NPC), the rest land
     for (const e of throws.events.splice(0)) {
       if (e.type === 'shatter') {
-        audio.shatter(e.pos.distanceTo(sim.state.pos));
+        audio.shatter(e.pos.distanceTo(camera.position));
         fx.burst(e.pos, null, 16, 3.2, new Color(0.45, 0.9, 0.5), 0.45);
         if (e.stunned) hud.hitmarker(false, false);
-      } else if (e.type === 'land') audio.thud(e.pos.distanceTo(sim.state.pos));
+      } else if (e.type === 'land') audio.thud(e.pos.distanceTo(camera.position));
     }
     thrownView.update(dt);
-    // bandits telegraph: the slide racked before a burst, the pin pulled before a throw
+    // bandits telegraph & exploding cars
     for (const e of npcs.events.splice(0)) {
-      const d = e.pos.distanceTo(sim.state.pos);
+      const d = e.pos.distanceTo(camera.position);
       if (e.type === 'windup') { if (e.grenade) audio.pin(d); else audio.cock(d); }
-      else if (d < 25) audio.toss();
+      else if (e.type === 'throw') { if (d < 25) audio.toss(); }
+      else if (e.type === 'meleeSpark') { fx.meleeSpark(e.pos); audio.spark(d); }
+      else if (e.type === 'meleeStrike') { fx.meleeStrike(e.pos, e.dir); audio.meleeDash(d); }
+      else if (e.type === 'carExplode') { audio.carExplode(d); }
+      else if (e.type === 'carAlarm') { audio.carAlarm(d); }
     }
     generators.update(time);
     pickupView.update(time, pockets.near);
@@ -484,27 +630,29 @@ async function main() {
     fx.down.copy(gfx.upDir).negate();
     fx.update(dt, combat, time);
     mapView.update(time, dt);
-    if (!dead) player.applyCameraKick(camera, dt);
+    if (!dead && !specActive) player.applyCameraKick(camera, dt);
     // crates and barrels that moved this tick
     for (const i of props.moved) mapView.setCrate(i, props.pos(i), props.quat(i), props.present(i));
     props.moved.clear();
 
-    fishingView.update(time, pockets.rod ? viewModel.rodTipWorld(camera) : null);
-    viewModel.hookOut = !!sim.hook;
-    hookView.update(sim.hook && !dead ? viewModel.hookClawWorld(camera) : null, fx.down);
+    fishingView.update(time, pockets.rod && !specActive ? viewModel!.rodTipWorld(camera) : null);
+    viewModel!.hookOut = !!sim.hook;
+    hookView.update(sim.hook && !dead && !specActive ? viewModel!.hookClawWorld(camera) : null, fx.down);
     const invCam = camera.quaternion.clone().invert();
     const pUp = upOf(sim.state.frame);
-    viewModel.update(dt, {
+    viewModel!.update(dt, {
       speed: sim.state.vel.clone().addScaledVector(pUp, -sim.state.vel.dot(pUp)).length(),
       lookDX: lastYaw - input.yaw, lookDY: input.pitch - lastPitch, reload: player.reloadProgress,
       empty: isGun(player.weapons.current) && player.weapons.ammo[player.weapons.current] === 0,
+      charge: player.weapons.current === 'crossbow' ? Math.min(1, player.weapons.chargeT / 3) : 0,
+      eatProgress: hands.appleEatProgress,
       sunCam: gfx.sunDir.clone().applyQuaternion(invCam), upCam: gfx.upDir.clone().applyQuaternion(invCam),
       aspect: camera.aspect,
     });
     lastYaw = input.yaw;
     lastPitch = input.pitch;
-    viewModel.bite = pockets.fishing.phase === 'bite' ? 1 : 0;
-    gfx.overlay.enabled = !dead;
+    viewModel!.bite = pockets.fishing.phase === 'bite' ? 1 : 0;
+    gfx.overlay.enabled = !dead && !specActive;
     gfx.render(dt);
 
     // HUD wind: what the local player's projectiles feel

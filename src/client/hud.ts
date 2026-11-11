@@ -65,7 +65,7 @@ export class Hud {
     if (active !== this.iconKey) {
       this.iconKey = active;
       const ic: Record<string, IconName> = {
-        fists: 'fist', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook',
+        fists: 'fist', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook',
         rod: 'rod', apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
       };
       this.weaponIc.innerHTML = icon(ic[active]);
@@ -73,7 +73,7 @@ export class Hud {
     if (tool && tool in ITEMS) {
       const it = ITEMS[tool as keyof typeof ITEMS];
       this.wName.textContent = it.name;
-      const hint = tool === 'medkit' ? 'ЛКМ — вылечиться' : it.heal ? 'ЛКМ — съесть' : 'ЛКМ — бросить';
+      const hint = tool === 'medkit' ? 'ЛКМ — вылечиться' : tool === 'apple' ? 'Зажать ЛКМ (1 с) — съесть' : it.heal ? 'ЛКМ — съесть' : 'ЛКМ — бросить';
       this.ammo.innerHTML = `${items[tool] ?? 0}<small> ${hint}</small>`;
       return;
     }
@@ -96,7 +96,17 @@ export class Hud {
     const def = WEAPONS[w];
     this.wName.textContent = def.name;
     if (w === 'fists') this.ammo.innerHTML = '<small>ЛКМ — удар</small>';
-    else if (isGun(w)) {
+    else if (w === 'crossbow') {
+      const total = ws.ammo.crossbow + ws.reserve.crossbow;
+      if (ws.reloadT > 0) {
+        this.ammo.innerHTML = `<span class="reload">перезарядка ${ws.reloadT.toFixed(1)} с…</span>`;
+      } else if (ws.chargeT > 0) {
+        const lvl = Math.min(3, Math.floor(ws.chargeT));
+        this.ammo.innerHTML = `<span style="color:#66f7ff">Ур. ${lvl}</span><small> · ${total}</small>`;
+      } else {
+        this.ammo.innerHTML = `<span class="${total === 0 ? 'empty' : ''}">${total}</span><small> · ПКМ зум</small>`;
+      }
+    } else if (isGun(w)) {
       this.ammo.innerHTML = ws.reloadT > 0 ? '<span class="reload">перезарядка…</span>'
         : `<span class="${ws.ammo[w] === 0 ? 'empty' : ''}">${ws.ammo[w]}</span><small>/${ws.reserve[w]}</small>`;
     } else {

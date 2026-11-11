@@ -1,5 +1,6 @@
 import { Quaternion, Vector3 } from 'three';
 import type { BlockMaterial } from './blocks';
+import { DEFAULT_MOVEMENT } from './constants';
 import type { MapData } from './map';
 import { Rng } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
@@ -15,20 +16,22 @@ export const ITEM_ORDER: ItemId[] = ['bottle', 'apple', 'fish', 'medkit'];
  */
 export const ITEMS: Record<ItemId, { name: string; plural: string; sell: number; heal: number }> = {
   bottle: { name: 'Бутылка', plural: 'Бутылки', sell: 1, heal: 0 },
-  apple: { name: 'Яблоко', plural: 'Яблоки', sell: 2, heal: 25 },
-  fish: { name: 'Рыба', plural: 'Рыба', sell: 5, heal: 15 },
+  apple: { name: 'Яблоко', plural: 'Яблоки', sell: 2, heal: 20 },
+  fish: { name: 'Рыба', plural: 'Рыба', sell: 7, heal: 15 },
   medkit: { name: 'Аптечка', plural: 'Аптечки', sell: 0, heal: 100 },
 };
 export const SELLABLE = ITEM_ORDER.filter((i) => ITEMS[i].sell > 0);
 export const APPLE_HEAL = ITEMS.apple.heal;
 /** Medkits carried at most. */
 export const MAX_MEDKITS = 3;
-/** Seconds between two apples eaten. */
-export const EAT_COOLDOWN = 0.8;
+/** Seconds between two apples eaten (0.1 s cooldown). */
+export const EAT_COOLDOWN = 0.1;
+/** Seconds of holding LMB with an apple in hand to eat it. */
+export const APPLE_EAT_TIME = 1.0;
 
 // --- pickups on the map ------------------------------------------------------------------------
 
-export type PickupKind = ItemId | 'cash';
+export type PickupKind = ItemId | 'cash' | 'ammo' | 'wood' | 'stone' | 'metal';
 export interface Pickup {
   id: number;
   kind: PickupKind;
@@ -38,6 +41,10 @@ export interface Pickup {
   once: boolean;
   pos: Vector3;
   up: Vector3;
+  /** Downward fall speed (m/s) when falling under gravity; 0 when resting on ground. */
+  vy?: number;
+  /** True when resting on a surface. */
+  grounded?: boolean;
   /** Lying there (false = taken, waiting to come back). */
   alive: boolean;
   respawnT: number;
@@ -125,11 +132,45 @@ export class Pickups {
   /** Something dropped on the ground at `pos` (a bum's empty bottle, a bandit's money). Null if there is no ground. */
   drop(kind: PickupKind, pos: Vector3, up: Vector3, amount = 0): Pickup | null {
     if (kind === 'bottle' && this.countOn('bottle', up) >= PICKUPS.maxBottlesPerIsland) return null;
-    const ground = this.ground(pos.clone().addScaledVector(up, -0.5), up);
-    if (!ground) return null;
-    const it: Pickup = { id: this.nextId++, kind, amount, once: true, pos: ground, up: up.clone(), alive: true, respawnT: PICKUPS.dropLife, spot: -1 };
+    const ground = this.ground(pos.clone().addScaledVector(up, -0.5), up) ?? this.ground(pos, up);
+    // Even if dropped higher in the air (e.g. from a crate or mid-air death), check if there is a floor within 25 m below
+    let startPos = ground;
+    let grounded = true;
+    if (!startPos) {
+      const from = pos.clone().addScaledVector(up, 0.5);
+      const down = up.clone().negate();
+      const hit = this.world.castRay(new this.R.Ray(from, down), 25, true, undefined, undefined, undefined, undefined, this.passThrough);
+      if (!hit) return null;
+      startPos = pos.clone().addScaledVector(up, 0.25);
+      grounded = false;
+    } else if (pos.distanceTo(startPos) > 0.35) {
+      startPos = pos.clone();
+      grounded = false;
+    }
+    const it: Pickup = {
+      id: this.nextId++, kind, amount, once: true, pos: startPos, up: up.clone(),
+      vy: 0, grounded, alive: true, respawnT: PICKUPS.dropLife, spot: -1,
+    };
     this.items.push(it);
     return it;
+  }
+
+  /** Drop with a small random scatter around `pos` so multiple drops do not overlap. */
+  dropSpread(kind: PickupKind, pos: Vector3, up: Vector3, amount = 0): Pickup | null {
+    const side = new Vector3(1, 0, 0);
+    if (Math.abs(side.dot(up)) > 0.9) side.set(0, 0, 1);
+    side.addScaledVector(up, -side.dot(up)).normalize().applyAxisAngle(up, this.rng.range(0, Math.PI * 2));
+    const r = this.rng.range(0.35, 1.15);
+    return this.drop(kind, pos.clone().addScaledVector(side, r), up, amount) ?? this.drop(kind, pos, up, amount);
+  }
+
+  /** Loot dropped when a crate or barrel is broken: building resources, sometimes money and ammo. */
+  dropCrateLoot(pos: Vector3, up: Vector3) {
+    this.dropSpread('wood', pos, up, this.rng.int(4, 9));
+    if (this.rng.chance(0.55)) this.dropSpread('stone', pos, up, this.rng.int(2, 5));
+    if (this.rng.chance(0.3)) this.dropSpread('metal', pos, up, this.rng.int(1, 3));
+    if (this.rng.chance(0.45)) this.dropSpread('cash', pos, up, this.rng.int(3, 8));
+    if (this.rng.chance(0.5)) this.dropSpread('ammo', pos, up, 1);
   }
 
   /** Items of a kind lying on the surface with this up. */
@@ -140,6 +181,37 @@ export class Pickups {
   tick(dt: number) {
     for (let i = this.items.length - 1; i >= 0; i--) {
       const it = this.items[i];
+      if (it.alive) {
+        // Physics for pickable items: if not grounded (or if ground beneath was destroyed), fall with gravity
+        const down = it.up.clone().negate();
+        const from = it.pos.clone().addScaledVector(it.up, 0.35);
+        const hit = this.world.castRay(new this.R.Ray(from, down), 30, true, undefined, undefined, undefined, undefined, this.passThrough);
+        if (!hit) {
+          it.grounded = false;
+          it.vy = (it.vy ?? 0) + DEFAULT_MOVEMENT.gravity * dt;
+          it.pos.addScaledVector(down, it.vy * dt);
+        } else {
+          const distToGround = hit.timeOfImpact - 0.33;
+          if (distToGround > 0.04) {
+            it.grounded = false;
+            it.vy = (it.vy ?? 0) + DEFAULT_MOVEMENT.gravity * dt;
+            const step = it.vy * dt;
+            if (step >= distToGround) {
+              it.pos.copy(from).addScaledVector(down, hit.timeOfImpact - 0.02);
+              it.vy = 0;
+              it.grounded = true;
+            } else {
+              it.pos.addScaledVector(down, step);
+            }
+          } else {
+            if (!it.grounded) {
+              it.pos.copy(from).addScaledVector(down, hit.timeOfImpact - 0.02);
+              it.grounded = true;
+            }
+            it.vy = 0;
+          }
+        }
+      }
       if (it.once) {
         it.respawnT -= dt;
         if (!it.alive || it.respawnT <= 0) this.items.splice(i, 1);
@@ -156,6 +228,8 @@ export class Pickups {
         it.pos.copy(this.bottleSpots[it.spot].pos);
       }
       it.alive = true;
+      it.grounded = true;
+      it.vy = 0;
     }
   }
 
@@ -169,6 +243,25 @@ export class Pickups {
       if (d < bestD) { best = it; bestD = d; }
     }
     return best;
+  }
+
+  /** All alive items within `radius` m of the point 1 m in front of the player (for holding E). */
+  inFrontRadius(center: Vector3, forward: Vector3, up: Vector3, radius = 1.0): Pickup[] {
+    const flatFwd = forward.clone().addScaledVector(up, -forward.dot(up));
+    if (flatFwd.lengthSq() > 1e-4) flatFwd.normalize();
+    const frontSpot = center.clone().addScaledVector(flatFwd, 1.0);
+    const out: Pickup[] = [];
+    for (const it of this.items) {
+      if (!it.alive) continue;
+      // Check planar + vertical distance to the 1m spot in front of the player (or within reach in front)
+      const relFront = it.pos.clone().sub(frontSpot);
+      const vDist = Math.abs(relFront.dot(up));
+      const pDist = relFront.addScaledVector(up, -relFront.dot(up)).length();
+      if (vDist <= 1.6 && (pDist <= radius || (center.distanceTo(it.pos) <= PICKUPS.reach && it.pos.clone().sub(center).dot(flatFwd) >= -0.2))) {
+        out.push(it);
+      }
+    }
+    return out;
   }
 
   take(it: Pickup) {
@@ -212,33 +305,27 @@ export type ShopItem = {
  * `short`: the name on the tile (the full label is in the details line).
  */
 export const SHOP_ROWS: { label: string; ids: (string | null)[] }[] = [
-  { label: 'Оружие', ids: ['pistol', 'shotgun', 'rifle', 'rocket', 'grenade'] },
-  { label: 'Патроны', ids: ['ammo-pistol', 'ammo-shotgun', 'ammo-rifle', 'ammo-rocket', null] },
+  { label: 'Оружие', ids: ['pistol', 'shotgun', 'rifle', 'crossbow', 'rocket', 'grenade'] },
   { label: 'Блоки', ids: ['wood', 'stone', 'metal'] },
-  { label: 'Снаряжение', ids: ['builder', 'hook', 'rod', 'medkit'] },
+  { label: 'Снаряжение', ids: ['hook', 'rod', 'medkit'] },
 ];
 export const SHOP_SHORT: Record<string, string> = {
-  builder: 'Лопатка', grenade: 'Гранаты', wood: 'Дерево', stone: 'Камень', metal: 'Металл',
-  'ammo-pistol': 'Пистолет', 'ammo-shotgun': 'Дробовик', 'ammo-rifle': 'Автомат', 'ammo-rocket': 'Ракеты',
+  builder: 'Лопатка', crossbow: 'Арбалет', grenade: 'Гранаты', wood: 'Дерево', stone: 'Камень', metal: 'Металл',
 };
 
-/** Everything is on the shelf from the start; prices are 25 % below the first version (rounded). */
+/** Everything is on the shelf from the start; building mode (B) is always available and ammo is found in the world or at your crystal. */
 export const SHOP: ShopItem[] = [
   { id: 'rod', label: 'Удочка', note: 'ловить рыбу в прудах парка', price: 5, currency: 'cash', step: 'rod', kind: 'tool' },
-  { id: 'builder', label: 'Инструмент строителя', note: `+${BUILDER_WOOD} дерева`, price: 11, currency: 'cash', step: 'builder', kind: 'tool' },
-  { id: 'hook', label: 'Крюк-кошка', note: 'притягивает к точке до 30 м', price: 9, currency: 'cash', step: 'hook', kind: 'tool' },
+  { id: 'hook', label: 'Крюк-кошка', note: 'притягивает к точке до 35 м', price: 9, currency: 'cash', step: 'hook', kind: 'tool' },
   { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 19, currency: 'cash', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
   { id: 'shotgun', label: 'Дробовик', note: `${WEAPONS.shotgun.mag} патронов, вблизи смертелен`, price: 27, currency: 'cash', kind: 'weapon', weapon: 'shotgun', count: WEAPONS.shotgun.mag },
   { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 41, currency: 'cash', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
+  { id: 'crossbow', label: 'Арбалет', note: 'зажим ЛКМ (0–3 ур., 5–20 ур.), ПКМ — зум', price: 34, currency: 'cash', kind: 'weapon', weapon: 'crossbow', count: 1 },
   { id: 'rocket', label: 'Ракетница', note: `взрыв ${WEAPONS.rocket.radius} м, ${WEAPONS.rocket.damage} урона`, price: 4, currency: 'crystal', kind: 'weapon', weapon: 'rocket', count: 1 },
   { id: 'grenade', label: 'Гранаты ×2', price: 14, currency: 'cash', kind: 'weapon', weapon: 'grenade', count: 2 },
   { id: 'wood', label: 'Дерево ×16', note: '1 дерево = 1 постройка', price: 4, currency: 'cash', kind: 'blocks', material: 'wood', count: 16 },
   { id: 'stone', label: 'Камень ×8', price: 8, currency: 'cash', kind: 'blocks', material: 'stone', count: 8 },
   { id: 'metal', label: 'Металл ×4', price: 2, currency: 'crystal', kind: 'blocks', material: 'metal', count: 4 },
-  { id: 'ammo-pistol', label: 'Патроны: пистолет ×15', price: 3, currency: 'cash', kind: 'ammo', weapon: 'pistol', count: 15 },
-  { id: 'ammo-shotgun', label: 'Патроны: дробовик ×12', price: 4, currency: 'cash', kind: 'ammo', weapon: 'shotgun', count: 12 },
-  { id: 'ammo-rifle', label: 'Патроны: автомат ×30', price: 6, currency: 'cash', kind: 'ammo', weapon: 'rifle', count: 30 },
-  { id: 'ammo-rocket', label: 'Ракеты ×3', price: 1, currency: 'crystal', kind: 'ammo', weapon: 'rocket', count: 3 },
   { id: 'medkit', label: 'Аптечка', note: 'в руку, ЛКМ — полное здоровье', price: 8, currency: 'cash', kind: 'item', item: 'medkit', count: 1 },
 ];
 
@@ -252,7 +339,7 @@ export interface ShopOffer { item: ShopItem; state: 'ok' | 'money' }
  */
 export class Economy {
   readonly items: Record<ItemId, number> = { bottle: 0, apple: 0, fish: 0, medkit: 0 };
-  readonly done = new Set<Step>();
+  readonly done = new Set<Step>(['builder']);
 
   /** `blocks`: where bought material goes (the player's BlockSystem, or a bot's own pockets). */
   constructor(readonly wallet: Record<Currency, number>, readonly blocks: { inventory: Record<BlockMaterial, number> }, readonly weapons: WeaponState) {}
@@ -283,7 +370,10 @@ export class Economy {
     this.wallet[item.currency] -= item.price;
     if (item.step) this.done.add(item.step);
     if (item.kind === 'blocks') this.blocks.inventory[item.material] += item.count;
-    else if (item.kind === 'weapon') giveWeapon(ws, item.weapon, item.count);
+    else if (item.kind === 'weapon') {
+      giveWeapon(ws, item.weapon, item.count);
+      if (isGun(item.weapon)) ws.reserve[item.weapon] += item.count * 2;
+    }
     else if (item.kind === 'ammo' && isGun(item.weapon)) ws.reserve[item.weapon] += item.count;
     else if (item.kind === 'item') this.items[item.item] += item.count;
     else if (item.kind === 'tool' && item.id === 'builder') this.blocks.inventory.wood += BUILDER_WOOD;
@@ -334,6 +424,10 @@ export class Economy {
     if (cash > 0) {
       this.wallet.cash -= cash;
       out.push({ kind: 'cash', amount: cash });
+    }
+    const ws = this.weapons;
+    if (ws.owned.pistol || ws.owned.shotgun || ws.owned.rifle || ws.owned.rocket) {
+      out.push({ kind: 'ammo', amount: 1 });
     }
     return out;
   }

@@ -1,6 +1,6 @@
 import {
-  BoxGeometry, BufferGeometry, CylinderGeometry, Group, IcosahedronGeometry, LatheGeometry, Line, LineBasicMaterial, Mesh, MeshPhysicalMaterial,
-  MeshStandardMaterial, Quaternion, Scene, SphereGeometry, Vector2, Vector3,
+  BackSide, BoxGeometry, BufferAttribute, BufferGeometry, CylinderGeometry, Group, IcosahedronGeometry, LatheGeometry, Line, LineBasicMaterial,
+  Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial, Quaternion, Scene, SphereGeometry, Vector2, Vector3,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { ItemId, Pickup, PickupKind, Pickups } from '../../shared/economy';
@@ -72,11 +72,121 @@ function cashMeshes() {
   return g;
 }
 
+/** Ammo box with brass cartridges on top. */
+function ammoMeshes() {
+  const g = new Group();
+  const box = new Mesh(new BoxGeometry(0.15, 0.08, 0.09).translate(0, 0.04, 0), new MeshStandardMaterial({ color: 0x46543c, roughness: 0.75 }));
+  const stripe = new Mesh(new BoxGeometry(0.154, 0.02, 0.094).translate(0, 0.055, 0), new MeshStandardMaterial({ color: 0xd9a83e, roughness: 0.5 }));
+  const brass = new MeshStandardMaterial({ color: 0xe6b84c, roughness: 0.3, metalness: 0.7 });
+  for (const x of [-0.04, 0, 0.04]) {
+    g.add(new Mesh(new CylinderGeometry(0.011, 0.011, 0.04, 6).translate(x, 0.095, 0), brass));
+  }
+  g.add(box, stripe);
+  return g;
+}
+
+/** Stack of wooden planks / beams. */
+function woodMeshes() {
+  const g = new Group();
+  const mat = new MeshStandardMaterial({ color: 0xb88248, roughness: 0.85 });
+  const dark = new MeshStandardMaterial({ color: 0x7c5228, roughness: 0.9 });
+  g.add(new Mesh(new BoxGeometry(0.18, 0.032, 0.05).translate(0, 0.016, -0.03), mat));
+  g.add(new Mesh(new BoxGeometry(0.18, 0.032, 0.05).translate(0, 0.016, 0.03), mat));
+  g.add(new Mesh(new BoxGeometry(0.17, 0.032, 0.05).rotateY(0.18).translate(0, 0.048, 0), dark));
+  return g;
+}
+
+/** Cut stone blocks. */
+function stoneMeshes() {
+  const g = new Group();
+  const mat = new MeshStandardMaterial({ color: 0x96999c, roughness: 0.9, flatShading: true });
+  g.add(new Mesh(new BoxGeometry(0.14, 0.06, 0.1).translate(-0.01, 0.03, 0), mat));
+  g.add(new Mesh(new BoxGeometry(0.09, 0.05, 0.08).rotateY(0.4).translate(0.03, 0.075, 0.01), mat));
+  return g;
+}
+
+/** Steel I-beam / ingot bundle. */
+function metalMeshes() {
+  const g = new Group();
+  const mat = new MeshStandardMaterial({ color: 0x8ea0ad, roughness: 0.35, metalness: 0.65 });
+  g.add(new Mesh(new BoxGeometry(0.17, 0.022, 0.08).translate(0, 0.011, 0), mat));
+  g.add(new Mesh(new BoxGeometry(0.17, 0.04, 0.024).translate(0, 0.042, 0), mat));
+  g.add(new Mesh(new BoxGeometry(0.17, 0.022, 0.08).translate(0, 0.073, 0), mat));
+  return g;
+}
+
+/** Builds an inflated BackSide hull geometry for a crisp 3D outline around a pickup mesh. */
+function makeOutlineGeometry(src: BufferGeometry, thickness = 0.009): BufferGeometry {
+  const g = src.clone();
+  const pos = g.getAttribute('position');
+  // Compute averaged smooth normal per shared vertex position so hard-edged boxes expand without gaps
+  const sums = new Map<string, Vector3>();
+  g.computeVertexNormals();
+  const nrm = g.getAttribute('normal');
+  const v = new Vector3();
+  const n = new Vector3();
+  const keyOf = (x: number, y: number, z: number) => `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(z * 1e4)}`;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    n.fromBufferAttribute(nrm, i);
+    const k = keyOf(v.x, v.y, v.z);
+    const acc = sums.get(k);
+    if (acc) acc.add(n);
+    else sums.set(k, n.clone());
+  }
+  const out = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const avg = sums.get(keyOf(v.x, v.y, v.z)) ?? n.fromBufferAttribute(nrm, i);
+    if (avg.lengthSq() > 1e-8) avg.normalize();
+    out[i * 3] = v.x + avg.x * thickness;
+    out[i * 3 + 1] = v.y + avg.y * thickness;
+    out[i * 3 + 2] = v.z + avg.z * thickness;
+  }
+  const res = new BufferGeometry();
+  res.setAttribute('position', new BufferAttribute(out, 3));
+  if (g.index) res.setIndex(g.index.clone());
+  return res;
+}
+
+function withPickupOutline(proto: Group): Group {
+  const meshes: Mesh[] = [];
+  proto.traverse((o) => {
+    if (o instanceof Mesh) meshes.push(o);
+  });
+  const outlineMat = new MeshBasicMaterial({
+    color: 0xfff0a8,
+    side: BackSide,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+  });
+  const outlineGroup = new Group();
+  outlineGroup.name = 'outline';
+  for (const m of meshes) {
+    const om = new Mesh(makeOutlineGeometry(m.geometry, 0.009), outlineMat);
+    om.position.copy(m.position);
+    om.quaternion.copy(m.quaternion);
+    om.scale.copy(m.scale);
+    outlineGroup.add(om);
+  }
+  proto.add(outlineGroup);
+  return proto;
+}
+
 /** Items lying on the map. Each pickup gets a mesh when it shows up; meshes of items gone for good are removed. */
 export class PickupView {
   private readonly meshes = new Map<number, Group>();
   private readonly protos: Record<PickupKind, Group> = {
-    apple: appleMeshes(), bottle: bottleMeshes(), cash: cashMeshes(), fish: fishMeshes(), medkit: medkitMeshes(),
+    apple: withPickupOutline(appleMeshes()),
+    bottle: withPickupOutline(bottleMeshes()),
+    cash: withPickupOutline(cashMeshes()),
+    fish: withPickupOutline(fishMeshes()),
+    medkit: withPickupOutline(medkitMeshes()),
+    ammo: withPickupOutline(ammoMeshes()),
+    wood: withPickupOutline(woodMeshes()),
+    stone: withPickupOutline(stoneMeshes()),
+    metal: withPickupOutline(metalMeshes()),
   };
 
   constructor(private scene: Scene, private pickups: Pickups) {
@@ -87,8 +197,25 @@ export class PickupView {
     for (const it of this.pickups.items) {
       if (this.meshes.has(it.id)) continue;
       const g = this.protos[it.kind].clone();
+      // Give each pickup instance its own outline material so `near` highlight is independent
+      const outline = g.getObjectByName('outline');
+      if (outline) {
+        const instMat = new MeshBasicMaterial({
+          color: 0xffe88a,
+          side: BackSide,
+          transparent: true,
+          opacity: 0.82,
+          depthWrite: false,
+        });
+        outline.traverse((o) => {
+          if (o instanceof Mesh) o.material = instMat;
+        });
+        g.userData.outlineMat = instMat;
+      }
       g.scale.setScalar(PICKUP_SCALE);
-      g.traverse((o) => { o.castShadow = true; });
+      g.traverse((o) => {
+        if (o.name !== 'outline' && o.parent?.name !== 'outline') o.castShadow = true;
+      });
       this.place(g, it);
       this.scene.add(g);
       this.meshes.set(it.id, g);
@@ -103,14 +230,23 @@ export class PickupView {
     g.quaternion.setFromUnitVectors(Y, it.up).multiply(_q.setFromAxisAngle(Y, (it.id * 2.399) % (Math.PI * 2)));
   }
 
-  /** `near`: item in reach gets a gentle bob so it reads as interactive. */
+  /** Updates pickup transforms (including falling physics) and highlights the outline of `near`. */
   update(time: number, near: Pickup | null) {
     this.sync();
     for (const it of this.pickups.items) {
       const g = this.meshes.get(it.id)!;
       if (g.visible !== it.alive || !g.position.equals(it.pos)) this.place(g, it);
       g.visible = it.alive;
-      if (it === near) g.position.copy(it.pos).addScaledVector(it.up, 0.06 + Math.sin(time * 6) * 0.05);
+      const mat = g.userData.outlineMat as MeshBasicMaterial | undefined;
+      if (mat) {
+        if (it === near) {
+          mat.color.setHex(0xffffff);
+          mat.opacity = 0.95 + 0.05 * Math.sin(time * 10);
+        } else {
+          mat.color.setHex(0xffe88a);
+          mat.opacity = 0.78;
+        }
+      }
     }
   }
 }

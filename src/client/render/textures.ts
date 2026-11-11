@@ -453,6 +453,68 @@ export function woodTexture(): Texture {
 }
 
 /**
+ * Detailed wooden supply crate texture (64×64): recessed wood slats with grain, thick outer frame,
+ * diagonal cross-brace, and dark iron corner brackets with rivets. Tinted by instance color.
+ */
+export function crateTexture(): Texture {
+  const S = 64;
+  const [c, g] = canvas(S);
+  const rng = new Rng(53);
+  const F = 8; // outer frame width
+
+  // Recessed inner horizontal planks
+  const plankH = 8;
+  for (let y = 0; y < S; y++) {
+    const py = y % plankH;
+    const base = 186 + ((Math.floor(y / plankH) * 13) % 18);
+    for (let x = 0; x < S; x++) {
+      const grain = Math.sin(x * 0.35 + y * 0.7) * 8 + (rng.chance(0.12) ? rng.pick([-10, 8]) : 0);
+      const seam = py === 0 ? -38 : py === 1 ? 10 : 0;
+      px(g, x, y, base + grain + seam);
+    }
+  }
+
+  // Diagonal cross-brace across the inner panel
+  for (let y = F; y < S - F; y++) {
+    for (let x = F; x < S - F; x++) {
+      const d1 = Math.abs(x - y);
+      const d2 = Math.abs(x - (S - 1 - y));
+      const d = Math.min(d1, d2);
+      if (d <= 4) {
+        const edge = d === 4 ? -32 : d === 0 ? 14 : 6;
+        px(g, x, y, 212 + edge);
+      }
+    }
+  }
+
+  // Inner shadow under the outer frame
+  px(g, F, F, 120, S - F * 2, 2);
+  px(g, F, F, 128, 2, S - F * 2);
+  px(g, F, S - F - 1, 232, S - F * 2, 1);
+  px(g, S - F - 1, F, 228, 1, S - F * 2);
+
+  // Outer perimeter wooden frame
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      if (x >= F && x < S - F && y >= F && y < S - F) continue;
+      const border = x === 0 || y === 0 ? 245 : x === S - 1 || y === S - 1 ? 128 : 218;
+      const grain = (rng.chance(0.15) ? rng.pick([-10, 8]) : 0);
+      px(g, x, y, border + grain);
+    }
+  }
+
+  // Iron corner brackets + bright rivets
+  const B = 11;
+  for (const [cx, cy] of [[0, 0], [S - B, 0], [0, S - B], [S - B, S - B]]) {
+    px(g, cx, cy, 92, B, B);
+    px(g, cx + 1, cy + 1, 112, B - 2, B - 2);
+    px(g, cx + 3, cy + 3, 235, 2, 2);
+    px(g, cx + B - 5, cy + B - 5, 235, 2, 2);
+  }
+  return tex(c);
+}
+
+/**
  * Curtain-wall glazing (texture = 3 × 3 m): see-through panes (alpha), opaque mullions every 1.5 m both ways.
  * Multiplied into a transparent material, so the colour is the instance tint and the panes keep ~30 % opacity.
  * A pale diagonal streak across each pane reads as glass in the pixel look.

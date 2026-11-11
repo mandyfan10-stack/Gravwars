@@ -16,6 +16,7 @@ export type NpcKind = 'bum' | 'gang';
 export const NPC = {
   bumsPerIsland: 5,
   gangSize: 3,
+  carsPerIsland: 2,
   bum: {
     hp: 60,
     walk: 0.4,
@@ -41,35 +42,35 @@ export const NPC = {
     cash: [0, 2] as [number, number],
   },
   gang: {
-    hp: 70,
-    walk: 0.38,
-    run: 0.9,
-    sight: 24,
+    hp: 75,
+    walk: 0.42,
+    run: 0.92,
+    sight: 22,
     fov: 110,
     /** Delay between seeing the foe and the first shot. */
-    reaction: 0.5,
+    reaction: 0.45,
     /**
      * Telegraphed bursts: the bandit stops and raises the gun for `windup` s (a click, a glint at the muzzle, a red
      * mark); the aim follows the foe until `lock` s before the burst, then freezes on that spot. Standing still you
      * are hit, a step aside and the burst goes past.
      */
-    windup: 0.85,
-    lock: 0.35,
-    spread: 0.025,
+    windup: 0.75,
+    lock: 0.36,
+    spread: 0.03,
     burst: 3,
-    burstPause: 1.6,
+    burstPause: 1.4,
     /** Grenades per life, thrown every `grenadeEvery` s at most, at a foe `grenadeRange` m away; `grenadeWindup` s
      * of a swing before the throw. Behind cover (not seen for a moment) the foe gets a high lob over it. */
     grenades: 2,
-    grenadeEvery: [9, 16] as [number, number],
-    grenadeRange: [7, 21] as [number, number],
-    grenadeWindup: 0.7,
+    grenadeEvery: [10, 16] as [number, number],
+    grenadeRange: [7, 20] as [number, number],
+    grenadeWindup: 0.65,
     /** A thrown grenade goes off this long after it lands (it is cooked for the rest of the fuse). */
-    grenadeAfter: 1.1,
+    grenadeAfter: 1.0,
     /** Chance to pick a grenade instead of a burst when one is ready and the foe is in the open. */
     grenadeChance: 0.35,
     /** Will not follow further than this from home. */
-    leash: 34,
+    leash: 35,
     /** Without seeing the foe this long: search the last seen spot, then go home. */
     forget: 5,
     search: 6,
@@ -77,6 +78,14 @@ export const NPC = {
     loot: [4, 9] as [number, number],
     /** Keep this distance in a fight (closer: stand and shoot, further: walk up). */
     range: 12,
+    /** Bandit melee dash attack: spark windup (0.5 s) → frontal dash strike → 0.25 s recovery stand. */
+    meleeChance: 0.4,
+    meleeRange: 5.5,
+    meleeWindup: 0.5,
+    meleeRecover: 0.25,
+    meleeRadius: 2.6,
+    meleeDamage: 18,
+    meleeKnockback: 9.5,
   },
   notice: {
     /** Suspicion per second at point blank, in the cone, target running. Hostile at 1. */
@@ -140,10 +149,12 @@ export interface Npc {
   shots: number;
   shotsTotal: number;
   pauseT: number;
-  /** Gang fire cycle: free (moving, choosing), windup (raising the gun), burst (firing at the locked spot). */
-  fire: 'free' | 'windup' | 'burst';
-  /** Windup time left (burst or grenade). */
+  /** Gang fire cycle: free (moving, choosing), windup (raising the gun), burst (firing at the locked spot), meleeWindup (0.5s spark), meleeRecover (0.25s pause). */
+  fire: 'free' | 'windup' | 'burst' | 'meleeWindup' | 'meleeRecover';
+  /** Windup time left (burst, grenade, or melee). */
   windT: number;
+  /** Cooldown before next melee dash attack. */
+  meleeT: number;
   /** Where the burst goes (followed, then locked) / where the grenade is thrown. */
   aimAt: Vector3;
   /** Winding up a grenade throw (instead of a burst); `lob`: the high arc over cover. */
@@ -179,10 +190,48 @@ interface Island {
   nav: FaceNav;
   /** Nodes where NPCs may stand (not at the hall / the square, not at the rim). */
   street: number[];
+  /** Road nodes closest to the border of the island where NPC cars spawn. */
+  borderNodes: number[];
   gangHome: number;
   gangPatrol: number[];
   /** Somebody (player / bot) is on the streets: full-rate simulation. */
   busy: boolean;
+}
+
+export interface NpcCar {
+  id: number;
+  island: string;
+  pos: Vector3;
+  prevPos: Vector3;
+  vel: Vector3;
+  up: Vector3;
+  quat: Quaternion;
+  yaw: number;
+  scale: number;
+  color: number;
+  target: Target;
+  state: 'drive' | 'crashing' | 'dead';
+  currNode: number;
+  nextNode: number;
+  crashGoal: Vector3 | null;
+  crashT: number;
+  respawnT: number;
+  /** Player/bot who shot the car, if chosen as ram/explosion target. */
+  attackerId: number | null;
+  /** Remaining time the car flees at high speed after being attacked. */
+  fleeT: number;
+  /** Number of road segments left before the car can despawn at an island border node. */
+  stepsLeft: number;
+}
+
+const CAR_COLORS = [0xc94a38, 0x3b6ea5, 0xd49b27, 0x488a5b, 0x7b5283, 0xb85d28];
+
+function lerpAngle(curr: number, target: number, maxStep: number): number {
+  let diff = ((target - curr + Math.PI) % (Math.PI * 2));
+  if (diff < 0) diff += Math.PI * 2;
+  diff -= Math.PI;
+  if (Math.abs(diff) <= maxStep) return target;
+  return curr + Math.sign(diff) * maxStep;
 }
 
 /**
@@ -195,18 +244,24 @@ interface Island {
 /** For the client: telegraphs (sound) and throws. */
 export type NpcEvent =
   | { type: 'windup'; id: number; pos: Vector3; grenade: boolean }
-  | { type: 'throw'; id: number; pos: Vector3 };
+  | { type: 'throw'; id: number; pos: Vector3 }
+  | { type: 'meleeSpark'; id: number; pos: Vector3 }
+  | { type: 'meleeStrike'; id: number; pos: Vector3; dir: Vector3 }
+  | { type: 'carExplode'; id: number; pos: Vector3 }
+  | { type: 'carAlarm'; id: number; pos: Vector3 };
 
 export class NpcManager {
   readonly npcs: Npc[] = [];
+  readonly cars: NpcCar[] = [];
   readonly events: NpcEvent[] = [];
   readonly islands: Island[] = [];
   private readonly rng = new Rng(31337);
+  private readonly carRng = new Rng(77777);
   time = 0;
   private tickN = 0;
 
   constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private combat: Combat, private pickups: Pickups,
-    opts: { bums?: number; gang?: number } = {}) {
+    opts: { bums?: number; gang?: number; cars?: number } = {}) {
     // drops land under a dying body (or a crowd): the ray must not stop on capsules
     pickups.passThrough ??= combat.notCharacter;
     let id = 500;
@@ -215,11 +270,15 @@ export class NpcManager {
       if (!nav) continue;
       const up = new Vector3(...def.up);
       const isl: Island = { id: def.id, up, q: new Quaternion(...def.quat), origin: new Vector3(...def.origin), half: def.half,
-        nav, street: [], gangHome: 0, gangPatrol: [], busy: false };
+        nav, street: [], borderNodes: [], gangHome: 0, gangPatrol: [], busy: false };
       const dl = (i: number) => Math.hypot(nav.nodes[i][0] - nav.hub[0], nav.nodes[i][1] - nav.hub[1]);
       // not at the hall / square, not at the rim (road ends at the gap)
-      const inner = (i: number) => Math.max(Math.abs(nav.nodes[i][0]), Math.abs(nav.nodes[i][1])) < def.half - 10;
-      isl.street = nav.nodes.map((_, i) => i).filter((i) => dl(i) > 10 && inner(i));
+      const inner = (i: number) => Math.max(Math.abs(nav.nodes[i][0]), Math.abs(nav.nodes[i][1])) < def.half - 6;
+      const valid = nav.nodes.map((_, i) => i).filter((i) => dl(i) > 10 && inner(i));
+      isl.street = valid.length ? valid : nav.nodes.map((_, i) => i);
+      const sortedByEdge = [...isl.street].sort((a, b) =>
+        Math.max(Math.abs(nav.nodes[b][0]), Math.abs(nav.nodes[b][1])) - Math.max(Math.abs(nav.nodes[a][0]), Math.abs(nav.nodes[a][1])));
+      isl.borderNodes = sortedByEdge.slice(0, Math.max(2, Math.ceil(sortedByEdge.length * 0.45)));
       // the gang holds the corner furthest from the hub (and so from the way to the bridge)
       isl.gangHome = isl.street.reduce((a, b) => (dl(b) > dl(a) ? b : a), isl.street[0]);
       const near = nav.edges.filter(([a, b]) => a === isl.gangHome || b === isl.gangHome).map(([a, b]) => (a === isl.gangHome ? b : a));
@@ -230,6 +289,11 @@ export class NpcManager {
       for (let k = 0; k < (opts.gang ?? NPC.gangSize) + (more - 1) * 2; k++) this.npcs.push(this.create(R, world, id++, 'gang', isl, k));
     }
     for (const n of this.npcs) this.spawn(n);
+    let carId = 800;
+    for (const isl of this.islands) {
+      for (let k = 0; k < (opts.cars ?? NPC.carsPerIsland); k++) this.cars.push(this.createCar(carId++, isl));
+    }
+    for (const c of this.cars) this.spawnCar(c);
   }
 
   private create(R: Rapier, world: PhysicsWorld, id: number, kind: NpcKind, isl: Island, slot: number): Npc {
@@ -240,6 +304,7 @@ export class NpcManager {
     const target: Target = {
       id, team: kind === 'bum' ? `bum:${id}` : `gang:${isl.id}`, npc: kind, aggro: null, vel: sim.state.vel,
       center: sim.state.pos, up: upOf(sim.state.frame), hp: NPC[kind].hp, alive: true, respawnIn: -1,
+      airborne: () => !sim.state.onGround,
       onImpulse: (v) => sim.applyImpulse(v),
     };
     const weapons = createWeaponState();
@@ -248,12 +313,258 @@ export class NpcManager {
       id, kind, island: isl.id, slot, sim, target, weapons, state: kind === 'bum' ? 'wander' : 'patrol', stateT: 0,
       route: [], wp: 0, foe: null, suspicion: new Map(), grudge: new Map(), lastSeen: null, lostT: 0, seenT: 0, searchAt: null,
       lookAt: null, lookUntil: 0, drinkAt: this.rng.range(...NPC.bum.drinkEvery), respawnT: 0, scanT: this.rng.range(0, 0.2), shots: 0,
-      shotsTotal: 0, pauseT: 0, fire: 'free', windT: 0, aimAt: new Vector3(), throwing: false, lob: false, grenades: NPC.gang.grenades,
+      shotsTotal: 0, pauseT: 0, fire: 'free', windT: 0, meleeT: 0, aimAt: new Vector3(), throwing: false, lob: false, grenades: NPC.gang.grenades,
       grenadeT: this.rng.range(...NPC.gang.grenadeEvery), throwsTotal: 0, progressT: 0, bestDist: Infinity, stuckN: 0, jumpT: 0, patrol: slot, prevPos: new Vector3(), status: '',
     };
     target.onHit = (owner) => this.onHit(npc, owner);
     this.combat.targets.push(target);
     return npc;
+  }
+
+  private createCar(id: number, isl: Island): NpcCar {
+    const pos = new Vector3();
+    const vel = new Vector3();
+    const up = isl.up.clone();
+    const scale = this.carRng.range(0.75, 1.35);
+    const target: Target = {
+      id, team: `car:${id}`, npc: 'car', aggro: null, vel,
+      center: pos, up, hp: Math.round(315 * scale), alive: true, respawnIn: -1,
+      radius: 1.6 * scale,
+    };
+    const car: NpcCar = {
+      id, island: isl.id, pos, prevPos: new Vector3(), vel, up, quat: isl.q.clone(), yaw: 0,
+      scale, color: this.carRng.pick(CAR_COLORS), target, state: 'drive',
+      currNode: isl.borderNodes[0] ?? 0, nextNode: isl.borderNodes[0] ?? 0,
+      crashGoal: null, crashT: 0, respawnT: 0,
+      attackerId: null, fleeT: 0, stepsLeft: 6,
+    };
+    target.onHit = (owner) => this.onCarHit(car, owner);
+    this.combat.targets.push(target);
+    return car;
+  }
+
+  private spawnCar(car: NpcCar) {
+    const isl = this.island(car.island);
+    car.scale = this.carRng.range(0.75, 1.35);
+    car.color = this.carRng.pick(CAR_COLORS);
+    car.target.radius = 1.6 * car.scale;
+    car.target.hp = Math.round(315 * car.scale);
+    car.target.alive = true;
+    car.state = 'drive';
+    car.crashGoal = null;
+    car.crashT = 0;
+    car.attackerId = null;
+    car.fleeT = 0;
+    car.stepsLeft = this.carRng.int(4, 9);
+    const start = this.carRng.pick(isl.borderNodes.length ? isl.borderNodes : isl.street);
+    car.currNode = start;
+    car.nextNode = this.pickNextCarNode(isl, start, -1);
+    const p = isl.nav.nodes[start];
+    this.toWorld(isl, p, car.pos);
+    car.prevPos.copy(car.pos);
+    car.vel.set(0, 0, 0);
+    // Point car initially towards nextNode so it starts smoothly
+    const nextXZ = isl.nav.nodes[car.nextNode] ?? p;
+    car.yaw = Math.atan2(-(nextXZ[0] - p[0]), -(nextXZ[1] - p[1]));
+  }
+
+  private despawnCar(car: NpcCar) {
+    car.state = 'dead';
+    car.target.alive = false;
+    car.respawnT = 6;
+    car.attackerId = null;
+    car.fleeT = 0;
+    car.pos.set(0, -6500 - car.id * 5, 0);
+    car.prevPos.copy(car.pos);
+    car.vel.set(0, 0, 0);
+  }
+
+  private onCarHit(car: NpcCar, owner: number) {
+    if (car.state === 'dead' || owner === car.id) return;
+    const isl = this.island(car.island);
+    this.events.push({ type: 'carAlarm', id: car.id, pos: car.pos.clone() });
+    const attacker = this.combat.target(owner);
+    if (car.state === 'crashing') {
+      if (attacker && attacker.alive) {
+        car.attackerId = attacker.id;
+        car.crashGoal = attacker.center.clone();
+      }
+      return;
+    }
+    const lowHp = !car.target.alive || car.target.hp <= 88 * car.scale;
+    if (attacker && attacker.alive) car.attackerId = attacker.id;
+    if (lowHp || (owner === 0 && attacker && attacker.alive && this.carRng.chance(0.45))) {
+      car.state = 'crashing';
+      car.crashT = 0;
+      car.crashGoal = attacker && attacker.alive ? attacker.center.clone() : this.findCrashObject(car, isl);
+    } else {
+      // Flee away from the attacker at high speed
+      car.fleeT = 6.5;
+      if (attacker) {
+        car.nextNode = this.pickNextCarNode(isl, car.currNode, -1, attacker.center);
+      }
+    }
+  }
+
+  private pickNextCarNode(isl: Island, from: number, prev: number, awayFrom?: Vector3): number {
+    const neighbors = isl.nav.edges
+      .filter(([a, b]) => a === from || b === from)
+      .map(([a, b]) => (a === from ? b : a));
+    if (!neighbors.length) return this.carRng.pick(isl.street);
+    const forward = neighbors.filter((n) => n !== prev);
+    const pool = forward.length ? forward : neighbors;
+    if (awayFrom) {
+      let best = pool[0];
+      let bestD = -Infinity;
+      for (const n of pool) {
+        const d = this.toWorld(isl, isl.nav.nodes[n], _v).distanceToSquared(awayFrom);
+        if (d > bestD) { bestD = d; best = n; }
+      }
+      return best;
+    }
+    return this.carRng.pick(pool);
+  }
+
+  private findCrashObject(car: NpcCar, isl: Island): Vector3 {
+    if (car.attackerId !== null) {
+      const att = this.combat.target(car.attackerId);
+      if (att && att.alive && this.onStreets(isl, att.center)) return att.center.clone();
+    }
+    let best: Vector3 | null = null;
+    let bestD = Infinity;
+    for (const t of this.combat.targets) {
+      if (!t.alive || t.id === car.id || t.npc === 'car' || !this.onStreets(isl, t.center)) continue;
+      const d = t.center.distanceTo(car.pos);
+      if (d > 1.5 && d < bestD) { bestD = d; best = t.center.clone(); }
+    }
+    for (const c of this.map.crates) {
+      const w = _v.set(c.pos[0], c.pos[1], c.pos[2]);
+      if (!this.onStreets(isl, w)) continue;
+      const d = w.distanceTo(car.pos);
+      if (d > 1.5 && d < bestD) { bestD = d; best = w.clone(); }
+    }
+    for (const h of this.map.houses) {
+      const w = _v.set(h.pos[0], h.pos[1], h.pos[2]);
+      if (!this.onStreets(isl, w)) continue;
+      const d = w.distanceTo(car.pos);
+      if (d > 2 && d < bestD) { bestD = d; best = w.clone(); }
+    }
+    for (const b of this.map.buildings) {
+      const w = _v.set(b.pos[0], b.pos[1], b.pos[2]);
+      if (!this.onStreets(isl, w)) continue;
+      const d = w.distanceTo(car.pos);
+      if (d > 2 && d < bestD) { bestD = d; best = w.clone(); }
+    }
+    if (best) return best;
+    moveBasis(isl.q, car.yaw, _fwd, _right);
+    return car.pos.clone().addScaledVector(_fwd, 6);
+  }
+
+  private explodeCar(car: NpcCar, isl: Island) {
+    const pos = car.pos.clone();
+    this.events.push({ type: 'carExplode', id: car.id, pos: pos.clone() });
+    this.combat.triggerExplosion(pos, car.id, car.target.team, 12.5, 162.5, 24, 250, 0, false, 'rocket', pos);
+    // Drop random resources (cash, ammo, metal, wood); 1.5x reward, size-scaled
+    const s = car.scale * 1.5;
+    if (this.rng.chance(0.8)) this.pickups.dropSpread('cash', pos, isl.up, Math.max(3, Math.round(this.rng.int(4, 11) * s)));
+    if (this.rng.chance(0.75)) this.pickups.dropSpread('ammo', pos, isl.up, Math.max(1, Math.round((car.scale > 1.1 && this.rng.chance(0.5) ? 2 : 1) * 1.5)));
+    if (this.rng.chance(0.7)) this.pickups.dropSpread('metal', pos, isl.up, Math.max(2, Math.round(this.rng.int(1, 4) * s)));
+    if (this.rng.chance(0.8)) this.pickups.dropSpread('wood', pos, isl.up, Math.max(3, Math.round(this.rng.int(4, 10) * s)));
+    car.state = 'dead';
+    car.target.alive = false;
+    car.attackerId = null;
+    car.fleeT = 0;
+    car.respawnT = 25;
+    car.pos.set(0, -6500 - car.id * 5, 0);
+    car.prevPos.copy(car.pos);
+    car.vel.set(0, 0, 0);
+  }
+
+  private tickCars(dt: number) {
+    for (const car of this.cars) {
+      const isl = this.island(car.island);
+      if (car.state === 'dead') {
+        car.respawnT -= dt;
+        if (car.respawnT <= 0) this.spawnCar(car);
+        continue;
+      }
+      car.prevPos.copy(car.pos);
+      car.fleeT = Math.max(0, car.fleeT - dt);
+      if (car.state === 'drive' && !car.target.alive) {
+        car.state = 'crashing';
+        car.crashT = 0;
+        car.crashGoal = this.findCrashObject(car, isl);
+      }
+      if (car.state === 'crashing') {
+        car.crashT += dt;
+        // Dynamically track the player who shot the car if alive on this island
+        if (car.attackerId !== null) {
+          const att = this.combat.target(car.attackerId);
+          if (att && att.alive && this.onStreets(isl, att.center)) {
+            car.crashGoal = att.center.clone();
+          }
+        }
+        const goal = car.crashGoal ?? car.pos;
+        _v.copy(goal).sub(car.pos);
+        _v.addScaledVector(isl.up, -_v.dot(isl.up));
+        const dist = _v.length();
+        if (dist < 2.4 * car.scale || car.crashT > 2.6) {
+          this.explodeCar(car, isl);
+          continue;
+        }
+        _v.divideScalar(dist || 1);
+        const l = _w.copy(_v).applyQuaternion(_inv.copy(isl.q).invert());
+        const desiredYaw = Math.atan2(-l.x, -l.z);
+        car.yaw = lerpAngle(car.yaw, desiredYaw, 6.5 * dt);
+        moveBasis(isl.q, car.yaw, _fwd, _right);
+        const speed = 17.5;
+        car.vel.copy(_fwd).lerp(_v, 0.35).normalize().multiplyScalar(speed);
+        car.pos.addScaledVector(car.vel, dt);
+        continue;
+      }
+      // Normal or fleeing driving along road nodes
+      const targetXZ = isl.nav.nodes[car.nextNode] ?? isl.nav.nodes[0];
+      const goal = this.toWorld(isl, targetXZ, _v);
+      _w.copy(goal).sub(car.pos);
+      _w.addScaledVector(isl.up, -_w.dot(isl.up));
+      const dist = _w.length();
+      if (dist < 1.8) {
+        car.stepsLeft--;
+        const isEdge = isl.borderNodes.includes(car.nextNode)
+          || Math.max(Math.abs(targetXZ[0]), Math.abs(targetXZ[1])) >= isl.half - 11;
+        if (car.stepsLeft <= 0 && isEdge) {
+          this.despawnCar(car);
+          continue;
+        }
+        const next = this.pickNextCarNode(isl, car.nextNode, car.currNode);
+        car.currNode = car.nextNode;
+        car.nextNode = next;
+      } else {
+        _w.divideScalar(dist);
+        const l = _v.copy(_w).applyQuaternion(_inv.copy(isl.q).invert());
+        const desiredYaw = Math.atan2(-l.x, -l.z);
+        const turnRate = car.fleeT > 0 ? 5.8 : 3.8;
+        car.yaw = lerpAngle(car.yaw, desiredYaw, turnRate * dt);
+        moveBasis(isl.q, car.yaw, _fwd, _right);
+        let speed = car.fleeT > 0 ? 14.5 : 7.5;
+        // Slow down on sharp turns or when obstacles are right ahead during calm driving
+        const turnDiff = Math.abs(lerpAngle(car.yaw, desiredYaw, Math.PI) - car.yaw);
+        if (turnDiff > 0.45 && car.fleeT <= 0) speed *= 0.72;
+        if (car.fleeT <= 0) {
+          for (const other of this.cars) {
+            if (other === car || other.state === 'dead' || other.island !== car.island) continue;
+            const od = other.pos.distanceTo(car.pos);
+            if (od < 4.5 && _v.copy(other.pos).sub(car.pos).normalize().dot(_fwd) > 0.6) {
+              speed *= 0.45;
+              break;
+            }
+          }
+        }
+        // Blend forward direction with node direction so smooth turns stay on the road
+        car.vel.copy(_fwd).lerp(_w, 0.35).normalize().multiplyScalar(speed);
+        car.pos.addScaledVector(car.vel, dt);
+      }
+    }
   }
 
   /** Colliders of all NPC bodies (building must not trap them). */
@@ -335,6 +646,7 @@ export class NpcManager {
     n.state = n.kind === 'bum' ? 'wander' : 'patrol';
     n.stateT = 0;
     n.route = [];
+    if (this.time > 0 && n.kind === 'gang') n.patrol = n.slot + 1;
     n.stuckN = 0;
     n.searchAt = null;
     n.lookAt = null;
@@ -357,10 +669,14 @@ export class NpcManager {
     const s = n.sim.state;
     const isl = this.island(n.island);
     if (n.kind === 'bum' && this.rng.chance(NPC.bum.bottleDrop)) this.pickups.drop('bottle', s.pos, isl.up);
-    if (n.kind === 'gang') this.pickups.drop('cash', s.pos, isl.up, this.rng.int(...NPC.gang.loot));
+    if (n.kind === 'gang') {
+      this.pickups.drop('cash', s.pos, isl.up, this.rng.int(...NPC.gang.loot));
+      this.pickups.dropSpread('ammo', s.pos, isl.up, 1);
+    }
     if (n.kind === 'bum') {
       const cash = this.rng.int(...NPC.bum.cash);
       if (cash > 0) this.pickups.drop('cash', s.pos, isl.up, cash);
+      if (this.rng.chance(0.45)) this.pickups.dropSpread('ammo', s.pos, isl.up, 1);
     }
     n.state = 'dead';
     n.respawnT = NPC[n.kind].respawn;
@@ -375,17 +691,21 @@ export class NpcManager {
     if (!t || !t.alive) return;
     // the gang does not care about bums slapping each other, but answers anyone who hurts one of its own
     this.engage(n, t);
+    n.seenT = Math.max(n.seenT, NPC.gang.reaction + 0.05);
+    n.lostT = 0;
+    n.lastSeen = t.center.clone();
     if (n.kind === 'gang') for (const m of this.npcs) if (m !== n && m.kind === 'gang' && m.island === n.island && m.state !== 'dead' && !m.foe) this.alarm(m, t.center);
   }
 
   /** Go for this target now. */
   private engage(n: Npc, t: Target) {
+    const sameFoe = n.foe === t;
     n.suspicion.set(t.id, 1);
     n.foe = t;
     n.target.aggro = t.id;
     n.lastSeen = t.center.clone();
     n.lostT = 0;
-    n.seenT = 0;
+    if (!sameFoe) n.seenT = 0;
     this.setState(n, n.kind === 'bum' ? 'fight' : 'combat');
   }
 
@@ -412,6 +732,7 @@ export class NpcManager {
   tick(dt: number) {
     this.time += dt;
     this.tickN++;
+    this.tickCars(dt);
     for (const isl of this.islands)
       isl.busy = this.combat.targets.some((t) => t.alive && !t.npc && this.onStreets(isl, t.center));
     const noises = this.combat.noises.splice(0);
@@ -471,9 +792,9 @@ export class NpcManager {
     if (!n.foe) this.alarm(n, z.pos);
   }
 
-  /** Who this NPC would fight: gangs fight teams (and whoever attacks them), bums anyone. */
+  /** Who this NPC would fight: gangs fight teams (and whoever attacks them), bums anyone except cars. */
   private hostile(n: Npc, t: Target) {
-    if (!t.alive || t.id === n.id) return false;
+    if (!t.alive || t.id === n.id || t.npc === 'car') return false;
     if (n.kind === 'gang') return !t.npc;
     return true;
   }
@@ -499,10 +820,13 @@ export class NpcManager {
       const speed = t.vel ? Math.sqrt(Math.max(0, t.vel.lengthSq() - t.vel.dot(t.up) ** 2)) : 0;
       const loud = !t.quiet && speed > N.loud;
       const close = d < N.close;
+      const pointBlank = d < 2.8 && Math.abs(_w.copy(t.center).sub(s.pos).dot(up)) < 2.5;
       let gain = 0;
-      if ((inCone || close) && this.combat.lineOfSight(eye, _w.copy(t.center).addScaledVector(t.up, 0.5))) {
+      if (pointBlank || ((inCone || close) && this.combat.lineOfSight(eye, _w.copy(t.center).addScaledVector(t.up, 0.5)))) {
         const motion = loud ? N.run : speed > 0.5 ? N.walk : N.still;
-        gain = N.rate * motion * Math.max(0.15, 1 - d / cfg.sight) * (close ? 3 : 1) * (t.crouched ? N.crouch : 1);
+        gain = pointBlank
+          ? N.rate * 4.5
+          : N.rate * motion * Math.max(0.15, 1 - d / cfg.sight) * (close ? 3 : 1) * (t.crouched ? N.crouch : 1);
         seen.add(t.id);
       } else if (loud && d < N.steps) {
         // footsteps: turn around, slowly get suspicious
@@ -531,6 +855,7 @@ export class NpcManager {
     n.stateT += dt;
     n.pauseT = Math.max(0, n.pauseT - dt);
     n.grenadeT = Math.max(0, n.grenadeT - dt);
+    n.meleeT = Math.max(0, n.meleeT - dt);
 
     n.scanT -= dt;
     let seen: Set<number> | null = null;
@@ -550,7 +875,13 @@ export class NpcManager {
 
     if (n.foe && (n.state === 'fight' || n.state === 'combat')) {
       const foe = n.foe;
-      if (seen) {
+      const closeDist = s.pos.distanceTo(foe.center);
+      const sameLevel = Math.abs(_w.copy(foe.center).sub(s.pos).dot(up)) < 2.6;
+      if (closeDist < 3.2 && sameLevel) {
+        n.lastSeen = foe.center.clone();
+        n.lostT = 0;
+        n.seenT = Math.max(n.seenT, NPC.gang.reaction + 0.05);
+      } else if (seen) {
         if (seen.has(foe.id)) { n.lastSeen = foe.center.clone(); n.lostT = 0; } else n.lostT += 0.2;
       }
       n.seenT = n.lostT === 0 ? n.seenT + dt : 0;
@@ -659,7 +990,26 @@ export class NpcManager {
     const seen = n.lostT === 0;
     const target = seen ? foe.center : n.lastSeen;
     const d = target ? eye.distanceTo(target) : Infinity;
-    if (n.fire === 'windup') {
+    if (n.fire === 'meleeWindup') {
+      n.windT -= dt;
+      if (seen) n.aimAt.copy(foe.center);
+      face = n.aimAt;
+      n.status = 'искра рывка';
+      if (n.windT <= 0) {
+        this.performMeleeDash(n, up);
+        n.fire = 'meleeRecover';
+        n.windT = G.meleeRecover;
+      }
+    } else if (n.fire === 'meleeRecover') {
+      n.windT -= dt;
+      face = n.aimAt;
+      n.status = 'после удара';
+      if (n.windT <= 0) {
+        n.fire = 'free';
+        n.pauseT = 0.6;
+        n.meleeT = 4.5;
+      }
+    } else if (n.fire === 'windup') {
       // standing, the gun up (or the arm back); the aim follows until the lock, then stays
       n.windT -= dt;
       if (n.throwing) face = n.aimAt;
@@ -679,11 +1029,31 @@ export class NpcManager {
       n.status = 'стреляет';
     } else if (seen) {
       face = foe.center;
+      const s = n.sim.state;
       if (d > G.range) goal = foe.center;
+      else if (d < 2.6 && n.meleeT > 0) {
+        // Backstep slightly when foe is right in our face so we never get wedged
+        _v.copy(s.pos).sub(foe.center).addScaledVector(up, -_v.dot(up));
+        if (_v.lengthSq() > 1e-4) _v.normalize();
+        else moveBasis(s.frame, s.yaw, _v, _right);
+        goal = s.pos.clone().addScaledVector(_v, 2.2);
+      } else if (n.pauseT > 0.15 && n.shotsTotal >= 6) {
+        // Tactical side-strafe in prolonged firefights to make bandits harder to hit
+        moveBasis(s.frame, s.yaw, _fwd, _right);
+        const side = Math.sin(this.time * 2.4 + n.id * 1.9) >= 0 ? 1 : -1;
+        goal = s.pos.clone().addScaledVector(_right, side * 2.4);
+      }
       n.status = 'в бою';
       if (n.seenT > G.reaction && n.pauseT <= 0) {
-        const nade = this.canThrow(n, d) && this.rng.chance(G.grenadeChance);
-        this.windup(n, nade ? foe.center.clone().addScaledVector(foe.up, -0.7) : foe.center.clone().addScaledVector(foe.up, 0.2), nade, false);
+        if (d <= G.meleeRange && n.meleeT <= 0 && (d < 2.8 || this.rng.chance(G.meleeChance))) {
+          n.fire = 'meleeWindup';
+          n.windT = G.meleeWindup;
+          n.aimAt.copy(foe.center);
+          this.events.push({ type: 'meleeSpark', id: n.id, pos: eye.clone() });
+        } else {
+          const nade = this.canThrow(n, d) && this.rng.chance(G.grenadeChance);
+          this.windup(n, nade ? foe.center.clone().addScaledVector(foe.up, -0.7) : foe.center.clone().addScaledVector(foe.up, 0.2), nade, false);
+        }
       }
     } else {
       goal = n.lastSeen;
@@ -695,6 +1065,48 @@ export class NpcManager {
     }
     if (n.fire !== 'free') goal = null; // nobody shoots or throws on the run
     return { goal, face, aim, fire };
+  }
+
+  private performMeleeDash(n: Npc, up: Vector3) {
+    const G = NPC.gang;
+    const s = n.sim.state;
+    const startPos = s.pos.clone();
+    const dir = _v.copy(n.aimAt).sub(s.pos);
+    dir.addScaledVector(up, -dir.dot(up));
+    const dist = dir.length();
+    if (dist > 1e-4) dir.divideScalar(dist);
+    else moveBasis(s.frame, s.yaw, dir, _right);
+    const dashDist = Math.min(4.0, Math.max(1.2, dist - 0.8));
+    // Raycast against world/props (ignoring character capsules so point-blank targets do not block the dash)
+    const wallHit = this.world.castRay(
+      new this.R.Ray(s.pos, dir),
+      dashDist,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.combat.notCharacter,
+    );
+    const actualDash = wallHit ? Math.max(0, wallHit.timeOfImpact - 0.55) : dashDist;
+    if (actualDash > 0.1) {
+      s.pos.addScaledVector(dir, actualDash);
+      n.sim.mover.place(s);
+    }
+    s.vel.set(0, 0, 0);
+    const strikeCenter = s.pos.clone().addScaledVector(dir, 1.35);
+    const knock = dir.clone().multiplyScalar(G.meleeKnockback).addScaledVector(up, G.meleeKnockback * 0.3);
+    for (const tg of this.combat.targets) {
+      if (!tg.alive || tg.id === n.id || tg.team === n.target.team) continue;
+      const r = G.meleeRadius + (tg.radius ?? 0);
+      const inStrike = tg.center.distanceTo(strikeCenter) <= r
+        || (tg.center.distanceTo(startPos) <= 2.2 && _w.copy(tg.center).sub(startPos).dot(dir) > -0.4);
+      if (inStrike) {
+        if (tg.onImpulse) tg.onImpulse(knock);
+        this.combat.damage(tg, G.meleeDamage, n.id, false, tg.center, { noPush: true, weapon: 'fists' });
+      }
+    }
+    this.events.push({ type: 'meleeStrike', id: n.id, pos: strikeCenter, dir: dir.clone() });
   }
 
   private canThrow(n: Npc, d: number) {

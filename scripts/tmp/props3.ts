@@ -1,0 +1,14 @@
+import { initRapier, buildPhysicsWorld } from '../../src/shared/physics';
+import { generateMap } from '../../src/shared/map';
+import { Props } from '../../src/shared/props';
+import { TICK_DT } from '../../src/shared/constants';
+const R = await initRapier();
+const map = generateMap(1337, 'red', ['red', 'blue', 'green', 'yellow']);
+let t0 = performance.now();
+const world = buildPhysicsWorld(R, map);
+console.log('build ms', (performance.now() - t0).toFixed(0));
+const props = new Props(world, map);
+console.log('asleep', props.bodies.filter((b) => b.isSleeping()).length);
+t0 = performance.now();
+for (let k = 0; k < 64; k++) props.tick(TICK_DT);
+console.log('idle 64 ticks ms', (performance.now() - t0).toFixed(1), 'asleep', props.bodies.filter((b) => b.isSleeping()).length);

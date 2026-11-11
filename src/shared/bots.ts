@@ -12,7 +12,7 @@ import { emptyInput, MoveInput, moveBasis } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
 import { PlayerSim } from './sim';
 import { TeamId } from './teams';
-import { createWeaponState, hasAmmo, isGun, KICK, kicked, kickReady, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
+import { crossbowSpec, createWeaponState, hasAmmo, isGun, KICK, kicked, kickReady, refillAmmo, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
 
 /** Tuning. Times in seconds, distances in metres. */
 export const BOT = {
@@ -255,6 +255,9 @@ export interface Bot {
   /** Who hurt it last (target id) and when (match time). */
   hurtBy: number;
   hurtT: number;
+  /** Last known position of a lost or teammate-spotted enemy and search timer (s). */
+  searchPos: Vector3 | null;
+  searchT: number;
   /** Spots it gave up on (pickups, ponds, generators): key → until match time. */
   avoid: Map<string, number>;
   /** Totals (tests, debug): money earned (sales, drops, kills) / spent, pieces built, pickups taken, purchases. */
@@ -320,6 +323,8 @@ export class BotManager {
   private readonly gens: GenSpot[] = [];
   private readonly forts = new Map<TeamId, FortCell[]>();
   private readonly alarms = new Map<TeamId, Alarm>();
+  /** Shared team target intelligence: teammates broadcast spotted or attacking enemies. */
+  readonly teamIntel = new Map<TeamId, { target: Target; pos: Vector3; face: FaceId | null; time: number; by: number }>();
   private watchT = 0;
   private keys = { version: -1, set: new Set<string>() };
   private readonly gaps = new Map<TeamId, { t: number; cells: FortCell[] }>();
@@ -337,6 +342,11 @@ export class BotManager {
     })));
     match.membersAlive = (team) => this.bots.filter((b) => b.team === team && !b.out).length;
     match.characterFilter = combat.notCharacter;
+    const prevRevive = match.onReviveAll;
+    match.onReviveAll = (crystalTeam) => {
+      prevRevive?.(crystalTeam);
+      this.reviveAll();
+    };
     match.attach(combat);
     this.survey();
     // a bot that kills a fighter of another team earns the same reward as the player
@@ -365,6 +375,7 @@ export class BotManager {
         combat.addCharacter(sim.mover.collider);
         const target: Target = {
           id: id++, team: tid, center: sim.state.pos, up: upOf(sim.state.frame), vel: sim.state.vel, hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
+          airborne: () => !sim.state.onGround,
           onImpulse: (v) => sim.applyImpulse(v),
         };
         combat.targets.push(target);
@@ -380,12 +391,16 @@ export class BotManager {
           route: null, routeKey: '', routePts: [], strictAt: undefined, wp: 0, detour: null, checkT: 0, progressT: 0, bestDist: Infinity, stuckT: 0,
           jumpT: 0, breach: null, breachT: 0, wedgeT: 0, frozenT: 0, anchor: new Vector3(), nudgeT: 0, nudge: new Vector3(), buildT: 0, blocked: false, strandT: 0, strands: 0, stand: slot, standT: 0, patrol: slot, patrolT: 0,
           rocketFort: false, farT: 0, hesitateT: 0, mistakeT: this.rng.range(8, 20), fishT: 0, fishAt: 0, caught: 0, fishing: false, genWait: 0, eatT: 0, lootT: 0,
-          nadeT: 0, rocketT: 0, pick: null, pickT: 0, hurtBy: -1, hurtT: -99, avoid: new Map(), earned: 0, spent: 0, built: 0, builtAt: -99, taken: 0, bought: [],
+          nadeT: 0, rocketT: 0, pick: null, pickT: 0, hurtBy: -1, hurtT: -99, searchPos: null, searchT: 0, avoid: new Map(), earned: 0, spent: 0, built: 0, builtAt: -99, taken: 0, bought: [],
           prevPos: new Vector3(), status: '',
         };
         target.onHit = (owner) => {
           bot.hurtBy = owner;
           bot.hurtT = this.match.time;
+          const att = combat.target(owner);
+          if (att && att.alive && att.team !== tid && !att.npc) {
+            this.reportTarget(tid, att, bot.id);
+          }
         };
         this.placeAtSpawn(bot);
         this.bots.push(bot);
@@ -407,6 +422,30 @@ export class BotManager {
   retime() {
     let wave = 0;
     for (const b of this.bots) if (b.role === 'attack') b.departAt = b.tune.firstAttack + b.tune.attackStagger * wave++;
+  }
+
+  /** Broadcast a spotted or attacking enemy target to all teammates of `team`. */
+  reportTarget(team: TeamId, target: Target, by = 0) {
+    if (!target.alive || target.team === team || target.npc) return;
+    const f = this.faceOfUp(target.up);
+    this.teamIntel.set(team, {
+      target,
+      pos: target.center.clone(),
+      face: f ? f.id : null,
+      time: this.match.time,
+      by,
+    });
+  }
+
+  /** Resurrect all dead or eliminated bots immediately (triggered by Crystal Stage 1 blast). */
+  reviveAll() {
+    for (const bot of this.bots) {
+      if (!bot.target.alive || bot.out) {
+        bot.out = false;
+        bot.respawnT = 0;
+        this.placeAtSpawn(bot);
+      }
+    }
   }
 
   // --- setup ------------------------------------------------------------------------------------
@@ -714,11 +753,18 @@ export class BotManager {
       if (it.pos.distanceTo(from) > radius || this.avoided(bot, `item${it.id}`)) continue;
       if (gangs.some((g) => g.center.distanceTo(it.pos) < keep)) continue;
       if (this.bots.some((o) => o !== bot && o.task.kind === 'gather' && o.task.item === it)) continue;
-      const value = it.kind === 'cash' ? it.amount : ITEMS[it.kind].sell * Math.max(1, it.amount) || 6;
+      const value = this.pickupValue(it);
       const sc = value / (it.pos.distanceTo(pos) + 12);
       if (sc > score) { score = sc; best = it; }
     }
     return best;
+  }
+
+  private pickupValue(it: Pickup): number {
+    if (it.kind === 'cash') return it.amount;
+    if (it.kind === 'ammo') return 8;
+    if (it.kind === 'wood' || it.kind === 'stone' || it.kind === 'metal') return Math.max(1, it.amount);
+    return ITEMS[it.kind].sell * Math.max(1, it.amount) || 6;
   }
 
   /** Bandits alive on a face. */
@@ -728,7 +774,7 @@ export class BotManager {
 
   /** Money per second a pickup is worth, counting the walk there. */
   private pickupRate(bot: Bot, it: Pickup) {
-    const value = it.kind === 'cash' ? it.amount : ITEMS[it.kind].sell * Math.max(1, it.amount) || 6;
+    const value = this.pickupValue(it);
     return value / (it.pos.distanceTo(bot.sim.state.pos) / 6 + 2.5);
   }
 
@@ -1148,11 +1194,13 @@ export class BotManager {
     if (it.kind === 'medkit' && bot.eco.items.medkit >= MAX_MEDKITS) return;
     this.loot.take(it);
     if (it.kind === 'cash') { bot.wallet.cash += it.amount; bot.earned += it.amount; }
+    else if (it.kind === 'ammo') refillAmmo(bot.weapons, Math.max(1, it.amount));
+    else if (it.kind === 'wood' || it.kind === 'stone' || it.kind === 'metal') bot.kit[it.kind] += Math.max(1, it.amount);
     else bot.eco.items[it.kind] += Math.max(1, it.amount);
     bot.taken++;
   }
 
-  /** Every tick, whatever the task: heal (medkit when badly hurt, apples), pick up what lies within reach. */
+  /** Every tick, whatever the task: heal (medkit when badly hurt, apples), pick up what lies within reach, refill ammo near own crystal. */
   private upkeep(bot: Bot, dt: number) {
     bot.eatT -= dt;
     bot.lootT -= dt;
@@ -1169,10 +1217,16 @@ export class BotManager {
         bot.eatT = EAT_COOLDOWN + 0.4;
       }
     }
-    if (bot.lootT <= 0 && this.loot) {
+    if (bot.lootT <= 0) {
       bot.lootT = 0.3;
-      const it = this.loot.nearest(bot.sim.state.pos);
-      if (it && it.up.dot(tg.up) > 0.9) this.take(bot, it);
+      const bed = this.match.bed(bot.team);
+      if (bed.alive && bot.sim.state.pos.distanceTo(bed.pos) < 8.5) {
+        refillAmmo(bot.weapons, 0.25);
+      }
+      if (this.loot) {
+        const it = this.loot.nearest(bot.sim.state.pos);
+        if (it && it.up.dot(tg.up) > 0.9) this.take(bot, it);
+      }
     }
   }
 
@@ -1340,8 +1394,8 @@ export class BotManager {
     _v.copy(ahead).sub(pos);
     for (const p of this.lanePlans.get(lane.id)!) {
       const d2 = p.center.distanceToSquared(pos);
-      if (d2 > 8 * 8 || keys.has(p.key)) continue;
-      const front = d2 < 6.5 * 6.5 && _l.copy(p.center).sub(pos).dot(_v) > 0;
+      if (d2 > 10 * 10 || keys.has(p.key)) continue;
+      const front = d2 < 8.5 * 8.5 && _l.copy(p.center).sub(pos).dot(_v) > 0;
       if (!can || bot.kit.wood < 1) { if (front) blocked = true; continue; }
       const r = this.blocks.place(p, 'wood', bot.team, true);
       if (r === 'ok') { bot.kit.wood--; bot.built++; bot.builtAt = this.match.time; }
@@ -1370,6 +1424,21 @@ export class BotManager {
       const a = this.combat.target(bot.hurtBy);
       if (a && a.alive && !a.guard && a.team !== bot.team && eye.distanceTo(a.center) < bot.tune.sightRange * 1.3
         && this.combat.lineOfSight(eye, a.center)) best = a;
+    }
+    if (best && !best.npc) {
+      this.reportTarget(bot.team, best, bot.id);
+    } else if (!best) {
+      // Check shared team intelligence from teammates
+      const intel = this.teamIntel.get(bot.team);
+      if (intel && intel.by !== bot.id && this.match.time - intel.time < 6.0 && intel.target.alive && !intel.target.guard) {
+        const d = eye.distanceTo(intel.target.center);
+        if (d < bot.tune.sightRange * 1.35 && this.combat.lineOfSight(eye, intel.target.center)) {
+          best = intel.target;
+        } else if (bot.searchT <= 0 && intel.face && this.face(intel.face).up.dot(up) > 0.9 && eye.distanceTo(intel.pos) < 34) {
+          bot.searchPos = intel.pos.clone();
+          bot.searchT = 4.5;
+        }
+      }
     }
     return best;
   }
@@ -1426,7 +1495,13 @@ export class BotManager {
       const fired = weaponTick(bot.weapons, { fire: pull, reload: th.reload && !th.fire, select: th.select }, dt);
       if (fired && th.aim) {
         const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
-        if (!bot.sim.state.onGround && WEAPONS[fired].airPush) bot.sim.applyImpulse(th.aim.clone().normalize().multiplyScalar(-WEAPONS[fired].airPush));
+        if (fired === 'crossbow') {
+          const spec = crossbowSpec(bot.weapons.lastChargeT);
+          const xbowRecoil = 2.0 + spec.level * 2.8;
+          bot.sim.applyImpulse(th.aim.clone().normalize().multiplyScalar(-xbowRecoil));
+        } else if (!bot.sim.state.onGround && WEAPONS[fired].airPush) {
+          bot.sim.applyImpulse(th.aim.clone().normalize().multiplyScalar(-WEAPONS[fired].airPush));
+        }
         this.combat.use(fired, bot.id, eye, th.aim, bot.sim.state.vel, bot.target.up.clone().negate());
         bot.shotsTotal++;
         if (fired === 'grenade') { bot.pick = null; bot.nadeT = 14; }
@@ -1480,6 +1555,11 @@ export class BotManager {
     const input = emptyInput();
     input.yaw = s.yaw;
     input.pitch = s.pitch;
+    if (bot.target.stun && bot.target.stun > 0) {
+      bot.progressT = 0;
+      bot.status = 'оглушён';
+      return { input, fire: false, aim: null, kick: null, reload: false, select: ws.current };
+    }
     const up = upOf(s.frame, new Vector3());
     const eye = s.pos.clone().addScaledVector(up, EYE_OFFSET);
     const loc = this.locate(sim);
@@ -1503,6 +1583,11 @@ export class BotManager {
     const fresh = !!bot.enemy && bot.seenT === 0;
     bot.seenT = bot.enemy ? bot.seenT + dt : 0;
     bot.calmT = bot.enemy ? 0 : bot.calmT + dt;
+    bot.searchT = Math.max(0, bot.searchT - dt);
+    if (bot.enemy && !bot.enemy.npc) {
+      bot.searchPos = bot.enemy.center.clone();
+      bot.searchT = 5.0;
+    }
     bot.pauseT = Math.max(0, bot.pauseT - dt);
     bot.pickT -= dt;
     if (bot.pickT <= 0) bot.pick = null;
@@ -1577,19 +1662,33 @@ export class BotManager {
       atBed = arrived && r.end === 'bed';
       idle = arrived;
 
+      // Active target search: if we lost sight of an enemy (or a teammate shared target intel on this face), pursue their last known spot
+      const searching = !bot.enemy && bot.searchT > 0 && !!bot.searchPos && !onLane && !atBed && !r.lane && r.end !== 'bed' && !loc.hall
+        && Math.abs(_l.copy(bot.searchPos).sub(this.face(loc.face).origin).dot(up)) < 6;
+      const navGoal = searching && bot.searchPos ? bot.searchPos : goal;
+
       // local planner: if the straight line is blocked, pick a detour point that sees both ends
-      const push = !!r.push && last;
+      const push = !!r.push && last && !searching;
       bot.checkT -= dt;
       if (push || strict) bot.detour = null;
-      else if (!arrived && bot.checkT <= 0) {
-        bot.checkT = 0.5;
+      else if ((!arrived || searching) && bot.checkT <= 0) {
+        bot.checkT = 0.4;
         if (bot.detour) {
           const dp = this.toWorld(loc, bot.detour);
-          if (planar(dp).length() < 0.9 || this.clear(sim, s.pos, goal)) bot.detour = null;
-        } else if (!this.clear(sim, s.pos, goal)) bot.detour = this.findDetour(bot, loc, goal);
+          if (planar(dp).length() < 0.9 || this.clear(sim, s.pos, navGoal)) bot.detour = null;
+        } else if (!this.clear(sim, s.pos, navGoal)) bot.detour = this.findDetour(bot, loc, navGoal);
       }
-      const steerTo = bot.detour ? this.toWorld(loc, bot.detour) : carrot ? this.toWorld(loc, carrot) : goal;
-      if (!arrived) wish.copy(planar(steerTo)).normalize();
+      const steerTo = bot.detour ? this.toWorld(loc, bot.detour) : carrot ? this.toWorld(loc, carrot) : navGoal;
+      if (searching && bot.searchPos) {
+        const sd = planar(bot.searchPos).length();
+        if (sd > 2.0) {
+          wish.copy(planar(steerTo)).normalize();
+          label = 'ищет цель';
+        } else {
+          bot.searchT = 0;
+          bot.searchPos = null;
+        }
+      } else if (!arrived) wish.copy(planar(steerTo)).normalize();
       this.bridge(bot, r.lane, dt, steerTo);
       // out of wood on a bridge: stop at the edge, then go back for more (or try another way)
       let still = false;
@@ -1637,9 +1736,16 @@ export class BotManager {
             const top = bed.pos.clone().addScaledVector(bed.up, this.armed(bot, 1) ? BED_AIM : 0);
             const hit = this.match.firstHit(eye, top, sim.mover.collider);
             if (!hit) {
-              // shoot it from the stand (within the 5 m of the rule)
+              // shoot it from the stand (within the 5 m of the rule); wait while Stage 1 shield is invulnerable
               aimAt = top;
-              wantFire = true;
+              if (bed.invulnT > 0) {
+                wantFire = false;
+                refillAmmo(ws, 0.5);
+                if (isGun(ws.current) && ws.ammo[ws.current] < WEAPONS[ws.current].mag && ws.reserve[ws.current] > 0) reload = true;
+                label = 'ждёт уязвимости кристалла';
+              } else {
+                wantFire = true;
+              }
             } else {
               const block = this.blocks.byCollider(hit.collider.handle);
               const dir = top.clone().sub(eye).normalize();
@@ -1830,9 +1936,9 @@ export class BotManager {
     // greedy fallback: a reachable point that gets closest to the goal (re-planned from there)
     let greedy: XZ | null = null;
     let greedyD = s.pos.distanceTo(goal) - 1;
-    for (const r of [2.5, 5, 9, 14]) {
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2;
+    for (const r of [2, 4, 7, 11, 15]) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
         const c: XZ = [loc.x + Math.cos(a) * r, loc.z + Math.sin(a) * r];
         const w = this.toWorld(loc, c);
         const cost = w.distanceTo(s.pos) + w.distanceTo(goal);

@@ -1,0 +1,17 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ args: ['--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+page.on('pageerror', (e) => console.log('ERR', String(e)));
+await page.goto('http://localhost:5181/');
+await page.waitForFunction(() => !(document.getElementById('start-game') as HTMLButtonElement).disabled, null, { timeout: 120000 });
+await page.click('#start-game');
+await page.waitForFunction(() => (window as any).__game?.ready, null, { timeout: 120000 });
+const g = (fn: string) => page.evaluate(fn);
+await g('__game.skipIntro()');
+await page.waitForTimeout(500);
+await g('__game.play()');
+await page.waitForTimeout(600);
+console.log(await g(`(() => { const G = __game; const p0 = G.sim.state.pos.toArray().map(v=>v.toFixed(1)).join(','); for (let k = 0; k < 64*5; k++) G.local.onTick(); const p1 = G.sim.state.pos.toArray().map(v=>v.toFixed(1)).join(','); G.sim.state.pos.set(30, -136, 30); G.sim.mover.place(G.sim.state); G.local.snap(); return p0 + ' | ' + p1 + ' | ' + G.sim.state.pos.toArray().join(','); })()`));
+await page.waitForTimeout(500);
+console.log(await g(`__game.sim.state.pos.toArray().map(v=>v.toFixed(1)).join(',') + ' cam ' + __game.camera.position.toArray().map(v=>v.toFixed(1)).join(',')`));
+await browser.close();

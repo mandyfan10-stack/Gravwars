@@ -55,24 +55,21 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     }
     // E: shop when standing at it, otherwise pick up the item in reach (holding E at an enemy crystal: per frame)
     if (input.take('KeyE')) {
-      if (hands.invOpen) hands.toggleInventory();
-      else if (ui.shopOpen || ctx.nearShop()) ui.toggleShop();
+      if (ui.shopOpen || ctx.nearShop()) ui.toggleShop();
       else pockets.interact();
     }
-    if (input.take('KeyI') && !ui.shopOpen) hands.toggleInventory();
     if (ui.shopOpen) {
       if (input.take('KeyQ') || input.take('Tab')) ui.switchTab();
-    } else if (hands.invOpen) {
-      // over a cell: the number puts it into that hotbar slot
-      for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.assign(i - 1);
     } else {
       for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.select(i - 1);
-      // Q: next hotbar slot; with the shovel in hand Q is held for the radial menu (a tap still switches the slot)
+      // B: toggle building mode directly
+      if (input.take('KeyB')) hands.toggleBuild();
+      // Q: next hotbar slot; in build mode Q is held for the radial menu (a tap still switches the slot)
       if (input.take('KeyQ') && !build.active) hands.cycle(1);
       if (build.tapped) { build.tapped = false; hands.cycle(1); }
       if (input.take('KeyG')) hands.throwHeld(ctx.camera);
     }
-    if (input.take('KeyF')) pockets.eat();
+    if (input.take('KeyF')) hands.equipApple();
     if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
     if (input.take('KeyR')) player.pendingReload = true;
     if (input.take('KeyV')) player.kick();

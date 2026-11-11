@@ -14,12 +14,13 @@ const _k = new Vector3();
 const ease = (x: number) => 1 - (1 - x) ** 3;
 
 const WEAPON_ICON: Record<string, IconName> = {
-  fists: 'fist', kick: 'kick', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', rocket: 'rocket', grenade: 'grenade',
+  fists: 'fist', kick: 'kick', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade',
 };
 
 function killerName(t: Target) {
   if (t.team.startsWith('bum:')) return '<span class="npc">Бродяга</span>';
   if (t.team.startsWith('gang:')) return '<span class="npc">Бандит</span>';
+  if (t.team.startsWith('car:')) return '<span class="npc">Машина</span>';
   const team = getTeam(t.team as TeamId);
   return `<span style="color:${teamHex(team.color)}">${team.name}</span>`;
 }
@@ -79,7 +80,7 @@ export class DeathScreen {
       const why = d.cause === 'void' ? 'Упал в пустоту' : d.cause === 'fall' ? 'Разбился при падении' : 'Подорвал себя';
       this.by.innerHTML = `${icon('skull')}<small>${why}</small>`;
     }
-    this.time.textContent = d.final ? 'Можно досмотреть матч' : '';
+    this.time.innerHTML = d.final ? 'Нажми <kbd>Esc</kbd> — режим наблюдателя или главное меню' : '';
   }
 
   /**

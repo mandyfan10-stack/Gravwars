@@ -35,9 +35,10 @@ export function wishlist(eco: Economy, n: Needs): Wish[] {
   const ws = eco.weapons, inv = eco.blocks.inventory;
   const out: Wish[] = [];
   const add = (id: string, major = false, times = 1) => {
-    for (let i = 0; i < times; i++) out.push({ item: ITEM.get(id)!, major });
+    const item = ITEM.get(id);
+    if (!item) return;
+    for (let i = 0; i < times; i++) out.push({ item, major });
   };
-  const rounds = (w: typeof GUNS[number]) => ws.ammo[w] + ws.reserve[w];
   const hasGun = GUNS.some((w) => ws.owned[w]);
   if (n.impulse) {
     if (ws.ammo.grenade < 2) add('grenade');
@@ -45,27 +46,21 @@ export function wishlist(eco: Economy, n: Needs): Wish[] {
   }
   if (n.fisher && !eco.has('rod')) add('rod', true);
   if (!hasGun) add('pistol', true);
-  // a spare magazine for every gun it has
-  for (const w of GUNS) if (ws.owned[w] && rounds(w) < WEAPONS[w].mag * 2) add(`ammo-${w}`);
   if (n.raider && n.wood > 0) {
-    if (!eco.has('builder')) add('builder', true);
     const lack = n.wood - inv.wood - (eco.has('builder') ? 0 : BUILDER_WOOD);
     if (lack > 0) add('wood', true, Math.ceil(lack / 16));
   }
   const main = n.shotgun ? 'shotgun' : 'rifle';
   if (!ws.owned[main]) add(main, true);
   if (eco.items.medkit < MEDKITS) add('medkit');
-  for (const w of GUNS) if (ws.owned[w] && rounds(w) < WEAPONS[w].mag * 3) add(`ammo-${w}`);
   if (n.raider && ws.ammo.grenade < 2) add('grenade');
   if (n.fort > 0) {
-    if (!eco.has('builder')) add('builder', true);
     if (inv.stone + inv.metal < Math.min(n.fort, 16)) add('stone');
   }
   const second = n.shotgun ? 'rifle' : 'shotgun';
   if (!ws.owned[second]) add(second, true);
-  // crystals: the rocket launcher, then rockets (metal for the fort with what is left)
+  // crystals: the rocket launcher (metal for the fort with what is left)
   if (!ws.owned.rocket) add('rocket', true);
-  else if (ws.ammo.rocket + ws.reserve.rocket < 4) add('ammo-rocket');
   if (n.fort > 0 && ws.owned.rocket && inv.metal < 4) add('metal');
   return out;
 }

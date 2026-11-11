@@ -1,0 +1,31 @@
+import { Quaternion, Vector3 } from 'three';
+import { initRapier, buildPhysicsWorld } from '../../src/shared/physics';
+import { generateMap } from '../../src/shared/map';
+import { BlockSystem } from '../../src/shared/blocks';
+import { Match } from '../../src/shared/match';
+import { PlayerSim } from '../../src/shared/sim';
+import { Combat, MAX_HP } from '../../src/shared/combat';
+import { TICK_DT } from '../../src/shared/constants';
+const R = await initRapier();
+const map = generateMap();
+const w = buildPhysicsWorld(R, map);
+const ps = new PlayerSim(R, w, map, 'red');
+const bs = new BlockSystem(R, w, ps.mover.collider);
+const m = new Match(R, w, map, bs, 'red', ps.mover.collider);
+const blue = m.bed('blue');
+const st = map.statues.find((s) => s.team === 'blue')!;
+const bup = new Vector3(...st.up);
+const side = new Vector3(1, 0, 0).applyQuaternion(new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), bup));
+for (const b of [...bs.blocks.values()]) if (b.team === 'blue') bs.damageCollider(b.collider.handle, b.hp);
+const cb = new Combat(R, w, map, [ps.mover.collider]);
+m.attach(cb);
+cb.targets.push({ id: 0, team: 'red', center: new Vector3(), up: bup, hp: MAX_HP, alive: true, respawnIn: -1 });
+console.log('bup', bup.toArray(), 'side', side.toArray().map((v) => v.toFixed(2)));
+for (const k of [-10, -7, -5, 3, 6, 10]) {
+  const eye = blue.pos.clone().addScaledVector(bup, -4 + 1.625).addScaledVector(side, k);
+  const p = cb.fire('rifle', 0, eye, blue.pos.clone().sub(eye).normalize(), new Vector3(), bup.clone().negate());
+  for (let j = 0; j < 8; j++) cb.tick(TICK_DT);
+  const ev = cb.events.splice(0).filter((e) => e.type !== 'fire').map((e) => e.type + (e.type === 'crystal' ? `(far=${e.far})` : ''));
+  const wh = cb.rayWorld(eye, blue.pos);
+  console.log(k, 'dist', cb.crystalDistance(blue, eye).toFixed(2), ev.join(','), 'end', p.pos.distanceTo(blue.pos).toFixed(2), 'wallRay', wh ? (wh.t * eye.distanceTo(blue.pos)).toFixed(2) : '-');
+}

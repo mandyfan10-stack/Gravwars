@@ -1,0 +1,14 @@
+import { generateMap } from '../../src/shared/map';
+const t0 = performance.now();
+const m = generateMap();
+console.log('gen ms', (performance.now() - t0).toFixed(0));
+console.log('boxes', m.boxes.length, 'colliding', m.boxes.filter(b => b.collide).length, 'hulls', m.hulls.length, 'trees', m.trees.length, 'crates', m.crates.length);
+console.log('faces', m.faces.map(f => `${f.id}:${f.team}`).join(' '));
+console.log('lanes', m.lanes.map(l => l.id).join(' '));
+console.log('spawns', Object.keys(m.spawns), 'statues', m.statues.length, 'bases', m.bases.length, 'gens', m.crystalSpots.length, 'ponds', m.ponds.length);
+const l = m.lanes[0];
+console.log(l.id, l.pieces.length, l.pieces.slice(0, 2).map(p => p.kind + ' ' + p.center.map(v => v.toFixed(2))), l.pieces.slice(-2).map(p => p.kind + ' ' + p.center.map(v => v.toFixed(2))));
+console.log('pathA', JSON.stringify(l.pathA), 'pathB', JSON.stringify(l.pathB));
+const byMat: Record<string, number> = {};
+for (const b of m.boxes) byMat[b.mat] = (byMat[b.mat] ?? 0) + 1;
+console.log(byMat);

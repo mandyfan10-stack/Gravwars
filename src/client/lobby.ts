@@ -35,6 +35,7 @@ export class Lobby {
     });
     this.el.addEventListener('change', (e) => {
       const s = e.target as HTMLSelectElement;
+      if (s.dataset.act === 'money') { this.config.infiniteMoney = (e.target as HTMLInputElement).checked; this.save(); return; }
       if (s.dataset.act === 'level') { this.difficulty = s.value as Difficulty; this.onLevel(this.difficulty); }
     });
     this.render();
@@ -97,7 +98,8 @@ export class Lobby {
     this.el.innerHTML = `<header><h2>Состав матча</h2><p>Команда без игроков не получает острова. Клик по боту — сложность.</p></header>`
       + `<div class="teams">${teams}</div>`
       + `<footer><div class="quick"><button data-act="fill2">По 2 бота</button><button data-act="fill">Полные команды</button><button data-act="clear">Убрать ботов</button></div>`
-      + `<label>Новые боты <select data-act="level">${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label></footer>`
+      + `<label>Новые боты <select data-act="level">${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label>`
+      + `<label class="money"><input type="checkbox" data-act="money"${this.config.infiniteMoney ? ' checked' : ''}> Бесконечные деньги</label></footer>`
       + (problem ? `<p class="problem">${problem}</p>` : '');
     this.onChange(problem);
   }

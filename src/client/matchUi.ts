@@ -1,6 +1,6 @@
 import { BLOCK_MATERIALS } from '../shared/blocks';
 import { CURRENCY_LABEL, Economy, ITEMS, MAX_MEDKITS, SELLABLE, SHOP, SHOP_ROWS, SHOP_SHORT, ShopItem } from '../shared/economy';
-import { Bed, BED_HP, Match, MatchEvent } from '../shared/match';
+import { Bed, BED_HP, BED_REGEN, Match, MatchEvent } from '../shared/match';
 import { CRYSTAL } from '../shared/combat';
 import { getTeam, TEAMS } from '../shared/teams';
 import { isGun, WEAPONS } from '../shared/weapons';
@@ -125,6 +125,21 @@ export class MatchUi {
         this.hitBed = this.match.bed(e.team);
         this.hitAt = now;
       }
+    } else if (e.type === 'bedStage1Broken') {
+      this.hud.killfeed(e.team === this.match.team
+        ? 'Твой кристалл: Стадия I сломана · неуязвим 10 с!'
+        : `Кристалл ${name(e.team)}: Стадия I сломана · неуязвим 10 с!`);
+      this.hud.toast(
+        e.team === this.match.team
+          ? 'Стадия I сломана! Через 10 с взрыв оглушит врагов и воскресит павших!'
+          : `Кристалл ${ getTeam(e.team).name }: Стадия I сломана! Взрыв через 10 с!`,
+        '#7cf5ff',
+        2.6,
+      );
+      this.audio.alarm();
+    } else if (e.type === 'bedStageBlast') {
+      this.hud.killfeed(`Кристалл ${name(e.team)} взорвался · павшие воскрешены!`);
+      this.hud.toast('Взрыв кристалла: враги оглушены, мёртвые воскрешены!', '#a8ffef', 2.4);
     } else if (e.type === 'bedBroken') {
       this.hud.killfeed(e.team === this.match.team ? 'Твой кристалл разрушен!' : `Кристалл: ${name(e.team)} — разрушен`);
       this.hud.toast(e.team === this.match.team ? 'Кристалл потерян — смерть станет последней' : `Кристалл разрушен · осталось ${this.match.enemiesLeft}`,
@@ -142,9 +157,10 @@ export class MatchUi {
 
   /**
    * `sight`: the enemy crystal under the crosshair; `extraPrompt`: interaction hint from elsewhere (pick up an item,
-   * fishing); `click`: cursor click this frame.
+   * fishing); `click`: cursor click this frame; `actionProgress`: 0..1 progress for crossbow charge or apple eating.
    */
-  update(nearShop: boolean, sight: { bed: Bed; dist: number } | null, extraPrompt = '', click: HTMLElement | null = null) {
+  update(nearShop: boolean, sight: { bed: Bed; dist: number } | null, extraPrompt = '', click: HTMLElement | null = null,
+    actionProgress = 0, actionColor = '#66f7ff') {
     const m = this.match;
     if (this.shopOpen && !nearShop) this.toggleShop();
     if (this.shopOpen && click) this.click(click);
@@ -153,16 +169,22 @@ export class MatchUi {
       + (m.wallet.crystal ? `<span class="crystal" title="Кристаллы">${icon('crystal')}${m.wallet.crystal}</span>` : '')
       + `<span class="time">${formatTime(m.time)}</span>`;
 
-    const key = m.beds.map((b) => `${+b.alive}${m.membersAlive(b.team)}${+m.isOut(b.team)}`).join('');
+    const key = m.beds.map((b) => `${+b.alive}:${b.stage}:${Math.ceil(b.invulnT)}:${Math.ceil(b.hp)}:${+(b.calm >= BED_REGEN.delay)}:${m.membersAlive(b.team)}${+m.isOut(b.team)}`).join('|');
     if (key !== this.bedsKey) {
       this.bedsKey = key;
       this.bedsEl.innerHTML = TEAMS.filter((t) => m.beds.some((b) => b.team === t.id)).map((t) => {
         const bed = m.bed(t.id);
         const mine = t.id === m.team ? ' mine' : '';
         const out = m.isOut(t.id);
-        // without a crystal the team lives as long as its members: show how many are left
-        const inner = out ? icon('skull') : bed.alive ? icon('crystal') : `${icon('crystal')}<b>${m.membersAlive(t.id)}</b>`;
-        const state = out ? 'выбыли' : bed.alive ? 'кристалл цел' : `кристалл сломан, бойцов: ${m.membersAlive(t.id)}`;
+        const pct = Math.ceil((bed.hp / BED_HP) * 100);
+        const inv = bed.invulnT > 0;
+        const inner = out ? icon('skull') : !bed.alive ? `${icon('crystal')}<b>${m.membersAlive(t.id)}</b>`
+          : inv ? `${icon('crystal')}<b>${Math.ceil(bed.invulnT)}с</b>`
+          : bed.hp < BED_HP ? `${icon('crystal')}<b>${pct}%</b>`
+          : bed.stage === 2 ? `${icon('crystal')}<b>II</b>` : icon('crystal');
+        const state = out ? 'выбыли' : !bed.alive ? `кристалл сломан, бойцов: ${m.membersAlive(t.id)}`
+          : inv ? `неуязвим (${Math.ceil(bed.invulnT)} с до взрыва)`
+          : `стадия ${bed.stage === 1 ? 'I' : 'II'}, ${bed.hp < BED_HP ? `${pct}%${bed.calm >= BED_REGEN.delay ? ' (реген)' : ''}` : 'цел'}`;
         return `<span class="bed${bed.alive ? '' : ' dead'}${out ? ' out' : ''}${mine}" style="--c:${teamHex(t.color)}" title="${t.name}: ${state}">${inner}</span>`;
       }).join('') + `<span class="goal">врагов<b>${m.enemiesLeft}</b></span>`;
     }
@@ -171,19 +193,33 @@ export class MatchUi {
     const near = sight && sight.dist <= CRYSTAL.range;
     if (sight && !this.shopOpen && sight.dist < 20) {
       const name = getTeam(sight.bed.team).name;
-      prompt = near ? `Кристалл: ${name} — стреляй или бей` : `Кристалл: ${name} — подойди ближе, ломается только с ${CRYSTAL.range} м`;
+      if (sight.bed.invulnT > 0) {
+        prompt = `Кристалл: ${name} — неуязвим (${Math.ceil(sight.bed.invulnT)} с до взрыва!)`;
+      } else {
+        const stLabel = sight.bed.stage === 1 ? ' [Стадия I]' : ' [Стадия II]';
+        const regen = sight.bed.hp < BED_HP && sight.bed.calm >= BED_REGEN.delay ? ' · восстанавливается' : '';
+        prompt = (near ? `Кристалл: ${name}${stLabel} — стреляй или бей` : `Кристалл: ${name}${stLabel} — подойди ближе, ломается только с ${CRYSTAL.range} м`) + regen;
+      }
     } else if (nearShop && !this.shopOpen) prompt = '<b>E</b> магазин';
     else if (!this.shopOpen) prompt = extraPrompt;
     this.prompt.innerHTML = prompt;
     this.prompt.style.opacity = prompt ? '1' : '0';
-    // HP bar of the crystal you aim at within reach (or hit a moment ago)
-    const recent = performance.now() / 1000 - this.hitAt < 2.5 ? this.hitBed : null;
-    const bar = near ? sight!.bed : recent && sight?.bed === recent ? recent : null;
-    const show = !!bar && bar.alive;
-    this.breakEl.style.opacity = show ? '1' : '0';
-    if (show) {
-      this.breakBar.style.width = `${(bar!.hp / BED_HP) * 100}%`;
-      this.breakBar.style.background = teamHex(getTeam(bar!.team).color);
+    // Action bar (crossbow charge / apple eating) takes priority over crystal HP bar
+    if (actionProgress > 0) {
+      this.breakEl.style.opacity = '1';
+      this.breakBar.style.width = `${Math.min(100, actionProgress * 100)}%`;
+      this.breakBar.style.background = actionColor;
+    } else {
+      // HP bar of the crystal you aim at (or hit a moment ago, or your own crystal while damaged/regenerating)
+      const recent = performance.now() / 1000 - this.hitAt < 3.5 ? this.hitBed : null;
+      const ownBed = m.bed(m.team);
+      const bar = (sight && sight.dist < 20 ? sight.bed : null) ?? (recent && recent.alive ? recent : null) ?? (ownBed.alive && ownBed.hp < BED_HP ? ownBed : null);
+      const show = !!bar && bar.alive;
+      this.breakEl.style.opacity = show ? '1' : '0';
+      if (show) {
+        this.breakBar.style.width = bar!.invulnT > 0 ? `${(bar!.invulnT / 10) * 100}%` : `${(bar!.hp / BED_HP) * 100}%`;
+        this.breakBar.style.background = bar!.invulnT > 0 ? '#7cf5ff' : teamHex(getTeam(bar!.team).color);
+      }
     }
 
     this.shopEl.hidden = !this.shopOpen;
@@ -196,6 +232,7 @@ export class MatchUi {
     const cur = eco.wallet[item.currency];
     let status = '';
     if (item.kind === 'weapon' && item.weapon === 'grenade') status = `есть ${ws.ammo.grenade} из ${WEAPONS.grenade.mag}`;
+    else if (item.kind === 'weapon' && item.weapon === 'crossbow') status = 'заряд 0–3 ур.';
     else if (item.kind === 'weapon') {
       const w = WEAPONS[item.weapon];
       status = (w.pellets ?? 1) > 1 ? `${w.pellets} дробин` : w.radius ? `взрыв ${w.radius} м` : `магазин ${w.mag}`;
@@ -203,7 +240,7 @@ export class MatchUi {
     else if (item.kind === 'blocks') status = `есть ${eco.blocks.inventory[item.material]}`;
     else if (item.kind === 'item' && item.item === 'medkit') status = `есть ${eco.items.medkit} из ${MAX_MEDKITS}`;
     else if (item.id === 'builder') status = item.note ?? '';
-    else if (item.id === 'hook') status = 'до 30 м';
+    else if (item.id === 'hook') status = 'до 35 м';
     else if (item.id === 'rod') status = 'рыбалка';
     const owned = item.step ? eco.has(item.step) : item.kind === 'weapon' && isGun(item.weapon) && ws.owned[item.weapon];
     if (owned) return { cls: 'owned', status: 'куплено', why: 'Уже есть' };

@@ -1,0 +1,23 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ args: ['--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+page.on('pageerror', (e) => console.log('ERR', String(e)));
+await page.goto('http://localhost:5181/');
+await page.waitForFunction(() => !(document.getElementById('start-game') as HTMLButtonElement).disabled, null, { timeout: 120000 });
+await page.click('#start-game');
+await page.waitForFunction(() => (window as any).__game?.ready, null, { timeout: 120000 });
+const g = (fn: string) => page.evaluate(fn);
+await g('__game.skipIntro()');
+await page.waitForTimeout(500);
+await g('__game.play()');
+await g(`(() => { const G = __game, shop = (id) => G.eco.offers().find((o) => o.item.id === id).item; G.match.wallet.cash = 400; G.eco.buy(shop('hook')); })()`);
+await g(`(() => { const G = __game; G.sim.state.frame.identity(); G.sim.state.pos.set(18, -138 + 1.2, -30); G.sim.state.vel.set(0,0,0); G.sim.mover.place(G.sim.state); G.local.snap(); G.look(Math.PI / 2, 0.15); })()`);
+await page.waitForTimeout(300);
+await g(`(() => { const H = __game.hands; H.bare = false; H.bar.sel = H.bar.slotOf('hook'); })()`);
+await page.waitForTimeout(600);
+const st = () => g(`(() => { const G = __game, h = G.sim.hook; return JSON.stringify({ pitch: G.input.pitch.toFixed(2), yaw: G.input.yaw.toFixed(2), locked: G.input.locked, pos: G.sim.state.pos.toArray().map((v) => v.toFixed(1)), hook: h && { phase: h.phase, dist: h.dist.toFixed(1), t: h.t.toFixed(2) } }); })()`);
+console.log('before', await st());
+await g(`(() => { const G = __game; if (G.sim.throwHook(G.camera.position, G.camera.getWorldDirection(G.camera.position.clone()), G.combat.notCharacter)) G.hands.onHook(true); })()`);
+console.log('thrown', await st());
+for (let i = 0; i < 6; i++) { await page.waitForTimeout(100); console.log(i, await st()); if (i === 1) await page.screenshot({ path: process.argv[2] + '/hook-pull.png' }); }
+await browser.close();

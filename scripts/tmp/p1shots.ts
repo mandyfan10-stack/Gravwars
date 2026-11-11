@@ -1,0 +1,47 @@
+import { chromium } from 'playwright';
+const out = process.argv[2];
+const browser = await chromium.launch({ args: ['--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+const errors: string[] = [];
+page.on('pageerror', (e) => errors.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+await page.goto('http://localhost:5181/');
+await page.waitForFunction(() => !(document.getElementById('start-game') as HTMLButtonElement).disabled, null, { timeout: 120000 });
+await page.waitForTimeout(600);
+await page.screenshot({ path: `${out}/1-menu.png` });
+await page.click('#start-game');
+await page.waitForFunction(() => (window as any).__game?.ready, null, { timeout: 120000 });
+await page.waitForTimeout(900);
+await page.screenshot({ path: `${out}/2-intro.png` });
+await page.waitForTimeout(2600);
+const g = (fn: string) => page.evaluate(fn);
+await g('__game.play()');
+await page.waitForTimeout(800);
+await page.screenshot({ path: `${out}/3-hud.png` });
+// sprint along the road
+await g(`(() => { const G = __game; G.sim.state.pos.set(16, -432 + 1.2, 40); G.sim.state.vel.set(0,0,0); G.sim.mover.place(G.sim.state); G.local.snap(); G.look(0, 0); })()`);
+await page.keyboard.down('ShiftLeft'); await page.keyboard.down('KeyW');
+await page.waitForTimeout(1300);
+await page.screenshot({ path: `${out}/4-sprint.png` });
+const speed = await g(`(() => { const v = __game.sim.state.vel; return Math.hypot(v.x, v.z).toFixed(2); })()`);
+await page.keyboard.up('KeyW'); await page.keyboard.up('ShiftLeft');
+// build tool + radial menu
+await g(`(() => { const G = __game; G.eco.wallet.cash = 100; const b = (id) => G.eco.buy(G.ui ? G.eco.offers().find(o => o.item.id === id).item : null); b('builder'); })()`);
+await page.waitForTimeout(300);
+await g(`(() => { const H = __game.hands; H.bare = false; const i = H.bar.slotOf('builder'); if (i >= 0) H.bar.sel = i; })()`);
+await page.waitForTimeout(400);
+await page.keyboard.down('KeyQ');
+await page.waitForTimeout(250);
+await page.mouse.move(800, 450); await page.mouse.move(860, 470);
+await page.waitForTimeout(200);
+await page.screenshot({ path: `${out}/5-radial.png` });
+await page.keyboard.up('KeyQ');
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${out}/6-build.png` });
+// menu open: the world keeps going
+await g(`__game.input.setLocked(false)`);
+await page.waitForTimeout(600);
+await page.screenshot({ path: `${out}/7-menu-ingame.png` });
+console.log('speed', speed, 'build next', await g('__game.hands && __game.blocks && document.querySelector("#build-hud")?.textContent'));
+console.log('errors', errors);
+await browser.close();

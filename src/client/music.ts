@@ -118,3 +118,215 @@ export function playIntroMusic(c: AudioContext, volume: number) {
     },
   };
 }
+
+/**
+ * Looping atmospheric theme for the Main Menu: warm low pads, arpeggiated crystal bells, and deep bass pulse.
+ */
+export function playMenuMusic(c: AudioContext, volume: number) {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const master = c.createGain();
+  master.gain.value = Math.max(0.0001, volume * 0.55);
+  master.connect(c.destination);
+  const verb = c.createConvolver();
+  verb.buffer = impulse(c, 2.8, 2.2);
+  const wet = c.createGain();
+  wet.gain.value = 0.5;
+  verb.connect(wet).connect(master);
+  const bus = c.createGain();
+  bus.connect(master);
+  bus.connect(verb);
+  const activeNodes: AudioScheduledSourceNode[] = [];
+
+  const note = (type: OscillatorType, freq: number, at: number, len: number, vol: number, cutoff: number, attack = 0.08, release = 0.4, detune = 0) => {
+    if (stopped) return;
+    const o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain();
+    o.type = type; o.frequency.value = freq; o.detune.value = detune;
+    f.type = 'lowpass'; f.frequency.value = cutoff; f.Q.value = 0.7;
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(vol, at + attack);
+    g.gain.setValueAtTime(vol, at + Math.max(attack, len - release));
+    g.gain.linearRampToValueAtTime(0, at + len);
+    o.connect(f).connect(g).connect(bus);
+    o.start(at); o.stop(at + len + 0.05);
+    activeNodes.push(o);
+  };
+
+  const MENU_ARP: number[][] = [
+    [62, 65, 69, 74, 69, 65, 62, 57],
+    [58, 62, 65, 70, 65, 62, 58, 53],
+    [60, 65, 69, 72, 69, 65, 60, 57],
+    [60, 64, 67, 72, 67, 64, 60, 55],
+  ];
+
+  const barLen = 3.2;
+  const cycleLen = barLen * 4;
+
+  const scheduleCycle = () => {
+    if (stopped) return;
+    const t0 = c.currentTime + 0.08;
+    for (let b = 0; b < 4; b++) {
+      const at = t0 + b * barLen;
+      const ch = CHORDS[b % 4];
+      for (const n of ch) {
+        for (const d of [-6, 6]) {
+          note('sawtooth', midi(n), at, barLen + 0.3, 0.014, 620, 0.65, 0.7, d);
+        }
+      }
+      note('triangle', midi(ROOTS[b % 4]), at, barLen, 0.042, 280, 0.35, 0.6);
+      const arp = MENU_ARP[b % 4];
+      const step = barLen / arp.length;
+      for (let i = 0; i < arp.length; i++) {
+        note('sine', midi(arp[i]), at + i * step, step * 1.4, 0.022, 1800, 0.03, step * 0.9);
+      }
+    }
+    timer = setTimeout(scheduleCycle, (cycleLen - 0.15) * 1000);
+  };
+
+  scheduleCycle();
+
+  return {
+    setVolume(v: number) {
+      if (stopped) return;
+      master.gain.setTargetAtTime(Math.max(0.0001, v * 0.55), c.currentTime, 0.1);
+    },
+    stop(seconds = 0.8) {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      const t = c.currentTime;
+      master.gain.cancelScheduledValues(t);
+      master.gain.setValueAtTime(master.gain.value, t);
+      master.gain.linearRampToValueAtTime(0, t + seconds);
+      setTimeout(() => {
+        for (const n of activeNodes) try { n.stop(); } catch { /* already stopped */ }
+        master.disconnect();
+      }, seconds * 1000 + 80);
+    },
+  };
+}
+
+/**
+ * Somber musical cue played after the player dies (~3.6 s): descending minor motif with warm reverb.
+ */
+export function playDeathMusic(c: AudioContext, volume: number) {
+  if (!volume) return;
+  const t0 = c.currentTime + 0.05;
+  const master = c.createGain();
+  master.gain.value = volume * 0.75;
+  master.connect(c.destination);
+  const verb = c.createConvolver();
+  verb.buffer = impulse(c, 2.4, 2.5);
+  const wet = c.createGain();
+  wet.gain.value = 0.5;
+  verb.connect(wet).connect(master);
+  const bus = c.createGain();
+  bus.connect(master);
+  bus.connect(verb);
+
+  const tone = (type: OscillatorType, freq: number, at: number, len: number, vol: number, cutoff: number, attack = 0.06, release = 0.5, detune = 0) => {
+    const o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain();
+    o.type = type; o.frequency.value = freq; o.detune.value = detune;
+    f.type = 'lowpass'; f.frequency.value = cutoff;
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(vol, at + attack);
+    g.gain.setValueAtTime(vol, at + Math.max(attack, len - release));
+    g.gain.linearRampToValueAtTime(0, at + len);
+    o.connect(f).connect(g).connect(bus);
+    o.start(at); o.stop(at + len + 0.05);
+  };
+
+  // Low D-minor pad + descending bell motif (A4 -> F4 -> E4 -> D4)
+  for (const n of [38, 50, 53, 57]) {
+    for (const d of [-6, 6]) tone('sawtooth', midi(n), t0, 3.2, 0.02, 480, 0.25, 1.4, d);
+  }
+  const notes: [number, number, number][] = [
+    [0.0, 0.75, 69],
+    [0.65, 0.75, 65],
+    [1.3, 0.75, 64],
+    [1.95, 1.6, 62],
+  ];
+  for (const [off, len, m] of notes) {
+    tone('triangle', midi(m), t0 + off, len, 0.045, 1400, 0.04, len * 0.65);
+    tone('sine', midi(m - 12), t0 + off, len, 0.03, 900, 0.04, len * 0.65);
+  }
+  setTimeout(() => master.disconnect(), 4200);
+}
+
+/**
+ * Uplifting heroic musical cue played when the player respawns (~2.6 s): rising D-major / Sus4 fanfare.
+ */
+export function playRespawnMusic(c: AudioContext, volume: number) {
+  if (!volume) return;
+  const t0 = c.currentTime + 0.03;
+  const master = c.createGain();
+  master.gain.value = volume * 0.75;
+  master.connect(c.destination);
+  const verb = c.createConvolver();
+  verb.buffer = impulse(c, 2.0, 2.6);
+  const wet = c.createGain();
+  wet.gain.value = 0.45;
+  verb.connect(wet).connect(master);
+  const bus = c.createGain();
+  bus.connect(master);
+  bus.connect(verb);
+
+  const tone = (type: OscillatorType, freq: number, at: number, len: number, vol: number, cutoff: number, attack = 0.04, release = 0.35, detune = 0) => {
+    const o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain();
+    o.type = type; o.frequency.value = freq; o.detune.value = detune;
+    f.type = 'lowpass'; f.frequency.value = cutoff;
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(vol, at + attack);
+    g.gain.setValueAtTime(vol, at + Math.max(attack, len - release));
+    g.gain.linearRampToValueAtTime(0, at + len);
+    o.connect(f).connect(g).connect(bus);
+    o.start(at); o.stop(at + len + 0.05);
+  };
+
+  // Rising arpeggio (D4 -> A4 -> D5 -> F#5) + warm D-major chord
+  const fanfare: [number, number, number][] = [
+    [0.0, 0.45, 62],
+    [0.18, 0.45, 69],
+    [0.36, 0.55, 74],
+    [0.56, 1.6, 78],
+  ];
+  for (const [off, len, m] of fanfare) {
+    tone('sawtooth', midi(m), t0 + off, len, 0.036, 1900, 0.03, len * 0.6);
+    tone('triangle', midi(m - 12), t0 + off, len, 0.032, 1400, 0.03, len * 0.6);
+  }
+  for (const n of [50, 57, 62, 66]) {
+    for (const d of [-5, 5]) tone('sawtooth', midi(n), t0 + 0.55, 1.8, 0.018, 1200, 0.1, 1.1, d);
+  }
+  setTimeout(() => master.disconnect(), 3000);
+}
+
+/** High-level music controller wrapping menu, death, and respawn cues. */
+export class GameMusic {
+  private menuLoop: ReturnType<typeof playMenuMusic> | null = null;
+  constructor(private audio: { readonly context: AudioContext | null; volume: number }) {}
+
+  playMenuMusic() {
+    const c = this.audio.context;
+    if (!c) return;
+    if (this.menuLoop) return;
+    this.menuLoop = playMenuMusic(c, this.audio.volume);
+  }
+
+  stopMenuMusic(seconds = 0.8) {
+    if (!this.menuLoop) return;
+    this.menuLoop.stop(seconds);
+    this.menuLoop = null;
+  }
+
+  playDeathMusic() {
+    const c = this.audio.context;
+    if (!c) return;
+    playDeathMusic(c, this.audio.volume);
+  }
+
+  playRespawnMusic() {
+    const c = this.audio.context;
+    if (!c) return;
+    playRespawnMusic(c, this.audio.volume);
+  }
+}

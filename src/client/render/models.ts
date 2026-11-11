@@ -207,14 +207,31 @@ export function decorModel(kind: DecorKind): DecorModel {
  * instance colour.
  */
 export function canopyGeometry(): BufferGeometry {
-  const g = new IcosahedronGeometry(1, 1).toNonIndexed();
-  return bandShade(g, [0.62, 0.86, 1.08]);
+  const base = new IcosahedronGeometry(1, 2);
+  const pos = base.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    // Subtle organic tufts so the crown reads as layered foliage clusters rather than a plain sphere
+    const n = 1 + 0.08 * Math.sin(x * 5.1 + y * 3.7) * Math.cos(z * 4.9 - y * 2.3);
+    const flatBottom = y < -0.2 ? 0.86 : 1;
+    pos.setXYZ(i, x * n, y * n * flatBottom, z * n);
+  }
+  const g = base.toNonIndexed();
+  return bandShade(g, [0.56, 0.75, 0.94, 1.12]);
 }
 
-/** Pine tier: an open-bottomed cone with a shaded lower rim. */
+/** Pine tier: an open-bottomed cone with a flared, shaded lower rim. */
 export function pineGeometry(): BufferGeometry {
-  const g = new ConeGeometry(1, 1, 7, 2, false).translate(0, 0.5, 0).toNonIndexed();
-  return bandShade(g, [0.6, 0.82, 1.0]);
+  const base = new ConeGeometry(1, 1, 9, 3, false).translate(0, 0.5, 0);
+  const pos = base.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const a = Math.atan2(z, x);
+    const scallop = 1 + (1 - y) * 0.1 * Math.cos(a * 9);
+    pos.setXYZ(i, x * scallop, y - (1 - y) * 0.05 * Math.abs(Math.sin(a * 4.5)), z * scallop);
+  }
+  const g = base.toNonIndexed();
+  return bandShade(g, [0.55, 0.74, 0.9, 1.06]);
 }
 
 /** Per triangle: a shade picked by its height in the geometry's bounds (bands, no smooth ramp). */

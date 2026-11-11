@@ -31,6 +31,7 @@ export function buildPropView(map: MapData, assets: GameAssets): Group {
     m.position.set(...d.pos);
     m.quaternion.set(...d.quat);
     m.receiveShadow = true;
+    m.renderOrder = 2;
     group.add(m);
   }
   return group;
@@ -95,7 +96,7 @@ function decalMaterial(d: DecalDef) {
   const opaque = d.kind === 'text' && d.text === 'МАГАЗИН';
   return new MeshStandardMaterial({
     map: tex, transparent: !opaque, roughness: 0.85, side: opaque ? DoubleSide : undefined,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, depthWrite: opaque,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, depthWrite: opaque,
     emissive: new Color(0x000000),
   });
 }

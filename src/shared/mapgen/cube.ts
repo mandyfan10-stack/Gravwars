@@ -23,15 +23,16 @@ export function faceFrame(id: FaceId): Frame {
   return new Frame(up.clone().multiplyScalar(-S), frameForUp(up));
 }
 
+const _ramps = (S - FH) / PIECE_LEVEL;
 /** Bridge geometry over a cube edge (all distances from the face centre, m): see LaneDef. */
 export const LANE = {
   /** Side coordinate (along the edge) of the floors on face a / of the landing on face b (cell centres). */
-  floorS: -51,
-  landS: 51,
+  floorS: -(_ramps + 1) * PIECE_CELL / 2,
+  landS: (_ramps + 1) * PIECE_CELL / 2,
   /** Out coordinate of the ramp column (the cell next to the corner). */
   rampO: S - PIECE_CELL / 2,
   floors: (S - FH) / PIECE_CELL,
-  ramps: (S - FH) / PIECE_LEVEL,
+  ramps: _ramps,
 };
 
 /** Road graph: corners of the tiles, edges along the roads between two tiles. */
@@ -49,11 +50,19 @@ function roadGraph(tiles: Tile[]) {
   };
   const edges: [number, number][] = [];
   const H = TILE / 2;
-  for (const t of tiles) for (const [di, dj] of [[1, 0], [0, 1]] as XZ[]) {
-    if (!has.has(key(t.i + di, t.j + dj))) continue;
+  const edgeSet = new Set<string>();
+  const addEdge = (u: number, v: number) => {
+    if (u === v) return;
+    const k = u < v ? `${u}:${v}` : `${v}:${u}`;
+    if (!edgeSet.has(k)) { edgeSet.add(k); edges.push([u, v]); }
+  };
+  for (const t of tiles) for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as XZ[]) {
+    const nb = has.has(key(t.i + di, t.j + dj));
+    const mainAvenue = (di !== 0 && t.i === 0) || (dj !== 0 && t.j === 0);
+    if (!nb && !mainAvenue) continue;
     const bx = t.i * TILE + di * H, bz = t.j * TILE + dj * H;
-    const ax = dj, az = di; // along the border
-    edges.push([node(bx - ax * H, bz - az * H), node(bx + ax * H, bz + az * H)]);
+    const ax = Math.abs(dj), az = Math.abs(di); // along the border
+    addEdge(node(bx - ax * H, bz - az * H), node(bx + ax * H, bz + az * H));
   }
   return { nodes, edges };
 }
@@ -100,11 +109,22 @@ const POOL: TileKind[] = [
 ];
 
 function planTiles(rng: Rng, team: TeamDef | null): Tile[] {
+  // Compact ~4x4 island layout with ruined/irregular borders:
+  // Center (0,0) = base tile, surrounded by a road loop, then inner ring + 2 random tiles on each outer side (no corners).
+  const coords: XZ[] = [[0, 0]];
+  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) if (i !== 0 || j !== 0) coords.push([i, j]);
+  // 2 outer tiles per side (omitting corners and one side tile each so the perimeter is jagged/ruined)
+  coords.push([0, -2], [1, -2]);
+  coords.push([0, 2], [rng.pick([-1, 1]), 2]);
+  coords.push([-2, 0], [-2, rng.pick([-1, 1])]);
+  coords.push([2, 0], [2, rng.pick([-1, 1])]);
+
   const special = new Map<string, TileKind>();
+  const ring1 = coords.filter(([i, j]) => Math.max(Math.abs(i), Math.abs(j)) === 1);
   const free = () => {
     for (;;) {
-      const i = rng.int(-N, N), j = rng.int(-N, N);
-      if (!special.has(key(i, j)) && Math.max(Math.abs(i), Math.abs(j)) > 0) return key(i, j);
+      const [i, j] = rng.pick(ring1);
+      if (!special.has(key(i, j))) return key(i, j);
     }
   };
   if (team) {
@@ -119,16 +139,16 @@ function planTiles(rng: Rng, team: TeamDef | null): Tile[] {
     special.set(free(), 'museum');
     special.set(free(), rng.pick(['park', 'pond'] as TileKind[]));
   }
-  const tiles: Tile[] = [];
-  for (let i = -N; i <= N; i++) for (let j = -N; j <= N; j++) tiles.push({ i, j, kind: special.get(key(i, j)) ?? rng.pick(POOL) });
-  return tiles;
+  return coords.map(([i, j]) => ({ i, j, kind: special.get(key(i, j)) ?? rng.pick(POOL) }));
 }
 
-/** Ground slabs, sidewalks, road markings, the kerb along the rim (open where a bridge lane leaves). */
+/** Ground slabs, sidewalks, road markings, and ruined/broken borders (open where a bridge lane leaves). */
 function faceGround(b: Builder, p: FacePlan) {
   const { f, tiles, seams } = p;
   const H = TILE / 2;
+  const has = new Set(tiles.map((t) => key(t.i, t.j)));
   const nearSeam = (x: number, z: number, r: number) => seams.some((s) => Math.hypot(s[0] - x, s[1] - z) < r);
+  const brng = new Rng(p.id.charCodeAt(0) * 131 + p.id.charCodeAt(1) * 17);
   for (const t of tiles) {
     const cx = t.i * TILE, cz = t.j * TILE;
     const hole = PONDS[t.kind] ? pondRect(t.kind, cx, cz) : null;
@@ -144,7 +164,7 @@ function faceGround(b: Builder, p: FacePlan) {
     if (!OWN_GROUND.has(t.kind)) b.block(f, cx, 0, cz, BLOCK, SW / 2, BLOCK, 0xcfc4ac, 'paving');
 
     for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as XZ[]) {
-      const rim = Math.abs(t.i + di) > N || Math.abs(t.j + dj) > N;
+      const rim = !has.has(key(t.i + di, t.j + dj));
       // side frame: local +z points out of the tile through this side, x runs along it
       const s = f.sub(cx + di * H, 0, cz + dj * H, Math.atan2(di, dj));
       if (!rim) {
@@ -152,18 +172,44 @@ function faceGround(b: Builder, p: FacePlan) {
         if (di + dj > 0) for (let a = -H + 7; a <= H - 7; a += 3.6) b.box(s, a, 0.015, 0, 0.9, 0.012, 0.08, 0xece6d6, 'paint', false);
         continue;
       }
-      // the rim: a low kerb (step over it, or build from it), team-coloured light on top; open at bridge lanes
+      // If this rim is an internal indentation (where an outer tile is missing), keep a 4 m road apron so corner road nodes stay walkable
+      const outerFaceRim = Math.abs(t.i + di) > N || Math.abs(t.j + dj) > N;
+      if (!outerFaceRim) {
+        b.box(s, 0, -0.75, 2.0, H, 0.75, 2.0, 0x77736d, 'asphalt');
+        b.box(s, 0, -2.1, 1.7, H, 0.6, 1.7, 0x8f8a80, 'concrete');
+      }
+      // Ruined / broken border: jagged concrete & asphalt ledges, gaps, rubble chunks and exposed rebar instead of a straight wall
+      const zOff = outerFaceRim ? 0 : 4.0;
       for (let a = -H; a < H; a += PIECE_CELL) {
         const m = a + PIECE_CELL / 2;
         const w = new Vector3(...s.p(m, 0, -0.3));
         const l = f.local(w);
-        if (nearSeam(l.x, l.z, 4)) {
+        if (nearSeam(l.x, l.z, 4.5)) {
           // bridge start: chevrons on the road
-          for (let k = 0; k < 3; k++) b.box(s, m, 0.015, -1.2 - k * 1.4, 1.6, 0.012, 0.25, p.team ? p.team.color : 0xe8e2d0, 'paint', false);
+          for (let k = 0; k < 3; k++) b.box(s, m, 0.015, -1.2 - k * 1.4, 1.4, 0.012, 0.25, p.team ? p.team.color : 0xe8e2d0, 'paint', false);
           continue;
         }
-        b.box(s, m, 0.15, -0.25, PIECE_CELL / 2, 0.15, 0.25, 0xb0a99a, 'concrete');
-        b.box(s, m, 0.33, -0.25, PIECE_CELL / 2 - 0.05, 0.03, 0.05, p.team ? p.team.color : 0xe8e2d0, 'glow', false);
+        // jagged broken slab teeth sticking out into the void
+        if (brng.chance(0.72)) {
+          const jut = brng.range(0.45, 1.85);
+          const drop = brng.range(0.04, 0.32);
+          const thick = brng.range(0.45, 0.95);
+          b.box(s, m + brng.range(-0.25, 0.25), -drop - thick, zOff + jut, PIECE_CELL * brng.range(0.32, 0.52), thick, jut,
+            brng.chance(0.5) ? 0x77736d : 0x8f8a80, brng.chance(0.5) ? 'asphalt' : 'concrete', false);
+        }
+        // lower broken under-slab shelf & sticking-out rebar
+        if (brng.chance(0.55)) {
+          const jut2 = brng.range(0.8, 2.6);
+          b.box(s, m, -2.1, zOff + jut2 * 0.7, PIECE_CELL * 0.42, 0.55, jut2 * 0.7, 0x847e74, 'concrete', false);
+          b.box(s, m + brng.range(-0.5, 0.5), -1.35, zOff + jut2 + 0.4, 0.06, 0.06, 0.9, 0x3b3530, 'metal', false);
+        }
+        // broken kerb / rubble fragments along the edge (kept clear of the road x = TILE/2 so tests can walk off cleanly)
+        const onMainRoad = Math.abs(l.x - H) < 3.5 || Math.abs(l.x + H) < 3.5 || Math.abs(l.z - H) < 3.5 || Math.abs(l.z + H) < 3.5;
+        if (!onMainRoad && brng.chance(0.48)) {
+          const rh = brng.range(0.14, 0.36);
+          b.box(s, m + brng.range(-0.4, 0.4), rh, zOff - brng.range(0.2, 0.7), brng.range(0.4, 0.95), rh, brng.range(0.28, 0.55),
+            brng.chance(0.6) ? 0x9e9789 : 0x6f6b65, 'stone', false);
+        }
       }
     }
   }
@@ -173,6 +219,7 @@ function faceGround(b: Builder, p: FacePlan) {
 function faceStreets(b: Builder, p: FacePlan, rng: Rng) {
   const { f, tiles, seams } = p;
   const H = TILE / 2;
+  const has = new Set(tiles.map((t) => key(t.i, t.j)));
   const furnished = new Set<TileKind>(['tower', 'office', 'parking', 'museum', 'market', 'plaza', 'square']);
   const clear = (x: number, z: number) =>
     seams.some((s) => Math.hypot(s[0] - x, s[1] - z) < 12) // bridge starts
@@ -181,7 +228,7 @@ function faceStreets(b: Builder, p: FacePlan, rng: Rng) {
     const cx = t.i * TILE, cz = t.j * TILE;
     if (t.kind !== 'hall') for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) lamp(b, f, cx + sx * (BLOCK - 0.5), cz + sz * (BLOCK - 0.5), Math.atan2(sx, sz));
     for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as XZ[]) {
-      const rim = Math.abs(t.i + di) > N || Math.abs(t.j + dj) > N;
+      const rim = !has.has(key(t.i + di, t.j + dj));
       if (furnished.has(t.kind)) {
         const s = f.sub(cx + di * (BLOCK - 1), 0, cz + dj * (BLOCK - 1), Math.atan2(di, dj));
         if (rng.chance(0.5)) bench(b, s, rng.range(-5, 5), 0.2, Math.PI);
@@ -244,21 +291,8 @@ function genLane(a: FacePlan, b: FacePlan): Omit<LaneDef, 'nodeA' | 'nodeB'> {
   };
 }
 
-/** Glowing beams along the cube edges, just outside the faces (they frame the gaps; no collision). */
-function edgeBeams(b: Builder) {
-  const w = new Frame(new Vector3(), new Quaternion());
-  for (let i = 0; i < FACE_IDS.length; i++) for (let j = i + 1; j < FACE_IDS.length; j++) {
-    const A = new Vector3(...FACE_UP[FACE_IDS[i]]), B = new Vector3(...FACE_UP[FACE_IDS[j]]);
-    if (Math.abs(A.dot(B)) > 0.5) continue;
-    const e = new Vector3().crossVectors(A, B);
-    const half = (r: number, len: number): [number, number, number] =>
-      [Math.abs(e.x) > 0.5 ? len : r, Math.abs(e.y) > 0.5 ? len : r, Math.abs(e.z) > 0.5 ? len : r];
-    const c = A.clone().add(B).multiplyScalar(-(S + 1.2));
-    b.box(w, c.x, c.y, c.z, ...half(1.2, S + 2.4), 0x2c3036, 'metal', false);
-    const g = A.clone().add(B).multiplyScalar(-(S + 0.06));
-    b.box(w, g.x, g.y, g.z, ...half(0.06, S), 0xbfe8ff, 'glow', false);
-  }
-}
+/** Edge beams disabled so the skybox city horizon blends seamlessly between islands. */
+function edgeBeams(_b: Builder) {}
 
 // --- map ---------------------------------------------------------------------------------------
 

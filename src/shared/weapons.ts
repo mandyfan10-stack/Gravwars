@@ -1,6 +1,34 @@
 /** Weapon definitions + per-player weapon state machine (shared by client prediction and server). */
-export type WeaponId = 'fists' | 'pistol' | 'shotgun' | 'rifle' | 'rocket' | 'grenade';
-export const WEAPON_ORDER: WeaponId[] = ['fists', 'pistol', 'shotgun', 'rifle', 'rocket', 'grenade'];
+export type WeaponId = 'fists' | 'pistol' | 'shotgun' | 'rifle' | 'crossbow' | 'rocket' | 'grenade';
+export const WEAPON_ORDER: WeaponId[] = ['fists', 'pistol', 'shotgun', 'rifle', 'crossbow', 'rocket', 'grenade'];
+
+export interface CrossbowLevel {
+  level: 0 | 1 | 2 | 3;
+  /** Final HP damage (raw). */
+  damage: number;
+  blockDamage: number;
+  /** Projectile width in meters (diameter = 2 * radius). */
+  width: number;
+  /** Post-shot reload / cooldown: 0.5 s + 1 s * level. */
+  reload: number;
+  /** Knockback multiplier (scales with charge level). */
+  push: number;
+  speed: number;
+}
+
+export const CROSSBOW_CHARGE_RATE = 1.5;
+
+export const CROSSBOW_LEVELS: readonly CrossbowLevel[] = [
+  { level: 0, damage: 5, blockDamage: 15, width: 0.25, reload: 0.375, push: 0.8, speed: 180 },
+  { level: 1, damage: 10, blockDamage: 35, width: 1.0, reload: 1.125, push: 2.2, speed: 45 },
+  { level: 2, damage: 25, blockDamage: 75, width: 1.75, reload: 1.875, push: 4.5, speed: 24 },
+  { level: 3, damage: 60, blockDamage: 140, width: 2.5, reload: 2.625, push: 8.5, speed: 5 },
+];
+
+export function crossbowSpec(chargeT: number): CrossbowLevel {
+  const lvl = Math.min(3, Math.max(0, Math.floor(chargeT + 1e-6))) as 0 | 1 | 2 | 3;
+  return CROSSBOW_LEVELS[lvl];
+}
 
 export interface WeaponDef {
   id: WeaponId;
@@ -82,50 +110,55 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     ...base, id: 'fists', name: 'Кулаки', speed: 0, gravityScale: 0, windScale: 0, damage: 10, blockDamage: 12, headMul: 1.25,
     interval: 0.42, auto: true, mag: 0, life: 0, reach: 2.3,
   },
-  // 9×19 mm self-loading pistol: a slow bright tracer, stopped by a wooden wall. gravityScale keeps the drop of a
-  // real 360 m/s bullet at the slow flight speed: (150 / 360)²
+  // 9×19 mm self-loading pistol: 2x ballistics, +25% bullet damage
   pistol: {
-    ...base, id: 'pistol', name: 'Пистолет', speed: 150, power: 360, gravityScale: 0.17, windScale: 1, damage: 9, blockDamage: 26, headMul: 2,
-    interval: 0.12, mag: 15, reload: 1.5, reloadEmpty: 1.9, life: 3, drag: 0.0019, minEnergy: 0.3,
-    spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008, airPush: 1.6,
+    ...base, id: 'pistol', name: 'Пистолет', speed: 150, power: 360, gravityScale: 0.34, windScale: 0.5, damage: 10, blockDamage: 26, headMul: 2,
+    interval: 0.12, mag: 15, reload: 1.69, reloadEmpty: 2.14, life: 3, drag: 0.0019, minEnergy: 0.3,
+    spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008, airPush: 2.8,
   },
-  // pump shotgun: 8 pellets in a fixed cone, deadly up close, the pellets lose their bite after ~20 m
+  // pump shotgun: 8 pellets in a fixed cone, 2x ballistics, damage 11, +50% owner pushback
   shotgun: {
-    ...base, id: 'shotgun', name: 'Дробовик', speed: 140, power: 420, pellets: 8, cone: 0.065, push: 0.35, gravityScale: 0.15, windScale: 1,
-    damage: 14, blockDamage: 12, headMul: 1.5, interval: 0.8, mag: 6, reload: 2.4, reloadEmpty: 2.8, life: 1.2, drag: 0.012, minEnergy: 0.15,
-    moveSpread: 0.02, recoil: 0.075, recoilYaw: 0.012, airPush: 4.5,
+    ...base, id: 'shotgun', name: 'Дробовик', speed: 140, power: 420, pellets: 8, cone: 0.065, push: 0.35, gravityScale: 0.3, windScale: 0.5,
+    damage: 11, blockDamage: 12, headMul: 1.5, interval: 0.8, mag: 6, reload: 2.7, reloadEmpty: 3.15, life: 1.2, drag: 0.012, minEnergy: 0.15,
+    moveSpread: 0.02, recoil: 0.075, recoilYaw: 0.012, airPush: 10.5,
   },
-  // 5.45×39 mm assault rifle, 650 rounds per minute: the flattest tracer, goes through a wooden wall
+  // 5.45×39 mm assault rifle, 650 rounds per minute: 2x ballistics, +25% bullet damage
   rifle: {
-    ...base, id: 'rifle', name: 'Автомат', speed: 210, power: 880, gravityScale: 0.06, windScale: 1, damage: 7, blockDamage: 28, headMul: 2,
-    interval: 0.092, auto: true, mag: 30, reload: 2.1, reloadEmpty: 2.6, life: 3, drag: 0.0008, minEnergy: 0.3,
-    spread: 0.0025, bloom: 0.0045, moveSpread: 0.035, recoil: 0.013, recoilYaw: 0.006, airPush: 0.7,
+    ...base, id: 'rifle', name: 'Автомат', speed: 210, power: 880, gravityScale: 0.12, windScale: 0.5, damage: 7, blockDamage: 28, headMul: 2,
+    interval: 0.092, auto: true, mag: 30, reload: 2.36, reloadEmpty: 2.925, life: 3, drag: 0.0008, minEnergy: 0.3,
+    spread: 0.0025, bloom: 0.0045, moveSpread: 0.035, recoil: 0.013, recoilYaw: 0.006, airPush: 1.5,
   },
-  // single-shot rocket launcher: a slow rocket flying straight, it blows up on contact (2.5 m, 50 HP at the centre)
+  // crossbow: hold LMB to charge (levels 0..3, 1s per level), release to fire; RMB zooms
+  crossbow: {
+    ...base, id: 'crossbow', name: 'Арбалет', speed: 180, power: 650, gravityScale: 0, windScale: 0, damage: 10, raw: true,
+    blockDamage: 40, headMul: 1.5, interval: 0.5, mag: 1, reload: 0.375, reloadEmpty: 0.375, life: 16,
+    drag: 0, minEnergy: 1, recoil: 0.025, recoilYaw: 0.004, airPush: 3.2,
+  },
+  // single-shot rocket launcher: 2x ballistics, +70% rocket damage (80 * 1.7 = 136), +50% radius (4.5 -> 6.75)
   rocket: {
-    ...base, id: 'rocket', name: 'Ракетница', speed: 36, gravityScale: 0, windScale: 0, damage: 50, raw: true, explodeOnHit: true,
-    blockDamage: 95, interval: 0.9, mag: 1, reload: 1.7, reloadEmpty: 1.7, life: 5,
-    radius: 2.5, knockback: 15, selfMul: 0.4, recoil: 0.05, recoilYaw: 0.01, airPush: 3,
+    ...base, id: 'rocket', name: 'Ракетница', speed: 36, gravityScale: 0, windScale: 0, damage: 136, raw: true, explodeOnHit: true,
+    blockDamage: 272, interval: 0.9, mag: 1, reload: 1.91, reloadEmpty: 1.91, life: 5,
+    radius: 6.75, knockback: 20, selfMul: 0.4, recoil: 0.05, recoilYaw: 0.01, airPush: 5.0,
   },
   grenade: {
     ...base, id: 'grenade', name: 'Граната', speed: 22, gravityScale: 1, windScale: 0.6, damage: 45, blockDamage: 75,
     interval: 0.7, mag: 4, life: 6, inherit: 0.6,
-    fuse: 2.5, radius: 5.5, bounce: 0.45, knockback: 16, selfMul: 0.35,
+    fuse: 2.5, radius: 5.5, bounce: 0.22, knockback: 16, selfMul: 0.35,
   },
 };
 
 /** Punches: everyone within the reach and this cone (cos of the half-angle) is hit; the push, m/s. */
 export const MELEE = { cos: Math.cos(0.8), push: 5.5, lift: 0.3 };
 /**
- * Kick (V): everyone and every crate / barrel in a wide cone in front. `damage` is final (HP); cooldown `cdHit` s
- * after kicking something, `cdMiss` after a kick into the air.
+ * Kick (V): everyone and every crate / barrel in a wide cone in front. `damage` is final (HP); cooldown `cdHit = 2` s
+ * after hitting a player/bot/NPC, `cdMiss = 0.1` s on a miss or wall/prop hit. Does not recharge in the air.
  */
-export const KICK = { reach: 2.4, cos: Math.cos(1), damage: 10, push: 9, lift: 0.35, propSpeed: 9, cdHit: 3, cdMiss: 0.7 };
+export const KICK = { reach: 2.4, cos: Math.cos(1), damage: 10, push: 3.6, lift: 0.14, propSpeed: 3.6, cdHit: 2, cdMiss: 0.1, recoilDist: 0.6, recoilPush: 3.4, wallRecoilPush: 5.8 };
 
 /** Guns that use a magazine + spare ammo bought in the shop. */
-export const isGun = (w: WeaponId) => w === 'pistol' || w === 'rifle' || w === 'shotgun' || w === 'rocket';
+export const isGun = (w: WeaponId) => w === 'pistol' || w === 'rifle' || w === 'shotgun' || w === 'crossbow' || w === 'rocket';
 /** Guns in the order a fighter prefers them when nothing better is said. */
-export const GUNS_BEST_FIRST: WeaponId[] = ['rifle', 'shotgun', 'pistol', 'rocket'];
+export const GUNS_BEST_FIRST: WeaponId[] = ['rifle', 'crossbow', 'shotgun', 'pistol', 'rocket'];
 
 export interface WeaponState {
   current: WeaponId;
@@ -148,21 +181,29 @@ export interface WeaponState {
   /** Kick (V) cooldown left, s, and its full length (HUD). */
   kickCd: number;
   kickCdTotal: number;
+  /** Crossbow charging state (LMB held) and charge time accumulated, s. */
+  charging: boolean;
+  chargeT: number;
+  /** Charge time & level of the most recently released crossbow bolt. */
+  lastChargeT: number;
+  lastChargeLevel: 0 | 1 | 2 | 3;
 }
 
 export interface ShootInput {
   fire: boolean;
   reload: boolean;
   select: WeaponId | null;
+  airborne?: boolean;
 }
 
-const none = (): Record<WeaponId, number> => ({ fists: 0, pistol: 0, shotgun: 0, rifle: 0, rocket: 0, grenade: 0 });
+const none = (): Record<WeaponId, number> => ({ fists: 0, pistol: 0, shotgun: 0, rifle: 0, crossbow: 0, rocket: 0, grenade: 0 });
 
 /** Everyone starts with bare fists; guns, grenades and ammo come from the shop. */
 export function createWeaponState(): WeaponState {
   return {
-    current: 'fists', owned: { fists: true, pistol: false, shotgun: false, rifle: false, rocket: false, grenade: false },
+    current: 'fists', owned: { fists: true, pistol: false, shotgun: false, rifle: false, crossbow: false, rocket: false, grenade: false },
     ammo: none(), reserve: none(), cooldown: 0, reloadT: 0, reloadTotal: 0, held: false, heat: 0, dry: false, kickCd: 0, kickCdTotal: 0,
+    charging: false, chargeT: 0, lastChargeT: 0, lastChargeLevel: 0,
   };
 }
 
@@ -170,6 +211,28 @@ export function createWeaponState(): WeaponState {
 export function giveWeapon(ws: WeaponState, w: WeaponId, count = WEAPONS[w].mag) {
   ws.owned[w] = true;
   ws.ammo[w] = Math.min(WEAPONS[w].mag, ws.ammo[w] + count);
+  if (w === 'crossbow' && ws.reserve.crossbow < 12) ws.reserve.crossbow = 12;
+}
+
+/** Max spare rounds carried per gun. */
+export const maxReserve = (w: WeaponId) => w === 'rocket' ? 6 : w === 'crossbow' ? 24 : WEAPONS[w].mag * 3;
+
+/** Refill reserve ammo for all owned guns (or pistol/rifle reserve if none owned yet). Returns true if any ammo was added. */
+export function refillAmmo(ws: WeaponState, mags = 1): boolean {
+  let added = false;
+  const guns: WeaponId[] = ['pistol', 'shotgun', 'rifle', 'crossbow', 'rocket'];
+  const anyOwned = guns.some((g) => ws.owned[g]);
+  for (const g of guns) {
+    if (!ws.owned[g] && (anyOwned || g !== 'pistol')) continue;
+    const cap = maxReserve(g);
+    const add = Math.max(1, Math.round((g === 'crossbow' ? 6 : WEAPONS[g].mag) * mags));
+    const next = Math.min(cap, ws.reserve[g] + add);
+    if (next > ws.reserve[g]) {
+      ws.reserve[g] = next;
+      added = true;
+    }
+  }
+  return added;
 }
 
 /** Can this weapon be used right now (owned, something to shoot / throw)? */
@@ -180,7 +243,7 @@ export function hasAmmo(ws: WeaponState, w: WeaponId) {
 /** Advances timers; returns the weapon that fires / swings this tick (or null). */
 export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): WeaponId | null {
   ws.cooldown = Math.max(0, ws.cooldown - dt);
-  ws.kickCd = Math.max(0, ws.kickCd - dt);
+  if (!input.airborne) ws.kickCd = Math.max(0, ws.kickCd - dt);
   ws.dry = false;
   const pressed = input.fire && !ws.held;
   ws.held = input.fire;
@@ -188,6 +251,8 @@ export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): Weap
   if (input.select && input.select !== ws.current && ws.owned[input.select]) {
     ws.current = input.select;
     ws.reloadT = 0;
+    ws.charging = false;
+    ws.chargeT = 0;
     ws.cooldown = Math.max(ws.cooldown, 0.25);
   }
   const w = ws.current;
@@ -203,6 +268,37 @@ export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): Weap
       const take = Math.min(cap - ws.ammo[w], ws.reserve[w]);
       ws.ammo[w] += take;
       ws.reserve[w] -= take;
+    }
+    return null;
+  }
+  if (w === 'crossbow') {
+    // Crossbow keeps an infinite or reserve-fed bolt ready; holding LMB charges, releasing fires.
+    if (ws.ammo.crossbow <= 0) {
+      if (ws.reserve.crossbow > 0) { ws.ammo.crossbow = 1; ws.reserve.crossbow--; }
+      else ws.ammo.crossbow = 1; // energy bolts recharge per shot
+    }
+    if (ws.cooldown > 0) {
+      ws.charging = false;
+      ws.chargeT = 0;
+      return null;
+    }
+    if (input.fire) {
+      ws.charging = true;
+      ws.chargeT = Math.min(3.5, ws.chargeT + dt * CROSSBOW_CHARGE_RATE);
+      return null;
+    }
+    if (ws.charging) {
+      const spec = crossbowSpec(ws.chargeT);
+      ws.lastChargeT = ws.chargeT;
+      ws.lastChargeLevel = spec.level;
+      ws.charging = false;
+      ws.chargeT = 0;
+      ws.ammo.crossbow = 0;
+      if (ws.reserve.crossbow <= 0) ws.reserve.crossbow = 1;
+      ws.reloadTotal = ws.reloadT = spec.reload;
+      ws.cooldown = spec.reload;
+      ws.heat = Math.min(ws.heat + 1, 30);
+      return 'crossbow';
     }
     return null;
   }
