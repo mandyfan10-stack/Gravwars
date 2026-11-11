@@ -126,7 +126,7 @@ export class MenuBackdrop {
     this.world.mapView.update(this.time, dt);
     gfx.overlay.enabled = false;
     gfx.render(dt);
-    requestAnimationFrame(this.frame);
+    gfx.scheduleFrame(this.frame);
     // the first frame is up: fade the world in from black
     document.body.classList.remove('boot');
   };

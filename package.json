@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 3000 --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "vite preview --port 3000 --host 0.0.0.0",
+    "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "tsx test/sim.test.ts",
     "shots": "tsx scripts/shots.ts shots"

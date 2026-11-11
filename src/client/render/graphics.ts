@@ -80,6 +80,7 @@ class RetroPass extends Pass {
 /** Renderer, scene, camera, sky, lights and post-processing. */
 export class Graphics {
   readonly renderer: WebGLRenderer;
+  readonly isSoftwareGl: boolean;
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 1500);
   readonly composer: EffectComposer;
@@ -100,11 +101,16 @@ export class Graphics {
   constructor(canvas: HTMLCanvasElement) {
     // the 3D frame is drawn off-screen (no MSAA there: crisp pixels); the canvas itself only gets the blow-up + HUD gizmo
     const renderer = (this.renderer = new WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' }));
-    renderer.setPixelRatio(window.devicePixelRatio);
+    const gl = renderer.getContext();
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const glRenderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+    this.isSoftwareGl = /SwiftShader|llvmpipe|Software|Mesa OffScreen/i.test(glRenderer);
+
+    renderer.setPixelRatio(this.isSoftwareGl ? 1 : window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.0;
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !this.isSoftwareGl;
     renderer.shadowMap.type = PCFShadowMap;
 
     const scene = this.scene;
@@ -130,8 +136,8 @@ export class Graphics {
     scene.add(this.hemi);
 
     const sun = this.sun;
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.castShadow = !this.isSoftwareGl;
+    sun.shadow.mapSize.set(this.isSoftwareGl ? 512 : 2048, this.isSoftwareGl ? 512 : 2048);
     const sc = sun.shadow.camera;
     sc.left = sc.bottom = -70;
     sc.right = sc.top = 70;
@@ -144,6 +150,7 @@ export class Graphics {
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, this.camera));
     this.bloom = new UnrealBloomPass(new Vector2(window.innerWidth, window.innerHeight), 0.22, 0.4, 0.92);
+    if (this.isSoftwareGl) this.bloom.enabled = false;
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.overlay);
     this.composer.addPass(new OutputPass());
@@ -162,7 +169,7 @@ export class Graphics {
 
   /** Screen pixels per frame pixel and the frame size for the current window. */
   frameSize() {
-    const dpr = window.devicePixelRatio;
+    const dpr = this.isSoftwareGl ? 1 : window.devicePixelRatio;
     const w = Math.floor(window.innerWidth * dpr), h = Math.floor(window.innerHeight * dpr);
     const scale = this.look.lines > 0 ? Math.max(1, Math.round(h / this.look.lines)) : 1;
     return { scale, width: Math.ceil(w / scale), height: Math.ceil(h / scale) };
@@ -170,6 +177,10 @@ export class Graphics {
 
   /** Sun shadows: off, a 1024 map or a 2048 one. Materials recompile on their own when the count changes. */
   setShadows(q: 'off' | 'low' | 'high') {
+    if (this.isSoftwareGl) {
+      this.sun.castShadow = false;
+      return;
+    }
     const sun = this.sun;
     sun.castShadow = q !== 'off';
     const size = q === 'low' ? 1024 : 2048;
@@ -183,7 +194,7 @@ export class Graphics {
   resize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : window.devicePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     const f = this.frameSize();
     this.composer.setSize(f.width, f.height);
@@ -211,6 +222,15 @@ export class Graphics {
   }
 
   render(dt: number) {
+    if (this.isSoftwareGl) this.bloom.enabled = false;
     this.composer.render(dt);
+  }
+
+  scheduleFrame(cb: FrameRequestCallback) {
+    if (this.isSoftwareGl) {
+      setTimeout(() => requestAnimationFrame(cb), 16);
+    } else {
+      requestAnimationFrame(cb);
+    }
   }
 }

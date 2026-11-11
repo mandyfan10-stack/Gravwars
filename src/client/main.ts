@@ -143,8 +143,11 @@ async function main() {
   const lobby = new Lobby(settings.difficulty);
   let loaded = false;
   const spectateBtn = document.getElementById('spectate-btn') as HTMLButtonElement;
-  let startInSpectator = sessionStorage.getItem('gravwars-start-spectate') === '1';
+  const params = new URLSearchParams(location.search);
+  const autostart = params.get('autostart') === '1';
+  let startInSpectator = sessionStorage.getItem('gravwars-start-spectate') === '1' || params.get('spectate') === '1';
   if (startInSpectator) sessionStorage.removeItem('gravwars-start-spectate');
+  document.body.dataset.state = 'title';
   const syncStart = (problem = lobby.problem) => {
     if (input.armed) return;
     start.disabled = !loaded || !!problem;
@@ -163,7 +166,7 @@ async function main() {
   loaded = true;
   syncStart();
   // «В бой» or «Режим наблюдателя»: the click unlocks the audio and takes the mouse right away
-  if (!startInSpectator) {
+  if (!startInSpectator && !autostart) {
     await new Promise<void>((resolve) => {
       function goPlay() {
         if (start.disabled) return;
@@ -195,7 +198,9 @@ async function main() {
     });
   } else {
     input.armed = true;
+    if (autostart) input.setLocked(true);
   }
+  document.body.dataset.state = 'playing';
   lobby.hidden = true;
   const cfg = lobby.config;
   const myTeam = playerTeam(cfg)!;
@@ -459,7 +464,7 @@ async function main() {
   const intro = new Intro(eye, upOf(sim.state.frame), built ? INTRO_LENGTH + 1.2 : INTRO_LENGTH + 0.4, {
     start: built ? menuEye : undefined, door: doorBehind(map, myTeam, eye) ?? undefined,
   });
-  if (startInSpectator) intro.skip();
+  if (startInSpectator || autostart) intro.skip();
   else audio.whoosh();
   const fog = scene.fog as FogExp2;
   const FOG = fog.density;
@@ -496,7 +501,7 @@ async function main() {
     const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
     last = Math.max(last, now);
     time += dt;
-    if (intro.active) { introFrame(dt, time); requestAnimationFrame(frame); return; }
+    if (intro.active) { introFrame(dt, time); gfx.scheduleFrame(frame); return; }
     const specActive = !!spectator?.active;
     if (!specActive) handleKeys();
     // the world never stops: with the menu open the player just stands (no input), everything else goes on
@@ -677,9 +682,9 @@ async function main() {
       scoreEl.innerHTML = `<h3>Счёт<span>${botsLabel}</span></h3>${statsHtml()}`;
     }
     input.endFrame();
-    requestAnimationFrame(frame);
+    gfx.scheduleFrame(frame);
   };
-  requestAnimationFrame(frame);
+  gfx.scheduleFrame(frame);
 }
 
 main().catch((err: unknown) => {
