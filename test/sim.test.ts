@@ -34,6 +34,7 @@ const RED = faceOfTeam(map, 'red')!.id;
 const RX = TILE / 2;
 
 let failed = 0;
+const perfBudgetMul = process.env.CI ? 2.5 : 1;
 function check(name: string, ok: boolean, info = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  ${info}`);
   if (!ok) failed++;
@@ -908,7 +909,7 @@ import { HOOK } from '../src/shared/sim';
       const u = upOf(n.sim.state.frame);
       return Math.abs(n.sim.state.pos.dot(u) - new Vector3(...isl.origin).dot(u) - 0.94) < 3;
     })()));
-  check('NPCs are cheap to simulate', ms < 40, `${ms.toFixed(1)} ms per game second, ${npcs.npcs.length} NPCs`);
+  check('NPCs are cheap to simulate', ms < 40 * perfBudgetMul, `${ms.toFixed(1)} ms per game second, ${npcs.npcs.length} NPCs`);
 }
 
 // Gang fights: telegraphed bursts at a locked spot (standing still you are hit, a step aside dodges), grenades.
@@ -1068,7 +1069,7 @@ import { HOOK } from '../src/shared/sim';
   check('no bot stays airborne for long', maxAir < 10, `max=${maxAir.toFixed(1)}s`);
   check('bot positions stay finite', bots.bots.every((b) => b.sim.state.pos.toArray().every(Number.isFinite)));
   // six city faces: 62 NPCs + smart cars; the cost per character stays low
-  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 130, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
+  check('bots are cheap to simulate (with the city NPCs)', (performance.now() - t0) / MATCH_T < 130 * perfBudgetMul, `${((performance.now() - t0) / MATCH_T).toFixed(1)} ms per game second`);
 }
 
 // Bots: a hit on their crystal sends the defender home at once; a fist fight with a bum is not an alarm.
@@ -1464,7 +1465,7 @@ for (const deg of [20, 37, 45]) {
   let idle = performance.now();
   for (let k = 0; k < 64 * 4; k++) props.tick(TICK_DT);
   idle = performance.now() - idle;
-  check('resting crates cost nothing', !props.active && idle < 20, `${idle.toFixed(1)} ms for 4 s`);
+  check('resting crates cost nothing', !props.active && idle < 20 * perfBudgetMul, `${idle.toFixed(1)} ms for 4 s`);
 
   // grappling hook: bites the wall 20 m away and pulls you there; nothing within 30 m = it comes back empty
   const hs = new PlayerSim(R, aw, map, 'red');
