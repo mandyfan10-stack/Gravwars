@@ -108,7 +108,11 @@
         <div id="menu-multiplayer" class="menu-details" hidden>
           <div class="net-panel">
             <h3>Сетевая игра WebRTC (P2P)</h3>
-            <p>Играйте по локальной сети или через интернет без выделенного сервера. Один игрок создает комнату, остальные вводят код.</p>
+            <p>Играйте по сети без выделенного сервера. Создайте комнату и поделитесь кодом или ссылкой-приглашением.</p>
+            <div class="net-name-row">
+              <label for="net-name-input">Ваш ник</label>
+              <input id="net-name-input" type="text" placeholder="Игрок" maxlength="16" autocomplete="nickname">
+            </div>
             <div class="net-actions">
               <div class="net-box">
                 <h4>Создать комнату</h4>
@@ -122,12 +126,13 @@
               <div class="net-box">
                 <h4>Присоединиться к игре</h4>
                 <div class="net-join-row">
-                  <input id="net-join-input" type="text" placeholder="КОД (напр. GW-XXXX)" maxlength="12">
+                  <input id="net-join-input" type="text" placeholder="КОД (напр. 7K4NP)" maxlength="20">
                   <button id="net-join-btn" class="btn">Войти</button>
                 </div>
               </div>
             </div>
             <div id="net-status" class="net-status-text"></div>
+            <button id="net-leave-btn" class="btn btn-exit" hidden>Отключиться от комнаты</button>
           </div>
         </div>
       </div>

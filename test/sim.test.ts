@@ -5,7 +5,7 @@ import {
 } from '../src/shared/blocks';
 import { wishlist } from '../src/shared/botShop';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
-import { activeTeams, botRoster, defaultLobby, lobbyProblem, parseLobby, playerTeam, seatPlayer } from '../src/shared/lobby';
+import { activeTeams, botRoster, canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, lobbyProblem, parseLobby, playerTeam, seatPlayer } from '../src/shared/lobby';
 import { BED_HP, CRYSTAL_STUN_TIME, GENERATORS, Match } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP, SHOP_ROWS } from '../src/shared/economy';
 import { holdables, Hotbar } from '../src/shared/inventory';
@@ -20,6 +20,7 @@ import { CROUCH_SPEED, emptyInput, MoveInput, SPRINT_SPEED, STAMINA } from '../s
 import { buildPhysicsWorld, initRapier } from '../src/shared/physics';
 import { PlayerSim } from '../src/shared/sim';
 import { TEAMS } from '../src/shared/teams';
+import { peerIdToRoom, roomToPeerId } from '../src/shared/net/protocol';
 
 const R = await initRapier();
 const map = generateMap();
@@ -1491,6 +1492,127 @@ for (const deg of [20, 37, 45]) {
     && events.join() === 'miss' && hs.hook === null && Math.hypot(hst.pos.x, hst.pos.z) < 0.1,
     events.join());
   hs.mover.dispose();
+}
+
+// P2P & co-op helpers: room ID parsing, lobby seat locking, symmetric bed forts, co-op/1v1 elimination, visualOnly & delta sync
+{
+  check('roomToPeerId strips GW- prefixes without corrupting 5-char GW* room codes',
+    roomToPeerId('gw-abcde') === 'gw-room-ABCDE'
+    && roomToPeerId('GW_4KP2Z') === 'gw-room-4KP2Z'
+    && roomToPeerId('  gw 99xyz  ') === 'gw-room-99XYZ'
+    && roomToPeerId('GW4KP') === 'gw-room-GW4KP'
+    && roomToPeerId('GW4KP2') === 'gw-room-4KP2'
+    && roomToPeerId('gw-room-xy93m') === 'gw-room-XY93M'
+    && peerIdToRoom('gw-room-GW4KP') === 'GW4KP');
+
+  const lc = defaultLobby('normal');
+  seatPlayer(lc, 'red', 0, 'host', 'Host');
+  const s1 = firstFreeSeat(lc)!;
+  check('lobby seating helpers track humanTeams, lock occupied seats, and find free slots',
+    humanTeams(lc).join() === 'red'
+    && !canSeatPlayer(lc, 'red', 0, 'p1')
+    && canSeatPlayer(lc, 'red', 0, 'host')
+    && s1.team === 'blue' && s1.seatIndex === 2);
+  seatPlayer(lc, s1.team, s1.seatIndex, 'p1', 'Alice');
+  check('humanTeams updates when remote player seats on another team', humanTeams(lc).join() === 'red,blue');
+  // Fill every remaining empty + bot seat across all 4×5 seats (1 host + 1 Alice already seated → 18 left)
+  let nextSeat = firstFreeSeat(lc);
+  let steps = 0;
+  while (nextSeat && steps < 25) {
+    seatPlayer(lc, nextSeat.team, nextSeat.seatIndex, `p${steps + 2}`, `P${steps + 2}`);
+    nextSeat = firstFreeSeat(lc);
+    steps++;
+  }
+  check('firstFreeSeat returns null once all seats belong to humans', nextSeat === null && steps === 18);
+
+  // Match fortifySkipTeams + 2v2 co-op & 1v1 0-bot elimination
+  const fw1 = buildPhysicsWorld(R, map);
+  const bsSkip = new BlockSystem(R, fw1);
+  const mCoop = new Match(R, fw1, map, bsSkip, 'red', undefined, ['red', 'blue']);
+  const teamBlocks = (tm: string) => [...bsSkip.blocks.values()].filter((b) => b.team === tm).length;
+  check('fortifySkipTeams skips all human teams while keeping bot crystal forts',
+    teamBlocks('red') === 0 && teamBlocks('blue') === 0 && teamBlocks('green') > 0 && teamBlocks('yellow') > 0,
+    `r=${teamBlocks('red')} b=${teamBlocks('blue')} g=${teamBlocks('green')} y=${teamBlocks('yellow')}`);
+
+  let teammateAlive = 1;
+  mCoop.membersAlive = (tm) => (tm === 'red' ? teammateAlive : tm === 'blue' ? 1 : 0);
+  mCoop.destroyBed('green');
+  mCoop.destroyBed('yellow');
+  mCoop.destroyBed('red');
+  mCoop.checkCoopEliminated(false);
+  const stayedAliveForPartner = mCoop.result === null;
+  teammateAlive = 0;
+  mCoop.checkCoopEliminated(false);
+  check('co-op team stays in match while partner lives and loses once last human falls',
+    stayedAliveForPartner && mCoop.result === 'lose' && mCoop.events.some((e) => e.type === 'lose'));
+
+  const fw2 = buildPhysicsWorld(R, map);
+  const bsSolo = new BlockSystem(R, fw2);
+  const m1v1 = new Match(R, fw2, map, bsSolo, 'red', undefined, ['red', 'blue']);
+  let enemyAlive = 1;
+  m1v1.membersAlive = (tm) => (tm === 'blue' ? enemyAlive : 0);
+  m1v1.destroyBed('green');
+  m1v1.destroyBed('yellow');
+  m1v1.destroyBed('blue');
+  const waitLastEnemy = !m1v1.isOut('blue') && m1v1.result === null;
+  enemyAlive = 0;
+  m1v1.tick(TICK_DT, new Vector3());
+  check('1v1 without bots waits for last enemy player death before ending',
+    waitLastEnemy && m1v1.isOut('blue') && m1v1.result === 'win');
+
+  // Combat.visualOnly + BlockSystem.syncDamageAtPos + Pickups.applySync
+  const vw = new R.World({ x: 0, y: 0, z: 0 });
+  vw.createCollider(R.ColliderDesc.cuboid(60, 1, 60).setTranslation(0, -1, 0));
+  vw.createCollider(R.ColliderDesc.cuboid(10, 10, 0.5).setTranslation(0, 10, -20));
+  vw.step();
+  const bVis = new BlockSystem(R, vw);
+  const blk = bVis.add(new Vector3(0, 1.5, -10), 'wood', 'blue', false);
+  const blkHp0 = blk.hp;
+  const cVis = new Combat(R, vw, map);
+  cVis.visualOnly = true;
+  cVis.windMul = 0;
+  const Yvis = new Vector3(0, 1, 0);
+  const vTarget: Target = {
+    id: 1, team: 'blue', center: new Vector3(0, 1, -6), up: Yvis,
+    hp: MAX_HP, alive: true, respawnIn: -1,
+  };
+  let crystalHits = 0;
+  cVis.targets.push(
+    { id: 0, team: 'red', center: new Vector3(0, 1, 0), up: Yvis, hp: MAX_HP, alive: true, respawnIn: -1 },
+    vTarget,
+  );
+  cVis.crystals = [{ team: 'blue', pos: new Vector3(0, 1, -3), up: Yvis, alive: true }];
+  cVis.onCrystal = () => { crystalHits++; };
+  cVis.onWorldDamage = (h, d) => bVis.damageCollider(h, d);
+  cVis.onExplosion = (pos, r, dmg) => bVis.explosion(pos, r, dmg);
+  cVis.fire('rifle', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Yvis.clone().negate());
+  cVis.fire('rocket', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Yvis.clone().negate());
+  cVis.melee('fists', 0, new Vector3(0, 1, -1.5), new Vector3(0, 0, -1));
+  for (let k = 0; k < 64; k++) cVis.tick(TICK_DT);
+  const noLocalExplode = !cVis.events.some((e) => e.type === 'explode');
+  cVis.visualExplode(new Vector3(0, 1, -10), 4);
+  check('Combat.visualOnly skips authoritative damage while supporting visualExplode',
+    vTarget.hp === MAX_HP && vTarget.alive && blk.hp === blkHp0 && crystalHits === 0
+    && noLocalExplode && cVis.events.some((e) => e.type === 'explode'));
+
+  let broke = 0;
+  const blkPos = blk.center.clone();
+  bVis.onBreak = () => { broke++; };
+  const dmgOk = bVis.syncDamageAtPos(blkPos, blkHp0 - 15);
+  const midHp = blk.hp;
+  const breakOk = bVis.syncDamageAtPos(blkPos, 0);
+  const missingOk = bVis.syncDamageAtPos(blkPos, 10);
+  check('BlockSystem.syncDamageAtPos updates HP and breaks collider on 0 HP',
+    dmgOk && midHp === blkHp0 - 15 && breakOk && broke === 1 && bVis.findByPos(blkPos) === null && !missingOk);
+
+  const pk = new Pickups(R, vw, map);
+  const ver0 = pk.version;
+  pk.applySync([{ id: 901, kind: 'cash', amount: 42, once: true, pos: [1, 1, 1], up: [0, 1, 0], alive: true }]);
+  const synced = pk.items[0];
+  pk.applySync([{ id: 901, kind: 'cash', amount: 42, once: true, pos: [2, 1, 2], up: [0, 1, 0], alive: false }]);
+  check('Pickups.applySync replaces list, reuses items by ID, and bumps version',
+    pk.version >= ver0 + 2 && pk.items.length === 1 && pk.items[0] === synced
+    && synced.pos.x === 2 && !synced.alive);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

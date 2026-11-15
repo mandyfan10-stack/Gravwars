@@ -1,15 +1,44 @@
-import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
-import type { Bot, BotManager } from '../shared/bots';
+import { Euler, PerspectiveCamera, Quaternion, Vector3 } from 'three';
+import type { BotManager } from '../shared/bots';
 import { Combat, MAX_HP } from '../shared/combat';
 import { EYE_OFFSET } from '../shared/constants';
+import { escapeHtml } from '../shared/escape';
 import { BED_HP, Match } from '../shared/match';
 import { viewQuat } from '../shared/movement';
 import { getTeam, TeamId } from '../shared/teams';
-import { WEAPONS } from '../shared/weapons';
+import { WeaponId, WEAPONS } from '../shared/weapons';
 import { teamHex } from './hud';
 import type { Input } from './input';
 
 export type SpectatorMode = 'player' | 'free' | 'auto';
+
+export interface SpectatorHumanTarget {
+  team: TeamId;
+  alive: boolean;
+  pos: Vector3;
+  up: Vector3;
+  frame: Quaternion;
+  yaw: number;
+  pitch: number;
+  hp: number;
+  name: string;
+  weapon: string;
+}
+
+interface ActorView {
+  team: TeamId;
+  titleHtml: string;
+  pos: Vector3;
+  up: Vector3;
+  frame: Quaternion;
+  yaw: number;
+  pitch: number;
+  hp: number;
+  weapon: WeaponId;
+  ammoText: string;
+  status: string;
+  attacking: boolean;
+}
 
 const _fwd = new Vector3();
 const _right = new Vector3();
@@ -18,6 +47,7 @@ const _wantPos = new Vector3();
 const _lookAt = new Vector3();
 const _tmp = new Vector3();
 const _q = new Quaternion();
+const _euler = new Euler();
 
 interface DirectorEvent {
   kind: 'crystal' | 'duel' | 'raid' | 'patrol';
@@ -27,7 +57,8 @@ interface DirectorEvent {
   focusPos: Vector3;
   lookPos: Vector3;
   up: Vector3;
-  bot?: Bot;
+  team?: TeamId;
+  actorKey?: string;
 }
 
 /**
@@ -62,6 +93,7 @@ export class SpectatorController {
     private combat: Combat,
     private match: Match,
     private bots: BotManager,
+    private getHumanTargets?: () => SpectatorHumanTarget[],
   ) {
     this.hudEl = document.getElementById('spectator-hud')!;
     this.modeBadgeEl = document.getElementById('spec-mode-badge')!;
@@ -104,20 +136,60 @@ export class SpectatorController {
     this.htmlKey = '';
   }
 
-  private livingBots(): Bot[] {
-    return this.bots.bots.filter((b) => b.target.alive && !b.out);
+  private livingActors(): ActorView[] {
+    const out: ActorView[] = [];
+    const humans = this.getHumanTargets?.() ?? [];
+    for (const h of humans) {
+      if (!h.alive) continue;
+      const t = getTeam(h.team);
+      const w: WeaponId = h.weapon in WEAPONS ? (h.weapon as WeaponId) : 'fists';
+      out.push({
+        team: h.team,
+        titleHtml: `<span style="color:${teamHex(t.color)}">${t.name}</span> · ${escapeHtml(h.name)}`,
+        pos: h.pos,
+        up: h.up,
+        frame: h.frame,
+        yaw: h.yaw,
+        pitch: h.pitch,
+        hp: h.hp,
+        weapon: w,
+        ammoText: '',
+        status: 'в бою',
+        attacking: true,
+      });
+    }
+    this.bots.bots.forEach((b, idx) => {
+      if (!b.target.alive || b.out) return;
+      const t = getTeam(b.team);
+      const roleLabel = b.role === 'defend' ? 'Защитник' : 'Рейдер';
+      out.push({
+        team: b.team,
+        titleHtml: `<span style="color:${teamHex(t.color)}">${t.name}</span> · Бот #${idx + 1} (${roleLabel}) · <span style="color:#7cf5ff">${b.wallet.cash}$</span>`,
+        pos: b.sim.state.pos,
+        up: b.target.up,
+        frame: b.sim.state.frame,
+        yaw: b.sim.state.yaw,
+        pitch: b.sim.state.pitch,
+        hp: b.target.hp,
+        weapon: b.weapons.current,
+        ammoText: ` (${b.weapons.ammo[b.weapons.current]}/${b.weapons.reserve[b.weapons.current]})`,
+        status: b.status || 'продвижение',
+        attacking: b.role === 'attack',
+      });
+    });
+    return out;
   }
 
   cycleTarget(step: 1 | -1) {
-    const list = this.livingBots();
+    const list = this.livingActors();
     if (!list.length) return;
     this.targetIdx = (this.targetIdx + step + list.length) % list.length;
     this.htmlKey = '';
   }
 
   switchToTeam(team: TeamId) {
-    const list = this.livingBots();
-    const idx = list.findIndex((b) => b.team === team);
+    const list = this.livingActors();
+    const idx = list.findIndex((a) => a.team === team);
     if (idx >= 0) {
       this.mode = 'player';
       this.targetIdx = idx;
@@ -162,9 +234,8 @@ export class SpectatorController {
 
   private updateFreeFlight(dt: number, camera: PerspectiveCamera) {
     // Orient camera from mouse yaw/pitch in world space
-    _q.setFromEuler(
-      new ( camera.rotation.constructor as any )(this.input.pitch, this.input.yaw, 0, 'YXZ'),
-    );
+    _euler.set(this.input.pitch, this.input.yaw, 0, 'YXZ');
+    _q.setFromEuler(_euler);
     camera.quaternion.copy(_q);
     camera.up.set(0, 1, 0);
 
@@ -203,27 +274,24 @@ export class SpectatorController {
   }
 
   private updateFollowPlayer(dt: number, camera: PerspectiveCamera) {
-    const list = this.livingBots();
+    const list = this.livingActors();
     if (!list.length) {
       this.updateFreeFlight(dt, camera);
       return;
     }
     this.targetIdx = ((this.targetIdx % list.length) + list.length) % list.length;
-    const bot = list[this.targetIdx];
-    const up = bot.target.up.clone().normalize();
+    const actor = list[this.targetIdx];
+    const up = actor.up.clone().normalize();
 
     if (this.firstPerson) {
-      // 1st person: exact position and look from the bot's eyes
-      _lookAt.copy(bot.sim.state.pos).addScaledVector(up, EYE_OFFSET);
+      _lookAt.copy(actor.pos).addScaledVector(up, EYE_OFFSET);
       camera.position.copy(_lookAt);
-      viewQuat(bot.sim.state.frame, bot.sim.state.yaw, bot.sim.state.pitch, camera.quaternion);
+      viewQuat(actor.frame, actor.yaw, actor.pitch, camera.quaternion);
       camera.up.copy(up);
       camera.updateMatrixWorld();
     } else {
-      // 3rd person: smooth orbital camera around the bot
       this.camUp.lerp(up, Math.min(1, dt * 7)).normalize();
 
-      // Build orbit basis around the bot's local up vector
       const ref = Math.abs(this.camUp.y) < 0.9 ? _tmp.set(0, 1, 0) : _tmp.set(1, 0, 0);
       _right.crossVectors(ref, this.camUp).normalize();
       _fwd.crossVectors(this.camUp, _right).normalize();
@@ -237,7 +305,7 @@ export class SpectatorController {
         .addScaledVector(this.camUp, -Math.sin(pitch))
         .normalize();
 
-      _lookAt.copy(bot.target.center).addScaledVector(up, 0.75);
+      _lookAt.copy(actor.pos).addScaledVector(up, 0.75);
       _wantPos.copy(_lookAt).addScaledVector(dir, -5.2).addScaledVector(up, 1.3);
 
       const hit = this.combat.rayWorld(_lookAt, _wantPos);
@@ -253,17 +321,15 @@ export class SpectatorController {
       camera.updateMatrixWorld();
     }
 
-    const team = getTeam(bot.team);
-    const botIndex = this.bots.bots.indexOf(bot) + 1;
-    const roleLabel = bot.role === 'defend' ? 'Защитник' : 'Рейдер';
-    const hpPct = Math.max(0, Math.round((bot.target.hp / MAX_HP) * 100));
-    const wName = WEAPONS[bot.weapons.current].name;
+    const team = getTeam(actor.team);
+    const hpPct = Math.max(0, Math.round((actor.hp / MAX_HP) * 100));
+    const wName = WEAPONS[actor.weapon].name;
     const viewLabel = this.firstPerson ? '1-Е ЛИЦО' : '3-Е ЛИЦО';
-    this.updateTeamsBar(bot);
+    this.updateTeamsBar(actor.team);
     this.renderBanner(
       `НАБЛЮДЕНИЕ · ${viewLabel}`,
-      `<span style="color:${teamHex(team.color)}">${team.name}</span> · Бот #${botIndex} (${roleLabel}) · <span style="color:#7cf5ff">${bot.wallet.cash}$</span>`,
-      `HP: ${hpPct}% · Оружие: ${wName} (${bot.weapons.ammo[bot.weapons.current]}/${bot.weapons.reserve[bot.weapons.current]}) · [V] 1-е/3-е лицо · [ЛКМ/ПКМ] другой бот`,
+      actor.titleHtml,
+      `HP: ${hpPct}% · Оружие: ${wName}${actor.ammoText} · [V] 1-е/3-е лицо · [ЛКМ/ПКМ] следующий`,
       teamHex(team.color),
     );
   }
@@ -286,18 +352,19 @@ export class SpectatorController {
     this.orbitAngle += dt * 0.32;
 
     const best = this.pickBestEvent();
-    // Switch immediately if current event ended or a major event (score +25 higher) erupted, or hold timer expired
+    const livingKeys = this.currentEvent?.actorKey ? new Set(this.livingActors().map((a) => a.titleHtml)) : null;
+    // Switch immediately if current event ended or a major event (score +22 higher) erupted, or hold timer expired
     if (
       !this.currentEvent ||
       this.directorHoldT <= 0 ||
       (best && best.score > this.currentEvent.score + 22) ||
-      (this.currentEvent.bot && !this.currentEvent.bot.target.alive)
+      (this.currentEvent.actorKey && !livingKeys?.has(this.currentEvent.actorKey))
     ) {
       if (best) {
         this.currentEvent = best;
         this.directorHoldT = best.kind === 'crystal' ? 5.0 : 4.2;
       }
-    } else if (best && best.kind === this.currentEvent.kind && best.bot === this.currentEvent.bot) {
+    } else if (best && best.kind === this.currentEvent.kind && best.actorKey === this.currentEvent.actorKey) {
       // Refresh live coordinates of the same event
       this.currentEvent.focusPos.copy(best.focusPos);
       this.currentEvent.lookPos.copy(best.lookPos);
@@ -344,19 +411,24 @@ export class SpectatorController {
       : ev.kind === 'raid' ? '🚀 LIVE · ПРОРЫВ РЕЙДЕРА'
       : '🎥 АВТОРЕЖИССЁР · ОБЗОР МАТЧА';
     const color = ev.kind === 'crystal' ? '#ff5a5a' : ev.kind === 'duel' ? '#ffd23b' : '#2ff3e0';
-    this.updateTeamsBar(ev?.bot);
+    this.updateTeamsBar(ev.team);
     this.renderBanner(badge, ev.title, ev.subtitle, color);
   }
 
-  private updateTeamsBar(activeBot?: Bot) {
+  private updateTeamsBar(activeTeam?: TeamId) {
     if (!this.teamsBarEl) return;
+    const humans = this.getHumanTargets?.() ?? [];
     let html = '';
     for (const bed of this.match.beds) {
       const t = getTeam(bed.team);
-      const living = this.bots.bots.filter((b) => b.team === bed.team && b.target.alive && !b.out).length;
-      const total = this.bots.bots.filter((b) => b.team === bed.team).length;
+      const livingBots = this.bots.bots.filter((b) => b.team === bed.team && b.target.alive && !b.out).length;
+      const totalBots = this.bots.bots.filter((b) => b.team === bed.team).length;
+      const livingHumans = humans.filter((h) => h.team === bed.team && h.alive).length;
+      const totalHumans = humans.filter((h) => h.team === bed.team).length;
+      const living = livingBots + livingHumans;
+      const total = totalBots + totalHumans;
       const isOut = !bed.alive && living === 0;
-      const isActive = activeBot?.team === bed.team;
+      const isActive = activeTeam === bed.team;
       const color = teamHex(t.color);
       const bedText = !bed.alive
         ? '❌ Разрушен'
@@ -416,16 +488,16 @@ export class SpectatorController {
       }
     }
 
-    // 2. Check bots in active duels or raiding
-    const living = this.livingBots();
+    // 2. Check fighters (humans + bots) in active duels or raiding
+    const living = this.livingActors();
     for (const b of living) {
       const bTeam = getTeam(b.team);
       // Find closest enemy fighter within 26m
-      let nearestEnemy: Bot | null = null;
+      let nearestEnemy: ActorView | null = null;
       let nearestDist = 26;
       for (const other of living) {
         if (other.team === b.team) continue;
-        const d = b.target.center.distanceTo(other.target.center);
+        const d = b.pos.distanceTo(other.pos);
         if (d < nearestDist) {
           nearestDist = d;
           nearestEnemy = other;
@@ -433,39 +505,42 @@ export class SpectatorController {
       }
       if (nearestEnemy) {
         const eTeam = getTeam(nearestEnemy.team);
-        const mid = b.target.center.clone().lerp(nearestEnemy.target.center, 0.5);
-        const lowHpBonus = (200 - b.target.hp - nearestEnemy.target.hp) * 0.25;
+        const mid = b.pos.clone().lerp(nearestEnemy.pos, 0.5);
+        const lowHpBonus = (200 - b.hp - nearestEnemy.hp) * 0.25;
         consider({
           kind: 'duel',
           score: 65 + (26 - nearestDist) * 1.4 + lowHpBonus,
           title: `<span style="color:${teamHex(bTeam.color)}">${bTeam.name}</span> vs <span style="color:${teamHex(eTeam.color)}">${eTeam.name}</span>`,
-          subtitle: `Дистанция боя: ${Math.round(nearestDist)} м · ${WEAPONS[b.weapons.current].name} против ${WEAPONS[nearestEnemy.weapons.current].name}`,
+          subtitle: `Дистанция боя: ${Math.round(nearestDist)} м · ${WEAPONS[b.weapon].name} против ${WEAPONS[nearestEnemy.weapon].name}`,
           focusPos: mid,
-          lookPos: mid.clone().addScaledVector(b.target.up, 0.7),
-          up: b.target.up.clone(),
-          bot: b,
+          lookPos: mid.clone().addScaledVector(b.up, 0.7),
+          up: b.up.clone(),
+          team: b.team,
+          actorKey: b.titleHtml,
         });
-      } else if (b.role === 'attack') {
+      } else if (b.attacking) {
         consider({
           kind: 'raid',
-          score: 35 + (b.weapons.current !== 'fists' ? 12 : 0),
-          title: `Рейд: <span style="color:${teamHex(bTeam.color)}">${bTeam.name}</span> (${WEAPONS[b.weapons.current].name})`,
-          subtitle: `Задача: ${b.status || 'продвижение к вражеской базе'} · HP ${Math.round(b.target.hp)}%`,
-          focusPos: b.target.center.clone(),
-          lookPos: b.target.center.clone().addScaledVector(b.target.up, 0.8),
-          up: b.target.up.clone(),
-          bot: b,
+          score: 35 + (b.weapon !== 'fists' ? 12 : 0),
+          title: `Рейд: <span style="color:${teamHex(bTeam.color)}">${bTeam.name}</span> (${WEAPONS[b.weapon].name})`,
+          subtitle: `Задача: ${b.status} · HP ${Math.round(b.hp)}%`,
+          focusPos: b.pos.clone(),
+          lookPos: b.pos.clone().addScaledVector(b.up, 0.8),
+          up: b.up.clone(),
+          team: b.team,
+          actorKey: b.titleHtml,
         });
       } else {
         consider({
           kind: 'patrol',
           score: 20,
           title: `Оборона базы: <span style="color:${teamHex(bTeam.color)}">${bTeam.name}</span>`,
-          subtitle: `Задача: ${b.status || 'патрулирование'} · HP ${Math.round(b.target.hp)}%`,
-          focusPos: b.target.center.clone(),
-          lookPos: b.target.center.clone().addScaledVector(b.target.up, 0.8),
-          up: b.target.up.clone(),
-          bot: b,
+          subtitle: `Задача: ${b.status} · HP ${Math.round(b.hp)}%`,
+          focusPos: b.pos.clone(),
+          lookPos: b.pos.clone().addScaledVector(b.up, 0.8),
+          up: b.up.clone(),
+          team: b.team,
+          actorKey: b.titleHtml,
         });
       }
     }

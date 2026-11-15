@@ -38,12 +38,17 @@ export class HookView {
   private readonly claw = clawMesh();
   private readonly rope: InstancedMesh;
 
-  constructor(scene: Scene, private sim: PlayerSim) {
+  constructor(scene: Scene, private sim: { hook: PlayerSim['hook'] }) {
     this.rope = new InstancedMesh(new BoxGeometry(1, 1, 1).translate(0, 0, 0.5),
       new MeshStandardMaterial({ color: 0x9b8a68, roughness: 0.9 }), SEGMENTS);
     this.rope.frustumCulled = false;
     this.claw.visible = this.rope.visible = false;
     scene.add(this.claw, this.rope);
+  }
+
+  destroy(scene: Scene) {
+    scene.remove(this.claw, this.rope);
+    this.rope.dispose();
   }
 
   /** `start`: world point of the claw's seat on the launcher in the hands. */

@@ -75,6 +75,7 @@ const _from = new Vector3();
  */
 export class Pickups {
   readonly items: Pickup[] = [];
+  version = 0;
   private readonly bottleSpots: { pos: Vector3; up: Vector3 }[] = [];
   private readonly rng = new Rng(9001);
   private nextId = 1;
@@ -155,6 +156,7 @@ export class Pickups {
       vy: 0, grounded, alive: true, respawnT: PICKUPS.dropLife, spot: -1,
     };
     this.items.push(it);
+    this.version++;
     return it;
   }
 
@@ -220,10 +222,11 @@ export class Pickups {
             it.grounded = true;
           }
         }
+        this.version++;
       }
       if (it.once) {
         it.respawnT -= dt;
-        if (!it.alive || it.respawnT <= 0) this.items.splice(i, 1);
+        if (!it.alive || it.respawnT <= 0) { this.items.splice(i, 1); this.version++; }
         continue;
       }
       if (it.alive) continue;
@@ -239,6 +242,7 @@ export class Pickups {
       it.alive = true;
       it.grounded = true;
       it.vy = 0;
+      this.version++;
     }
   }
 
@@ -275,8 +279,44 @@ export class Pickups {
 
   take(it: Pickup) {
     it.alive = false;
+    this.version++;
     if (it.once) return;
     it.respawnT = it.kind === 'apple' ? PICKUPS.appleRespawn : PICKUPS.bottleRespawn;
+  }
+
+  /** Replace / update pickup items on a non-host network client from an authoritative host list. */
+  applySync(list: { id: number; kind: string; amount: number; once: boolean; pos: [number, number, number]; up: [number, number, number]; alive: boolean }[]) {
+    const byId = new Map(this.items.map((it) => [it.id, it]));
+    const next: Pickup[] = [];
+    for (const s of list) {
+      let it = byId.get(s.id);
+      if (!it) {
+        it = {
+          id: s.id,
+          kind: s.kind as PickupKind,
+          amount: s.amount,
+          once: s.once,
+          pos: new Vector3(...s.pos),
+          up: new Vector3(...s.up),
+          vy: 0,
+          grounded: true,
+          alive: s.alive,
+          respawnT: 0,
+          spot: -1,
+        };
+      } else {
+        it.kind = s.kind as PickupKind;
+        it.amount = s.amount;
+        it.once = s.once;
+        it.pos.set(...s.pos);
+        it.up.set(...s.up);
+        it.alive = s.alive;
+      }
+      next.push(it);
+    }
+    this.items.length = 0;
+    this.items.push(...next);
+    this.version++;
   }
 }
 

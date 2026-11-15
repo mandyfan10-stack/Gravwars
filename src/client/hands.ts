@@ -147,8 +147,17 @@ export class Hands {
     this.toss(h, camera);
   }
 
+  remoteAuthoritative = false;
+
   private toss(id: ItemId, camera: PerspectiveCamera) {
-    if (this.useT > 0 || !this.eco.take(id)) return;
+    if (this.useT > 0) return;
+    if (this.remoteAuthoritative) {
+      if (this.eco.items[id] <= 0) return;
+      // Host authoritatively deducts inventory via player:sync; decrement local display optimistically
+      this.eco.items[id]--;
+    } else if (!this.eco.take(id)) {
+      return;
+    }
     this.useT = THROW.interval;
     this.appleEatT = 0;
     camera.getWorldDirection(_dir);

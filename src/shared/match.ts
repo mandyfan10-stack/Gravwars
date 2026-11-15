@@ -65,8 +65,12 @@ export class Match {
   result: 'win' | 'lose' | null = null;
   /** Optional ray filter so that character capsules (bots) do not block crystals. */
   characterFilter?: (collider: { handle: number }) => boolean;
-  /** Living members of a team other than the local player (bots). Set by the bot manager. */
+  /** Living members of a team other than the local player (bots + remote humans). */
   membersAlive: (team: TeamId) => number = () => 0;
+  /** Other living human players on a team (excluding the local player); keeps co-op alive until all humans fall. */
+  otherHumansAlive: (team: TeamId) => number = () => 0;
+  /** True on non-host P2P clients: host owns generators, bed damage, and match win/loss transitions. */
+  remoteClientMode = false;
   /** Callback fired when a crystal finishes its 10 s Stage 1 invulnerability and revives all dead players/bots. */
   onReviveAll?: (crystalTeam: TeamId) => void;
   private combat: Combat | null = null;
@@ -78,7 +82,9 @@ export class Match {
 
   constructor(private R: Rapier, private world: PhysicsWorld, map: MapData, readonly blocks: BlockSystem, readonly team: TeamId,
     /** The local player's capsule: ignored by line-of-sight rays that start at the eye. */
-    private playerCollider?: ReturnType<PhysicsWorld['createCollider']>) {
+    private playerCollider?: ReturnType<PhysicsWorld['createCollider']>,
+    /** Teams whose starter crystal forts should be omitted (humans' teams); defaults to `[team]`. */
+    fortifySkipTeams?: TeamId[]) {
     const base = map.bases.find((b) => b.team === team);
     this.shop = base ? new Vector3(...base.shop) : null;
     this.shops = map.bases.filter((b) => b.team === team || b.team === '').map((b) => new Vector3(...b.shop));
@@ -87,9 +93,10 @@ export class Match {
       alive: true, hp: BED_HP, calm: 0, stage: 1 as const, invulnT: 0,
     }));
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
-    // fortify enemy beds
+    // fortify beds of teams without human players so nobody spawns trapped inside fort blocks
+    const skipFort = new Set<TeamId>(fortifySkipTeams ?? [team]);
     for (const s of map.statues) {
-      if (s.team === team) continue;
+      if (skipFort.has(s.team as TeamId)) continue;
       for (const f of s.fort) {
         const p = new Vector3(...f.pos);
         if (blocks.isFree(p)) blocks.add(p, f.material, s.team as TeamId, false);
@@ -145,15 +152,24 @@ export class Match {
   }
 
   private checkWin() {
-    if (!this.result && this.enemiesLeft === 0) {
+    if (!this.remoteClientMode && !this.result && this.enemiesLeft === 0) {
       this.result = 'win';
       this.events.push({ type: 'win', time: this.time });
+    }
+  }
+
+  /** Marks local team lost once its crystal is broken and its last human + bot fighter is down. */
+  checkCoopEliminated(localAlive: boolean) {
+    if (!this.remoteClientMode && !this.result && !localAlive && !this.ownBedAlive && this.membersAlive(this.team) === 0) {
+      this.result = 'lose';
+      this.events.push({ type: 'lose' });
     }
   }
 
   /** Generators + pickup + crystal stage transition. Runs at the simulation tick. */
   tick(dt: number, playerPos: Vector3) {
     if (!this.result) this.time += dt;
+    if (this.remoteClientMode) return;
     this.checkWin();
     for (const b of this.beds) {
       if (!b.alive) continue;
@@ -263,7 +279,7 @@ export class Match {
   /** Called when the local player dies. False = eliminated (no bed). */
   onDeath(): boolean {
     if (this.ownBedAlive) return true;
-    if (!this.result) {
+    if (this.otherHumansAlive(this.team) === 0 && !this.result) {
       this.result = 'lose';
       this.events.push({ type: 'lose' });
     }

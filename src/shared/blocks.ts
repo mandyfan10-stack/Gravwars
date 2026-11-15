@@ -139,8 +139,12 @@ export class BlockSystem {
   readonly inventory: Record<BlockMaterial, number> = { ...START_BLOCKS };
   /** Bumped on every change, so views know when to rebuild. */
   version = 0;
+  /** Called when a block/piece is placed in the world (`place()`). */
+  onPlace?: (block: Block) => void;
   /** Called when a block/piece is destroyed by damage or an explosion. */
   onBreak?: (block: Block) => void;
+  /** Called when a block/piece takes non-fatal damage (HP changed). */
+  onDamage?: (block: Block) => void;
   /** Called whenever a block/piece is removed from the world (broken or reclaimed). */
   onRemove?: (block: Block) => void;
   private nextId = 1;
@@ -214,6 +218,8 @@ export class BlockSystem {
     const cost = this.costOf(plan);
     if (!free) this.inventory[material] -= cost;
     this.insert(plan.kind, plan.center, plan.half, plan.quat, material, team, free ? 0 : cost, plan.key, plan.level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
+    const placed = this.findByPos(plan.center, 0.05);
+    if (placed) this.onPlace?.(placed);
     return 'ok';
   }
 
@@ -235,9 +241,18 @@ export class BlockSystem {
     return this.insert('block', center, new Vector3(HALF, HALF, HALF), IDENTITY, material, team, 1, null, 0, BLOCK_MATERIALS[material].hp, refresh);
   }
 
-  /** Unchecked piece of any shape (tests, map setups). */
-  insertPiece(kind: BlockKind, center: Vector3, half: Vector3, quat: Quaternion, material: BlockMaterial, team: TeamId | null = null): Block {
-    return this.insert(kind, center, half, quat, material, team, PIECE_COST, null, 0, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
+  /** Unchecked piece of any shape (tests, map setups, network sync). */
+  insertPiece(
+    kind: BlockKind,
+    center: Vector3,
+    half: Vector3,
+    quat: Quaternion,
+    material: BlockMaterial,
+    team: TeamId | null = null,
+    key: string | null = null,
+    level = 0,
+  ): Block {
+    return this.insert(kind, center, half, quat, material, team, PIECE_COST, key, level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
   }
 
   private insert(kind: BlockKind, center: Vector3, half: Vector3, quat: Quaternion, material: BlockMaterial, team: TeamId | null,
@@ -275,16 +290,34 @@ export class BlockSystem {
     return block;
   }
 
-  /** Remove a block nearest to `pos` within `eps` m (used by network replication). */
-  removeByPos(pos: Vector3, eps = 0.08): Block | null {
+  /** Find a block nearest to `pos` within `eps` m. */
+  findByPos(pos: Vector3, eps = 0.12): Block | null {
     const e2 = eps * eps;
     for (const b of this.blocks.values()) {
-      if (b.center.distanceToSquared(pos) <= e2) {
-        this.remove(b);
-        return b;
-      }
+      if (b.center.distanceToSquared(pos) <= e2) return b;
     }
     return null;
+  }
+
+  /** Remove a block nearest to `pos` within `eps` m (used by network replication). */
+  removeByPos(pos: Vector3, eps = 0.08): Block | null {
+    const b = this.findByPos(pos, eps);
+    if (!b) return null;
+    this.remove(b);
+    return b;
+  }
+
+  /** Apply authoritative block HP at `pos` on a network client. */
+  syncDamageAtPos(pos: Vector3, hp: number, eps = 0.12): boolean {
+    const b = this.findByPos(pos, eps);
+    if (!b) return false;
+    b.hp = Math.max(0, hp);
+    this.version++;
+    if (!b.hp) {
+      this.onBreak?.(b);
+      this.remove(b);
+    }
+    return true;
   }
 
   damageCollider(handle: number, damage: number): boolean {
@@ -295,6 +328,8 @@ export class BlockSystem {
     if (!block.hp) {
       this.onBreak?.(block);
       this.remove(block);
+    } else {
+      this.onDamage?.(block);
     }
     return true;
   }

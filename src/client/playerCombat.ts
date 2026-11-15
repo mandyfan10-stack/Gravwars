@@ -3,6 +3,7 @@ import { Combat, CombatEvent, Faction, HitSource, MAX_HP, Target } from '../shar
 import { CROUCH_EYE_DROP, EYE_OFFSET, TICK_DT } from '../shared/constants';
 import { Rng, upOf } from '../shared/math';
 import { viewQuat } from '../shared/movement';
+import { escapeHtml } from '../shared/escape';
 import type { PlayerSim } from '../shared/sim';
 import { getTeam, TeamId } from '../shared/teams';
 import { crossbowSpec, createWeaponState, hasAmmo, isGun, kicked, kickReady, shotSpread, WEAPON_ORDER, WeaponId, WEAPONS, weaponTick } from '../shared/weapons';
@@ -57,7 +58,7 @@ export const teamSpan = (id: Faction, label?: string) => {
   if (id.startsWith('gang:')) return '<span class="npc">Бандит</span>';
   if (id.startsWith('car:')) return '<span class="npc">Машина</span>';
   const t = getTeam(id as TeamId);
-  return `<span style="color:${teamHex(t.color)}">${label ?? t.name}</span>`;
+  return `<span style="color:${teamHex(t.color)}">${escapeHtml(label ?? t.name)}</span>`;
 };
 
 /** Local player's combat: weapon state, firing, hit / death feedback, recoil and explosion shake. */
@@ -87,8 +88,14 @@ export class PlayerCombat {
   onKill: (target: Target) => void = () => {};
   /** Any kill (players, bots, NPCs): killer is undefined for falls and unknown sources. */
   onFrag: (killer: Target | undefined, victim: Target, head: boolean) => void = () => {};
+  /** True on non-host network clients: host confirms death/respawn transitions and ammo reloads. */
+  remoteAuthoritative = false;
   /** Fired a weapon/melee/grenade on this tick (used by network sync). */
   onFire?: (weapon: WeaponId, origin: Vector3, dir: Vector3, chargeT: number) => void;
+  /** Requested reload on this tick (used by network sync). */
+  onReload?: () => void;
+  /** Switched weapon locally (used by network sync). */
+  onSelectWeapon?: (weapon: WeaponId) => void;
   /** Kicked on this tick (used by network sync). */
   onKick?: (eye: Vector3, dir: Vector3) => void;
   /** Forward every CombatEvent to an external listener (e.g. network sync). */
@@ -173,13 +180,13 @@ export class PlayerCombat {
    * DEATH_TIME the player is back at the spawn (unless the crystal is gone). The sim is moved to the spawn right away
    * (the body must not stay around to block or be shot), the controls stay off until the respawn.
    */
-  die(cause: Death['cause'], killer?: Target, weapon?: HitSource, head = false) {
+  die(cause: Death['cause'], killer?: Target, weapon?: HitSource, head = false, forceFinal?: boolean) {
     const { sim, me } = this;
     if (this.death) return;
     const pos = sim.state.pos.clone(), up = me.up.clone();
     viewQuat(sim.state.frame, sim.state.yaw, sim.state.pitch, _vq);
     const look = new Vector3(0, 0, -1).applyQuaternion(_vq);
-    const final = !this.canRespawn();
+    const final = forceFinal !== undefined ? forceFinal : !this.canRespawn();
     this.death = {
       t: DEATH_TIME, pos, up, eye: this.eye(), look, killer, weapon, head, cause, final,
       dist: killer ? killer.center.distanceTo(pos) : 0,
@@ -218,18 +225,28 @@ export class PlayerCombat {
     const fire = fireHeld || this.forceFire > 0;
     if (this.forceFire > 0) this.forceFire--;
     if (this.death && !this.death.final) {
-      this.death.t -= TICK_DT;
-      if (this.death.t <= 0) this.reset();
+      if (this.remoteAuthoritative) {
+        this.death.t = Math.max(0.05, this.death.t - TICK_DT);
+      } else {
+        this.death.t -= TICK_DT;
+        if (this.death.t <= 0) this.reset();
+      }
     }
     const prevChargeLvl = weapons.current === 'crossbow' ? Math.min(3, Math.floor(weapons.chargeT)) : 0;
-    const fired = weaponTick(weapons, { fire: fire && me.alive, reload: this.pendingReload, select: this.pendingSelect, airborne: !sim.state.onGround }, TICK_DT);
+    const wantReload = this.pendingReload;
+    const wantSelect = this.pendingSelect;
+    const fired = weaponTick(weapons, { fire: fire && me.alive, reload: wantReload, select: wantSelect, airborne: !sim.state.onGround }, TICK_DT);
     if (weapons.current === 'crossbow' && weapons.chargeT > 0) {
       const newChargeLvl = Math.min(3, Math.floor(weapons.chargeT));
       if (newChargeLvl > prevChargeLvl) this.audio.crossbowCharge(newChargeLvl);
     }
-    if (this.pendingSelect) this.viewModel.setWeapon(weapons.current);
+    if (wantSelect) {
+      this.viewModel.setWeapon(weapons.current);
+      this.onSelectWeapon?.(weapons.current);
+    }
     const reloadStarted = weapons.reloadT > 0 && weapons.reloadT === weapons.reloadTotal;
     if (reloadStarted) {
+      if (wantReload) this.onReload?.();
       const w = weapons.current;
       if (w !== 'crossbow') {
         this.audio.reload(w === 'pistol', weapons.reloadTotal, weapons.reloadTotal === WEAPONS[w].reloadEmpty,

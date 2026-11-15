@@ -83,15 +83,17 @@ export class Throws {
         const tg = th.target;
         if (t.kind === 'bottle') {
           t.alive = false;
-          const stunned = !!tg.npc && !tg.guard;
+          const stunned = !this.combat.visualOnly && !!tg.npc && !tg.guard;
           if (stunned) tg.stun = THROW.stun;
           this.combat.damage(tg, THROW.bottleDamage, t.owner, th.head, pos);
           this.events.push({ type: 'shatter', pos, target: tg.id, stunned });
           continue;
         }
         // soft things bounce off a person and fall down
-        if (THROW.bumpDamage) this.combat.damage(tg, THROW.bumpDamage, t.owner, false, pos);
-        else tg.onHit?.(t.owner, 0);
+        if (!this.combat.visualOnly) {
+          if (THROW.bumpDamage) this.combat.damage(tg, THROW.bumpDamage, t.owner, false, pos);
+          else tg.onHit?.(t.owner, 0);
+        }
         this.events.push({ type: 'bump', pos, target: tg.id });
         t.pos.copy(pos);
         t.vel.multiplyScalar(-0.25);
@@ -110,9 +112,11 @@ export class Throws {
         // a floor for its gravity: it stays there as a pickup
         if (n.dot(t.down) < -0.6) {
           t.alive = false;
-          const up = t.down.clone().negate();
-          const it = this.pickups.drop(t.kind, pos.clone().addScaledVector(up, 0.3), up, 1);
-          if (it) this.events.push({ type: 'land', kind: t.kind, pos: it.pos.clone() });
+          if (!this.combat.visualOnly) {
+            const up = t.down.clone().negate();
+            const it = this.pickups.drop(t.kind, pos.clone().addScaledVector(up, 0.3), up, 1);
+            if (it) this.events.push({ type: 'land', kind: t.kind, pos: it.pos.clone() });
+          }
           continue;
         }
         // a wall: bounce back, slower

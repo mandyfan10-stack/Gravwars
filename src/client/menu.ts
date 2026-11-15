@@ -15,8 +15,10 @@ export interface MenuHooks {
   onToggleSpectate?: () => boolean;
   /** User exited back to the main menu lobby from a match. */
   onExitToMainMenu?: () => void;
-  onHostGame?: () => Promise<string>;
-  onJoinGame?: (roomCode: string) => Promise<void>;
+  onHostGame?: (name: string) => Promise<string>;
+  onJoinGame?: (roomCode: string, name: string) => Promise<void>;
+  onLeaveRoom?: () => void;
+  onNameChange?: (name: string) => void;
 }
 
 /**
@@ -114,30 +116,69 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
   });
 
   // Multiplayer panel actions
+  const NAME_KEY = 'gravwars-net-name';
   const netStatus = $('net-status');
-  const netCreate = $('net-create-btn');
+  const netNameInput = document.getElementById('net-name-input') as HTMLInputElement | null;
+  const netCreate = $('net-create-btn') as HTMLButtonElement;
   const netRoomInfo = $('net-room-info');
   const netRoomCode = $('net-room-code');
   const netCopy = $('net-copy-btn');
   const netCopyLink = document.getElementById('net-copy-link-btn');
-  const netJoinBtn = $('net-join-btn');
+  const netJoinBtn = $('net-join-btn') as HTMLButtonElement;
   const netJoinInput = $<HTMLInputElement>('net-join-input');
+  const netLeaveBtn = document.getElementById('net-leave-btn') as HTMLButtonElement | null;
+
+  const getPlayerName = () => {
+    const raw = netNameInput?.value.replace(/\s+/g, ' ').trim().slice(0, 16) ?? '';
+    return raw || 'Игрок';
+  };
+
+  if (netNameInput) {
+    netNameInput.value = localStorage.getItem(NAME_KEY) ?? '';
+    netNameInput.addEventListener('input', () => {
+      const val = netNameInput.value.slice(0, 16);
+      localStorage.setItem(NAME_KEY, val);
+      hooks.onNameChange?.(getPlayerName());
+    });
+  }
+
+  const setNetStatus = (text: string, isError = false) => {
+    netStatus.textContent = text;
+    netStatus.classList.toggle('error', isError);
+  };
+
+  const setConnectedState = (connected: boolean, busy = false) => {
+    netCreate.disabled = connected || busy;
+    netJoinBtn.disabled = connected || busy;
+    netJoinInput.disabled = connected || busy;
+    if (netLeaveBtn) netLeaveBtn.hidden = !connected;
+    if (!connected) netRoomInfo.hidden = true;
+  };
+
+  const resetNetworkUi = (statusText = '', isError = false) => {
+    setConnectedState(false, false);
+    netRoomCode.textContent = '';
+    setNetStatus(statusText, isError);
+  };
 
   netCreate?.addEventListener('click', async () => {
-    if (!hooks.onHostGame) return;
-    netStatus.textContent = 'Создание комнаты...';
+    if (!hooks.onHostGame || netCreate.disabled) return;
+    setConnectedState(false, true);
+    setNetStatus('Создание комнаты...');
     try {
-      const code = await hooks.onHostGame();
+      const code = await hooks.onHostGame(getPlayerName());
       netRoomCode.textContent = code;
       netRoomInfo.hidden = false;
-      netStatus.textContent = 'Комната открыта! Друзья могут подключиться по этому коду.';
+      setConnectedState(true, false);
+      setNetStatus('Комната открыта! Поделитесь кодом или ссылкой.');
     } catch (e) {
-      netStatus.textContent = `Ошибка создания: ${e instanceof Error ? e.message : String(e)}`;
+      setConnectedState(false, false);
+      setNetStatus(`Ошибка создания: ${e instanceof Error ? e.message : String(e)}`, true);
     }
   });
 
   netCopy?.addEventListener('click', () => {
-    const code = netRoomCode.textContent;
+    const code = netRoomCode.textContent?.trim();
     if (code) {
       navigator.clipboard.writeText(code).then(() => {
         netCopy.textContent = 'Скопировано!';
@@ -150,6 +191,7 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     const code = netRoomCode.textContent?.trim();
     if (!code) return;
     const url = new URL(window.location.href);
+    url.hash = '';
     url.searchParams.set('room', code);
     navigator.clipboard.writeText(url.toString()).then(() => {
       netCopyLink.textContent = 'Ссылка скопирована!';
@@ -157,20 +199,36 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     });
   });
 
-  netJoinBtn?.addEventListener('click', async () => {
+  const doJoin = async () => {
     const code = netJoinInput.value.trim();
     if (!code) {
-      netStatus.textContent = 'Введите код комнаты';
+      setNetStatus('Введите код комнаты', true);
       return;
     }
-    if (!hooks.onJoinGame) return;
-    netStatus.textContent = 'Подключение к хосту...';
+    if (!hooks.onJoinGame || netJoinBtn.disabled) return;
+    setConnectedState(false, true);
+    setNetStatus('Подключение к хосту...');
     try {
-      await hooks.onJoinGame(code);
-      netStatus.textContent = 'Успешно подключено к лобби!';
+      await hooks.onJoinGame(code, getPlayerName());
+      setConnectedState(true, false);
+      setNetStatus('Подключено к лобби! Ожидание старта от хоста…');
     } catch (e) {
-      netStatus.textContent = `Ошибка подключения: ${e instanceof Error ? e.message : String(e)}`;
+      setConnectedState(false, false);
+      setNetStatus(`Ошибка подключения: ${e instanceof Error ? e.message : String(e)}`, true);
     }
+  };
+
+  netJoinBtn?.addEventListener('click', () => { void doJoin(); });
+  netJoinInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void doJoin();
+    }
+  });
+
+  netLeaveBtn?.addEventListener('click', () => {
+    hooks.onLeaveRoom?.();
+    resetNetworkUi('Отключились от комнаты');
   });
 
   const urlRoom = new URLSearchParams(window.location.search).get('room')?.trim();
@@ -182,8 +240,10 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     const mp = $('menu-multiplayer');
     if (mp) mp.hidden = false;
     netJoinInput.value = urlRoom.toUpperCase();
-    window.history.replaceState({}, '', window.location.pathname);
-    setTimeout(() => netJoinBtn?.click(), 150);
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete('room');
+    window.history.replaceState({}, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+    setTimeout(() => { void doJoin(); }, 150);
   }
 
   const save = () => saveSettings(settings);
@@ -287,5 +347,7 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     },
     /** Refresh the summary when settings sliders etc. are not the reason (e.g. the match ended while paused). */
     refresh: showMatch,
+    setNetStatus,
+    resetNetworkUi,
   };
 }

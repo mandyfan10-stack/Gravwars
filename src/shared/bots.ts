@@ -329,6 +329,9 @@ export class BotManager {
   private keys = { version: -1, set: new Set<string>() };
   private readonly gaps = new Map<TeamId, { t: number; cells: FortCell[] }>();
   private loot: Pickups | null = null;
+  /** Called on the authoritative host when a bot fires a weapon/grenade or lands a kick. */
+  onShot?: (botId: number, weapon: WeaponId, origin: Vector3, dir: Vector3, chargeT: number) => void;
+  onKick?: (botId: number, eye: Vector3, dir: Vector3) => void;
 
   constructor(private R: Rapier, private world: PhysicsWorld, private map: MapData, private combat: Combat,
     private match: Match, private blocks: BlockSystem, readonly playerTeam: TeamId, perTeam = BOT.perTeam, roster?: BotRoster) {
@@ -1489,6 +1492,7 @@ export class BotManager {
         const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
         kicked(bot.weapons, this.combat.kick(bot.id, eye, th.kick, bot.target.up) > 0);
         bot.kicksTotal++;
+        this.onKick?.(bot.id, eye, th.kick);
       }
       // semi-automatic guns fire on the press: release the trigger every other tick; crossbow charges to level 1+ then releases
       const isXbow = bot.weapons.current === 'crossbow';
@@ -1506,6 +1510,7 @@ export class BotManager {
           bot.sim.applyImpulse(th.aim.clone().normalize().multiplyScalar(-WEAPONS[fired].airPush));
         }
         this.combat.use(fired, bot.id, eye, th.aim, bot.sim.state.vel, bot.target.up.clone().negate(), bot.weapons.lastChargeT);
+        this.onShot?.(bot.id, fired, eye, th.aim, bot.weapons.lastChargeT);
         bot.shotsTotal++;
         if (fired === 'grenade') { bot.pick = null; bot.nadeT = 14; }
         if (++bot.shots >= bot.tune.burst) {

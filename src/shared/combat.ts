@@ -48,6 +48,8 @@ export interface Target {
   regen?: boolean;
   /** Seconds since the last damage taken (regen). */
   calm?: number;
+  /** True for human players (allows shooting ambient cars in multiplayer too). */
+  isHuman?: boolean;
 }
 
 export interface Projectile {
@@ -216,6 +218,8 @@ export class Combat {
   time = 0;
   /** Global wind multiplier (0 = calm; debug / tests). */
   windMul = 1;
+  /** Non-host network client mode: simulates projectile flight & visual impacts without mutating authoritative HP/blocks/crystals. */
+  visualOnly = false;
   private nextId = 1;
   onWorldDamage: (handle: number, damage: number) => void = () => {};
   onExplosion: (pos: Vector3, radius: number, damage: number) => void = () => {};
@@ -246,6 +250,10 @@ export class Combat {
     this.characters.add(collider.handle);
   }
 
+  removeCharacter(collider: { handle: number }) {
+    this.characters.delete(collider.handle);
+  }
+
   /** Clear line between two points (character capsules do not block). */
   lineOfSight(from: Vector3, to: Vector3, margin = 0.3) {
     const d = _seg.copy(to).sub(from);
@@ -271,11 +279,16 @@ export class Combat {
     if (t) t.guard = null;
   }
 
+  /** Emit a purely visual/audio explosion triggered by an authoritative host event. */
+  visualExplode(pos: Vector3, radius: number) {
+    this.events.push({ type: 'explode', pos: pos.clone(), radius });
+  }
+
   /**
    * Fire a gun / throw a grenade. Several pellets (shotgun) go out in a fixed pattern over the cone: one in the
    * middle, the rest on a ring turned a little differently every shot (deterministic per shot). Returns the first.
    */
-  fire(weapon: WeaponId, owner: number, origin: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3, chargeT = 0) {
+  fire(weapon: WeaponId, owner: number, origin: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3, chargeT = 0, teamOverride?: Faction | null) {
     this.unguard(owner);
     const def = WEAPONS[weapon];
     const xbow = weapon === 'crossbow' ? crossbowSpec(chargeT) : null;
@@ -288,6 +301,7 @@ export class Combat {
     }
     const turn = Math.sin(this.nextId * 78.233) * 43758.5453;
     this.volley.length = 0;
+    const team = teamOverride !== undefined ? teamOverride : (this.target(owner)?.team ?? null);
     for (let k = 0; k < def.pellets; k++) {
       const pd = d.clone();
       if (k > 0) {
@@ -296,7 +310,7 @@ export class Combat {
         pd.addScaledVector(u, Math.cos(a) * r).addScaledVector(v, Math.sin(a) * r).normalize();
       }
       const p: Projectile = {
-        id: this.nextId++, weapon, owner, team: this.target(owner)?.team ?? null, pos: origin.clone(), origin: origin.clone(),
+        id: this.nextId++, weapon, owner, team, pos: origin.clone(), origin: origin.clone(),
         vel: pd.multiplyScalar(speed).addScaledVector(ownerVel, def.inherit),
         down: down.clone().normalize(), age: 0, ricochets: 0, resting: false, alive: true,
         ...(xbow ? {
@@ -317,12 +331,12 @@ export class Combat {
   }
 
   /** Fire a gun / throw a grenade, or punch with the fists. */
-  use(weapon: WeaponId, owner: number, eye: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3, chargeT = 0): Projectile | null {
+  use(weapon: WeaponId, owner: number, eye: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3, chargeT = 0, teamOverride?: Faction | null): Projectile | null {
     if (WEAPONS[weapon].speed === 0) {
       this.melee(weapon, owner, eye, dir);
       return null;
     }
-    return this.fire(weapon, owner, eye, dir, ownerVel, down, chargeT);
+    return this.fire(weapon, owner, eye, dir, ownerVel, down, chargeT, teamOverride);
   }
 
   /**
@@ -377,12 +391,17 @@ export class Combat {
     const hits = this.inReach(owner, eye, d, def.reach, MELEE.cos);
     const to = eye.clone().addScaledVector(d, def.reach);
     const line = this.rayTargets({ owner, team: this.target(owner)?.team ?? null }, eye, to);
+    const crystal = this.crystalInReach(owner, eye, d, def.reach);
+    if (this.visualOnly) {
+      const wh = !hits.length && !crystal ? this.rayWorld(eye, to) : null;
+      this.events.push({ type: 'melee', kind: 'punch', owner, pos: wh ? eye.clone().lerp(to, wh.t) : null, target: null, hits: 0 });
+      return;
+    }
     for (const h of hits) {
       const head = line?.target === h.target && line.head;
       this.shove(h.target, eye, MELEE.push, MELEE.lift);
       this.damage(h.target, Math.round(def.damage * (head ? def.headMul : 1)), owner, head, h.pos, { noPush: true, weapon });
     }
-    const crystal = this.crystalInReach(owner, eye, d, def.reach);
     if (crystal) this.hurtCrystal(crystal.c, def.damage * DAMAGE_SCALE, owner, eye, crystal.pos);
     if (hits.length || crystal) {
       this.events.push({ type: 'melee', kind: 'punch', owner, pos: (hits[0]?.pos ?? crystal!.pos).clone(), target: hits[0]?.target.id ?? null, hits: hits.length });
@@ -418,6 +437,16 @@ export class Combat {
     let wallHit = false;
     const hits = [...this.inReach(owner, hip, d, KICK.reach, KICK.cos), ...this.inReach(owner, eye, d, KICK.reach * 0.8, KICK.cos)]
       .filter((h, i, all) => all.findIndex((o) => o.target === h.target) === i);
+    if (this.visualOnly) {
+      const propHits = this.props ? this.props.inCone(hip, d, KICK.reach, KICK.cos) : [];
+      const wh = !hits.length && !propHits.length
+        ? (this.rayWorld(hip, hip.clone().addScaledVector(d, KICK.reach)) ?? this.rayWorld(eye, eye.clone().addScaledVector(dir, KICK.reach)))
+        : null;
+      const pos = hits[0]?.pos ?? (propHits.length && this.props ? this.props.pos(propHits[0]) : null)
+        ?? (wh ? hip.clone().addScaledVector(d, KICK.reach * wh.t) : null);
+      this.events.push({ type: 'melee', kind: 'kick', owner, pos: pos?.clone() ?? null, target: null, hits: hits.length + propHits.length + (wh ? 1 : 0) });
+      return hits.length + propHits.length + (wh ? 1 : 0);
+    }
     for (const h of hits) {
       first ??= h.pos;
       if (h.target.npc !== 'car') target ??= h.target.id;
@@ -477,7 +506,7 @@ export class Combat {
     const st = { s: 0, t: 0 };
     const pr = p.radius ?? 0.04;
     for (const tg of this.targets) {
-      if (!tg.alive || tg.id === p.owner || tg.team === p.team || p.hitTargets?.has(tg.id) || (tg.npc === 'car' && (p.skipCars || p.owner !== 0))) continue;
+      if (!tg.alive || tg.id === p.owner || tg.team === p.team || p.hitTargets?.has(tg.id) || (tg.npc === 'car' && (p.skipCars || (p.owner !== 0 && !this.target(p.owner)?.isHuman)))) continue;
       _c0.copy(tg.center).addScaledVector(tg.up, -PLAYER_HALF_SEGMENT);
       _c1.copy(tg.center).addScaledVector(tg.up, PLAYER_HALF_SEGMENT);
       const d2 = segSeg(from, to, _c0, _c1, st);
@@ -534,6 +563,7 @@ export class Combat {
    * fist is) is within CRYSTAL.range of it.
    */
   private hurtCrystal(c: Crystal, damage: number, owner: number, from: Vector3, pos: Vector3) {
+    if (this.visualOnly) return;
     const far = this.crystalDistance(c, from) > CRYSTAL.range;
     const dmg = far ? 0 : Math.round(damage * 10) / 10;
     this.events.push({ type: 'crystal', team: c.team, owner, pos: pos.clone(), damage: dmg, far });
@@ -545,7 +575,7 @@ export class Combat {
    * target away from the attacker (HIT_PUSH).
    */
   damage(tg: Target, amount: number, owner: number, head: boolean, pos: Vector3, opts: DamageOpts = {}) {
-    if (!tg.alive) return;
+    if (this.visualOnly || !tg.alive) return;
     if (tg.guard) {
       this.events.push({ type: 'guarded', target: tg.id, pos: pos.clone() });
       return;
@@ -580,6 +610,7 @@ export class Combat {
 
   /** Fall damage for a landing at `speed` m/s (FALL); returns the damage dealt. */
   fall(tg: Target, speed: number): number {
+    if (this.visualOnly) return 0;
     const raw = Math.round((speed - FALL.safe) * FALL.perMs);
     const dmg = Math.min(FALL.maxDmg, raw);
     if (dmg <= 0 || !tg.alive || tg.guard) return 0;
@@ -592,6 +623,7 @@ export class Combat {
     pos: Vector3, owner: number, team: Faction | null, radius: number, damage: number,
     knockback: number, blockDamage: number, selfMul = 0.4, raw = false, weapon: HitSource = 'rocket', origin = pos,
   ) {
+    if (this.visualOnly) return;
     this.events.push({ type: 'explode', pos: pos.clone(), radius });
     this.noises.push({ pos: pos.clone(), radius: NOISE.grenade, owner });
     this.onExplosion(pos.clone(), radius, blockDamage);
@@ -648,11 +680,13 @@ export class Combat {
     const prop = this.props?.of(handle) ?? -1;
     const baseDmg = p.customDamage ?? def.damage;
     const baseBlockDmg = p.customBlockDamage ?? def.blockDamage;
-    if (prop >= 0) {
-      if (!this.props!.damage(prop, Math.max(2, Math.round(baseDmg * 1.4)))) {
-        this.props!.push(prop, _rel.copy(dir).multiplyScalar(def.pellets > 1 ? 0.35 : 0.8), end);
-      }
-    } else this.onWorldDamage(handle, Math.max(1, Math.round(baseBlockDmg * energyLeft(def, speed))));
+    if (!this.visualOnly) {
+      if (prop >= 0) {
+        if (!this.props!.damage(prop, Math.max(2, Math.round(baseDmg * 1.4)))) {
+          this.props!.push(prop, _rel.copy(dir).multiplyScalar(def.pellets > 1 ? 0.35 : 0.8), end);
+        }
+      } else this.onWorldDamage(handle, Math.max(1, Math.round(baseBlockDmg * energyLeft(def, speed))));
+    }
     this.events.push({ type: 'impact', pos: end.clone(), normal: normal.clone(), material: material ?? (prop >= 0 ? 'wood' : undefined) });
     if (p.weapon !== 'crossbow' && material !== 'wood' && cos < RICOCHET.cos && p.ricochets === 0) {
       p.ricochets++;
@@ -690,19 +724,21 @@ export class Combat {
 
   tick(dt: number) {
     this.time += dt;
-    for (const tg of this.targets) {
-      if (tg.stun) tg.stun = tg.alive ? Math.max(0, tg.stun - dt) : 0;
-      if (tg.regen && tg.alive) {
-        tg.calm = (tg.calm ?? REGEN.delay) + dt;
-        if (tg.calm >= REGEN.delay && tg.hp < MAX_HP) tg.hp = Math.min(MAX_HP, tg.hp + REGEN.rate * dt);
-      }
-      if (tg.guard && ((tg.guard.t -= dt) <= 0 || !tg.alive || tg.center.distanceTo(tg.guard.from) > SPAWN_GUARD.radius)) tg.guard = null;
-      if (!tg.alive && tg.respawnIn > 0) {
-        tg.respawnIn -= dt;
-        if (tg.respawnIn <= 0) {
-          tg.respawnIn = 0;
-          tg.alive = true;
-          tg.hp = MAX_HP;
+    if (!this.visualOnly) {
+      for (const tg of this.targets) {
+        if (tg.stun) tg.stun = tg.alive ? Math.max(0, tg.stun - dt) : 0;
+        if (tg.regen && tg.alive) {
+          tg.calm = (tg.calm ?? REGEN.delay) + dt;
+          if (tg.calm >= REGEN.delay && tg.hp < MAX_HP) tg.hp = Math.min(MAX_HP, tg.hp + REGEN.rate * dt);
+        }
+        if (tg.guard && ((tg.guard.t -= dt) <= 0 || !tg.alive || tg.center.distanceTo(tg.guard.from) > SPAWN_GUARD.radius)) tg.guard = null;
+        if (!tg.alive && tg.respawnIn > 0) {
+          tg.respawnIn -= dt;
+          if (tg.respawnIn <= 0) {
+            tg.respawnIn = 0;
+            tg.alive = true;
+            tg.hp = MAX_HP;
+          }
         }
       }
     }

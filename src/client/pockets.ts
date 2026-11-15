@@ -37,10 +37,22 @@ export class Pockets {
     this.fishing = new Fishing(ponds);
   }
 
+  remoteAuthoritative = false;
+  onInteractPickup?: (pickupId: number) => void;
+  onPickupFront?: (pos: Vector3, dir: Vector3) => void;
+  onConsume?: (id: ItemId) => void;
+  onFishCatch?: () => void;
+
   /** E away from the shop: pick up the item in reach. True if something was taken. */
   interact(): boolean {
     const it = this.near;
     if (!it) return false;
+    if (this.remoteAuthoritative) {
+      it.alive = false;
+      this.onInteractPickup?.(it.id);
+      this.near = null;
+      return true;
+    }
     this.takePickup(it);
     this.near = null;
     return true;
@@ -51,6 +63,16 @@ export class Pockets {
     if (!this.player.me.alive) return 0;
     camera.getWorldDirection(_dir);
     const list = this.pickups.inFrontRadius(this.sim.state.pos, _dir, this.player.me.up, 1.0);
+    if (this.remoteAuthoritative) {
+      if (list.length) {
+        for (const it of list) {
+          it.alive = false;
+          if (this.near === it) this.near = null;
+        }
+        this.onPickupFront?.(this.sim.state.pos, _dir);
+      }
+      return list.length;
+    }
     for (const it of list) {
       this.takePickup(it);
       if (this.near === it) this.near = null;
@@ -92,8 +114,13 @@ export class Pockets {
   consume(id: ItemId): boolean {
     if (this.eatT > 0 || !ITEMS[id].heal || this.eco.items[id] <= 0) return false;
     if (this.player.me.hp >= MAX_HP) { this.audio.reject(); this.hud.toast('Здоровье и так полное', '#ffb49e', 0.8); return false; }
-    this.eco.take(id);
-    this.player.heal(ITEMS[id].heal);
+    if (this.remoteAuthoritative) {
+      this.eco.items[id]--;
+      this.onConsume?.(id);
+    } else {
+      this.eco.take(id);
+      this.player.heal(ITEMS[id].heal);
+    }
     if (id === 'medkit') this.audio.patch();
     else this.audio.eat();
     this.eatT = EAT_COOLDOWN;
@@ -134,7 +161,7 @@ export class Pockets {
   /** Per frame: pickups in reach, fishing timers and events, HUD. Returns the prompt line for the centre of the screen. */
   update(dt: number, camera: PerspectiveCamera, onCast: () => void): string {
     this.eatT = Math.max(0, this.eatT - dt);
-    this.pickups.tick(dt);
+    if (!this.remoteAuthoritative) this.pickups.tick(dt);
     const alive = this.player.me.alive;
     this.near = alive ? this.pickups.nearest(this.sim.state.pos) : null;
 
@@ -146,9 +173,13 @@ export class Pockets {
       else if (e.type === 'splash') this.audio.splash();
       else if (e.type === 'bite') this.audio.bite();
       else if (e.type === 'catch') {
-        this.eco.items.fish++;
+        if (this.remoteAuthoritative) {
+          this.onFishCatch?.();
+        } else {
+          this.eco.items.fish++;
+          this.hud.toast('+1 рыба', '#bfe6ff', 1.2);
+        }
         this.audio.reel();
-        this.hud.toast('+1 рыба', '#bfe6ff', 1.2);
       } else if (e.type === 'noWater') {
         this.audio.reject();
         this.hud.toast('Забрасывай в пруд — он в парке', '#ffb49e', 1.2);

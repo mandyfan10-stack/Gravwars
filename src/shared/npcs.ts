@@ -8,7 +8,7 @@ import { emptyInput, MoveInput, moveBasis } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
 import { PlayerSim } from './sim';
 import { TeamId } from './teams';
-import { createWeaponState, giveWeapon, WeaponState, weaponTick, WEAPONS } from './weapons';
+import { createWeaponState, giveWeapon, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
 
 export type NpcKind = 'bum' | 'gang';
 
@@ -255,6 +255,8 @@ export class NpcManager {
   readonly cars: NpcCar[] = [];
   readonly events: NpcEvent[] = [];
   readonly islands: Island[] = [];
+  /** Called on the authoritative host when a gang NPC fires a gun or throws a grenade. */
+  onShot?: (npcId: number, weapon: WeaponId, origin: Vector3, dir: Vector3) => void;
   private readonly rng = new Rng(31337);
   private readonly carRng = new Rng(77777);
   time = 0;
@@ -776,6 +778,7 @@ export class NpcManager {
       if (fired && aim) {
         const eye = n.sim.state.pos.clone().addScaledVector(n.target.up, EYE_OFFSET);
         this.combat.use(fired, n.id, eye, aim, n.sim.state.vel, n.target.up.clone().negate());
+        this.onShot?.(n.id, fired, eye, aim);
         n.shotsTotal++;
         if (n.kind === 'gang' && ++n.shots >= NPC.gang.burst) { n.shots = 0; n.pauseT = NPC.gang.burstPause; n.fire = 'free'; }
       }
@@ -1140,6 +1143,7 @@ export class NpcManager {
     n.grenadeT = this.rng.range(...NPC.gang.grenadeEvery);
     n.throwsTotal++;
     const p = this.combat.use('grenade', n.id, eye, dir, n.sim.state.vel, up.clone().negate());
+    this.onShot?.(n.id, 'grenade', eye, dir);
     if (p) {
       p.vel.copy(dir).multiplyScalar(v).addScaledVector(n.sim.state.vel, WEAPONS.grenade.inherit);
       const flight = x / Math.max(1, v * Math.sqrt(Math.max(0, 1 - dir.dot(up) ** 2)));

@@ -38,6 +38,8 @@ export class Props {
   private readonly away = new Map<number, number>();
   /** Crates that moved since the renderer last looked (it clears the set). */
   readonly moved = new Set<number>();
+  /** Crates changed since the last network snapshot broadcast. */
+  private readonly netDirty = new Set<number>();
 
   private readonly mass: number[];
   readonly maxHp: number[];
@@ -76,6 +78,7 @@ export class Props {
     if (at) b.applyImpulseAtPoint(j, { x: at.x, y: at.y, z: at.z }, true);
     else b.applyImpulse(j, true);
     this.moved.add(i);
+    this.netDirty.add(i);
   }
 
   /** Crates in a cone in front of `eye` (kick): their indices. */
@@ -111,6 +114,7 @@ export class Props {
     b.setEnabled(false);
     this.away.set(i, RETURN_AFTER);
     this.moved.add(i);
+    this.netDirty.add(i);
     // Update the physics query pipeline immediately so the broken crate's collider never lingers
     this.world.propagateModifiedBodyPositionsToColliders();
     this.onBreak?.(i, pos, up, c.kind);
@@ -153,17 +157,20 @@ export class Props {
         for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(true);
         b.sleep();
         this.moved.add(i);
+        this.netDirty.add(i);
         awake = true;
         continue;
       }
       if (b.isSleeping()) continue;
       awake = true;
       this.moved.add(i);
+      this.netDirty.add(i);
       const t = b.translation();
       if (Math.max(Math.abs(t.x), Math.abs(t.y), Math.abs(t.z)) > lim) {
         for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(false);
         b.setEnabled(false);
         this.away.set(i, RETURN_AFTER);
+        this.netDirty.add(i);
       }
     }
     if (awake) {
@@ -186,6 +193,57 @@ export class Props {
   /** Is this crate in play (not lost in the void)? */
   present(i: number) {
     return !this.away.has(i);
+  }
+
+  /** Consume and return all crates that changed since the previous network snapshot (or are still moving). */
+  consumeNetDirty(): { idx: number; pos: [number, number, number]; quat: [number, number, number, number]; hp: number; present: boolean }[] {
+    const out: { idx: number; pos: [number, number, number]; quat: [number, number, number, number]; hp: number; present: boolean }[] = [];
+    const seen = new Set<number>();
+    const addIdx = (i: number) => {
+      if (seen.has(i) || i < 0 || i >= this.bodies.length) return;
+      seen.add(i);
+      const t = this.bodies[i].translation();
+      const r = this.bodies[i].rotation();
+      out.push({
+        idx: i,
+        pos: [t.x, t.y, t.z],
+        quat: [r.x, r.y, r.z, r.w],
+        hp: this.hp[i] ?? 0,
+        present: !this.away.has(i),
+      });
+    };
+    for (const i of this.netDirty) addIdx(i);
+    this.netDirty.clear();
+    for (let i = 0; i < this.bodies.length; i++) {
+      if (!this.away.has(i) && !this.bodies[i].isSleeping()) addIdx(i);
+    }
+    return out;
+  }
+
+  /** Apply authoritative crate/barrel states on a non-host client. */
+  applySync(list: { idx: number; pos: [number, number, number]; quat: [number, number, number, number]; hp: number; present: boolean }[]) {
+    for (const s of list) {
+      if (s.idx < 0 || s.idx >= this.bodies.length) continue;
+      const b = this.bodies[s.idx];
+      this.hp[s.idx] = s.hp;
+      if (!s.present) {
+        this.away.set(s.idx, RETURN_AFTER);
+        b.setLinvel({ x: 0, y: 0, z: 0 }, false);
+        b.setAngvel({ x: 0, y: 0, z: 0 }, false);
+        b.setTranslation({ x: 0, y: -4000 - s.idx * 3, z: 0 }, true);
+        for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(false);
+        b.setEnabled(false);
+      } else {
+        this.away.delete(s.idx);
+        b.setEnabled(true);
+        for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(true);
+        b.setTranslation({ x: s.pos[0], y: s.pos[1], z: s.pos[2] }, false);
+        b.setRotation({ x: s.quat[0], y: s.quat[1], z: s.quat[2], w: s.quat[3] }, false);
+        b.sleep();
+      }
+      this.moved.add(s.idx);
+    }
+    if (list.length) this.world.propagateModifiedBodyPositionsToColliders();
   }
 
   /** For the renderer: does any crate still move? */

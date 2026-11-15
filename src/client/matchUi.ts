@@ -81,10 +81,22 @@ export class MatchUi {
     else if (act === 'sell') this.sell(id!);
   }
 
+  onRemoteBuy?: (id: string) => void;
+  onRemoteSell?: (id: string) => void;
+
   private buy(id: string) {
     const offer = this.eco.offers().find((o) => o.item.id === id);
     if (!offer) return;
     const item = offer.item;
+    if (this.onRemoteBuy) {
+      if (offer.state !== 'ok') {
+        this.audio.reject();
+        this.hud.toast(`Не хватает: ${CURRENCY_LABEL[item.currency]}`, '#ff8e83', 1);
+        return;
+      }
+      this.onRemoteBuy(id);
+      return;
+    }
     const r = this.eco.buy(item);
     if (r === 'ok') {
       this.audio.coins();
@@ -96,6 +108,10 @@ export class MatchUi {
   }
 
   private sell(id: string) {
+    if (this.onRemoteSell) {
+      this.onRemoteSell(id);
+      return;
+    }
     const got = id === 'all' ? this.eco.sellAll() : SELLABLE.includes(id as never) ? this.eco.sell(id as never) : 0;
     if (got > 0) {
       this.audio.coins();

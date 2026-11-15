@@ -10,7 +10,7 @@ import { BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { faceByUp, faceOfTeam, generateMap, MapData } from '../shared/map';
-import { activeTeams, botRoster, playerTeam } from '../shared/lobby';
+import { activeTeams, botRoster, humanTeams, playerTeam } from '../shared/lobby';
 import { NpcManager } from '../shared/npcs';
 import { Economy, Pickups } from '../shared/economy';
 import { KILL_REWARD, Match } from '../shared/match';
@@ -131,8 +131,11 @@ async function main() {
   let isNetworkMatch = false;
   let isHostPlayer = true;
   let myNetworkId = '';
+  let myNetworkName = '';
   let matchSeed = 1337;
   let canonicalMapTeam: TeamId = 'red';
+  let skipFortTeams: TeamId[] = [];
+  let pendingNetStart = false;
   let netMatchStartResolve: (() => void) | null = null;
 
   const lobby = new Lobby(settings.difficulty);
@@ -152,67 +155,112 @@ async function main() {
     },
     onExitToMainMenu: () => {
       if (spectator?.active) spectator.disable();
+      netTransport?.close();
+      netTransport = null;
+      netLobby = null;
       music.playMenuMusic();
     },
-    onHostGame: async () => {
-      isNetworkMatch = true;
-      isHostPlayer = true;
-      netTransport = new P2PTransport(true);
-      const code = await netTransport.host();
-      myNetworkId = netTransport.myId;
-      lobby.localPlayerId = myNetworkId;
-      netLobby = new NetLobbyController(netTransport, lobby, {
-        onStartMatch: (seed, _config, _activeTeams, myId, isHost, mapTeam) => {
-          matchSeed = seed;
-          myNetworkId = myId;
-          isHostPlayer = isHost;
-          canonicalMapTeam = mapTeam;
-          netMatchStartResolve?.();
-        },
-        onStatusMessage: (msg) => {
-          const el = document.getElementById('net-status');
-          if (el) el.textContent = msg;
-        },
-      });
-      lobby.onSeatRequest = (team, i) => netLobby?.requestSeat(team, i);
-      return code;
+    onHostGame: async (name: string) => {
+      cleanupNetworkRoom(false);
+      myNetworkName = name;
+      const transport = new P2PTransport(true);
+      try {
+        const code = await transport.host();
+        netTransport = transport;
+        isNetworkMatch = true;
+        isHostPlayer = true;
+        myNetworkId = transport.myId;
+        lobby.localPlayerId = myNetworkId;
+        lobby.isNetworkClient = false;
+        attachNetLobby(transport, name);
+        syncStart();
+        return code;
+      } catch (err) {
+        transport.close();
+        throw err;
+      }
     },
-    onJoinGame: async (roomCode: string) => {
-      isNetworkMatch = true;
-      isHostPlayer = false;
-      netTransport = new P2PTransport(false);
-      await netTransport.join(roomCode);
-      myNetworkId = netTransport.myId;
-      lobby.localPlayerId = myNetworkId;
-      lobby.isNetworkClient = true;
-      netLobby = new NetLobbyController(netTransport, lobby, {
-        onStartMatch: (seed, _config, _activeTeams, myId, isHost, mapTeam) => {
-          matchSeed = seed;
-          myNetworkId = myId;
-          isHostPlayer = isHost;
-          canonicalMapTeam = mapTeam;
-          netMatchStartResolve?.();
-        },
-        onStatusMessage: (msg) => {
-          const el = document.getElementById('net-status');
-          if (el) el.textContent = msg;
-        },
-      });
-      lobby.onSeatRequest = (team, i) => netLobby?.requestSeat(team, i);
+    onJoinGame: async (roomCode: string, name: string) => {
+      cleanupNetworkRoom(false);
+      myNetworkName = name;
+      const transport = new P2PTransport(false);
+      try {
+        await transport.join(roomCode);
+        netTransport = transport;
+        isNetworkMatch = true;
+        isHostPlayer = false;
+        myNetworkId = transport.myId;
+        lobby.localPlayerId = myNetworkId;
+        lobby.isNetworkClient = true;
+        attachNetLobby(transport, name);
+        syncStart();
+      } catch (err) {
+        transport.close();
+        throw err;
+      }
+    },
+    onLeaveRoom: () => {
+      cleanupNetworkRoom(false);
+    },
+    onNameChange: (name: string) => {
+      myNetworkName = name;
+      netLobby?.setMyName(name);
     },
   });
+
+  function cleanupNetworkRoom(resetUi = true, message?: string, isError = false) {
+    netTransport?.close();
+    netTransport = null;
+    netLobby = null;
+    isNetworkMatch = false;
+    isHostPlayer = true;
+    myNetworkId = '';
+    skipFortTeams = [];
+    pendingNetStart = false;
+    lobby.isNetworkClient = false;
+    lobby.localPlayerId = '';
+    lobby.onSeatRequest = undefined;
+    if (resetUi) menu.resetNetworkUi(message, isError);
+    syncStart();
+  }
+
+  function attachNetLobby(transport: P2PTransport, name: string) {
+    netLobby = new NetLobbyController(transport, lobby, {
+      onStartMatch: (seed, _config, _activeTeams, myId, isHost, mapTeam, skipTeams) => {
+        matchSeed = seed;
+        myNetworkId = myId;
+        isHostPlayer = isHost;
+        canonicalMapTeam = mapTeam;
+        skipFortTeams = skipTeams;
+        if (netMatchStartResolve) netMatchStartResolve();
+        else pendingNetStart = true;
+      },
+      onStatusMessage: (msg, isErr) => menu.setNetStatus(msg, isErr),
+      onRejected: (reason) => cleanupNetworkRoom(true, reason, true),
+      onHostLeave: (reason) => cleanupNetworkRoom(true, reason, true),
+    });
+    if (name || myNetworkName) netLobby.setMyName(name || myNetworkName);
+    lobby.onSeatRequest = (team, i) => netLobby?.requestSeat(team, i);
+  }
 
   let loaded = false;
   const spectateBtn = document.getElementById('spectate-btn') as HTMLButtonElement;
   let startInSpectator = sessionStorage.getItem('gravwars-start-spectate') === '1';
   if (startInSpectator) sessionStorage.removeItem('gravwars-start-spectate');
-  const syncStart = (problem = lobby.problem) => {
+  function syncStart(problem = lobby.problem) {
     if (input.armed) return;
+    if (isNetworkMatch && !isHostPlayer) {
+      start.disabled = true;
+      start.textContent = loaded ? 'Ждём хоста…' : 'Загрузка…';
+      start.title = 'Ожидание запуска от хоста';
+      spectateBtn.disabled = true;
+      return;
+    }
     start.disabled = !loaded || !!problem;
     start.textContent = loaded ? 'В бой' : 'Загрузка…';
     start.title = problem ?? '';
     spectateBtn.disabled = !loaded;
-  };
+  }
   lobby.onChange = (problem) => {
     syncStart(problem);
     if (isNetworkMatch && isHostPlayer) netLobby?.broadcastLobbyUpdate();
@@ -261,6 +309,10 @@ async function main() {
         input.lock();
         resolve();
       };
+      if (pendingNetStart) {
+        pendingNetStart = false;
+        netMatchStartResolve();
+      }
       function cleanup() {
         start.removeEventListener('click', goPlay);
         spectateBtn.removeEventListener('click', goSpec);
@@ -294,7 +346,8 @@ async function main() {
   // crates and barrels are physics bodies: kicks, blasts and bullets move them
   const props = new Props(world, map);
   combat.props = props;
-  const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider);
+  const fortifySkip = isNetworkMatch ? (skipFortTeams.length ? skipFortTeams : humanTeams(cfg)) : undefined;
+  const match = new Match(R, world, map, blocks, sim.team.id, sim.mover.collider, fortifySkip);
   match.attach(combat); // crystals take damage from shots / blows (only from close up)
   const bots = new BotManager(R, world, map, combat, match, blocks, sim.team.id, 0, botRoster(cfg, startInSpectator));
   const pickups = new Pickups(R, world, map);
@@ -375,7 +428,8 @@ async function main() {
   const keepers = new KeeperView(scene, map, assets);
   const generators = new GeneratorView(scene, match);
   const guide = new Guide(match, bots, sim);
-  spectator = new SpectatorController(input, combat, match, bots);
+  let netMatch: NetMatchController | null = null;
+  spectator = new SpectatorController(input, combat, match, bots, () => netMatch?.getHumanSpectatorTargets() ?? []);
   if (startInSpectator) {
     player.me.alive = false;
     player.me.guard = { t: Infinity, from: new Vector3() };
@@ -407,7 +461,10 @@ async function main() {
     input.yaw -= yaw;
   };
   const stats = new MatchStats(match);
-  player.onFrag = (killer, victim, head) => stats.frag(killer, victim, head);
+  player.onFrag = (killer, victim, head) => {
+    if (!isNetworkMatch || isHostPlayer) stats.frag(killer, victim, head);
+  };
+  player.onCombatEvent = (e) => netMatch?.onHostCombatEvent(e);
   player.onKill = (tg) => {
     if (tg.npc) return; // city NPCs pay with what they drop
     if (isNetworkMatch && !isHostPlayer) return;
@@ -430,30 +487,45 @@ async function main() {
   let scoreT = 0;
 
   const local = new LocalPlayer(sim, input);
-  const netMatch = isNetworkMatch && netTransport
+  const activeTransport = netTransport as P2PTransport | null;
+  netMatch = isNetworkMatch && activeTransport
     ? new NetMatchController({
+        transport: activeTransport,
+        lobby: cfg,
         isHost: isHostPlayer,
-        myNetworkId,
-        myTeam,
-        transport: netTransport,
-        netLobby,
-        lobbyConfig: cfg,
+        myId: myNetworkId || (isHostPlayer ? 'host' : activeTransport.myId),
         R,
         world,
         map,
         sim,
+        local,
         combat,
         blocks,
+        props,
         match,
         bots,
+        npcs,
         throws,
+        pickups,
+        eco,
+        pockets,
         player,
         hands,
         build,
+        ui,
+        stats,
         hud,
+        fx,
+        audio,
+        mapView,
         remotePlayers,
-        input,
-        local,
+        camera,
+        onHostDisconnect: () => {
+          if (document.pointerLockElement) document.exitPointerLock();
+          else input.setLocked(false);
+          menu.showResult('Соединение с хостом потеряно');
+          hud.toast('Хост отключился — матч прерван', '#ff8080', 5);
+        },
       })
     : null;
 
@@ -463,29 +535,40 @@ async function main() {
     player.me.vel = sim.state.vel;
     player.me.quiet = local.input.crouch;
     player.me.crouched = local.input.crouch;
-    if (cfg.infiniteMoney) { match.wallet.cash = 99999; match.wallet.crystal = 99999; }
+    if (cfg.infiniteMoney && (!isNetworkMatch || isHostPlayer)) {
+      match.wallet.cash = 99999;
+      match.wallet.crystal = 99999;
+    }
     if (!match.result) {
-      if (!isNetworkMatch || isHostPlayer) bots.tick(TICK_DT);
-      npcs.tick(TICK_DT);
+      if (!isNetworkMatch || isHostPlayer) {
+        bots.tick(TICK_DT);
+        npcs.tick(TICK_DT);
+      }
     }
     netMatch?.tickHostClients(TICK_DT);
+    netMatch?.onLocalTick();
     throws.tick(TICK_DT);
-    props.tick(TICK_DT);
+    if (!isNetworkMatch || isHostPlayer) props.tick(TICK_DT);
     // LMB fires only with a weapon in hand and no window open
     player.tick(!hands.tool && !cursor.active && !spectator?.active && input.locked && input.down('Mouse0'));
     match.tick(TICK_DT, sim.state.pos);
-    // Replenish ammo near own living crystal
-    crystalAmmoT -= TICK_DT;
-    if (crystalAmmoT <= 0 && player.me.alive) {
-      const ownBed = match.bed(sim.team.id);
-      if (ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < 8.5) {
-        crystalAmmoT = 1.4;
-        if (refillAmmo(player.weapons, 0.35)) {
-          audio.pickup();
-          hud.toast('Патроны пополнены у кристалла', '#ffe082', 0.9);
+    if ((!isNetworkMatch || isHostPlayer) && !match.result) {
+      match.checkCoopEliminated(player.me.alive);
+    }
+    // Replenish ammo near own living crystal (authoritative on solo/host)
+    if (!isNetworkMatch || isHostPlayer) {
+      crystalAmmoT -= TICK_DT;
+      if (crystalAmmoT <= 0 && player.me.alive) {
+        const ownBed = match.bed(sim.team.id);
+        if (ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < 8.5) {
+          crystalAmmoT = 1.4;
+          if (refillAmmo(player.weapons, 0.35)) {
+            audio.pickup();
+            hud.toast('Патроны пополнены у кристалла', '#ffe082', 0.9);
+          }
+        } else {
+          crystalAmmoT = 0.25;
         }
-      } else {
-        crystalAmmoT = 0.25;
       }
     }
   };
@@ -500,10 +583,11 @@ async function main() {
       }
     } else if (e.type === 'respawn' && e.reason === 'manual') player.reset();
     else if (e.type === 'respawn' && e.reason === 'void') {
+      if (isNetworkMatch && !isHostPlayer) return; // Host authoritatively resolves void deaths
       if (player.death) return; // already dead (a body thrown off by the blast): the death screen is on
       stats.deaths++;
       pockets.spill(sim.state.pos, upOf(sim.state.frame), true); // the void keeps what you carried
-      player.die('void');
+      player.die('void', undefined, undefined, false, !match.bed(sim.team.id).alive);
       music.playDeathMusic();
     } else if (e.type === 'hook') {
       if (e.what === 'attach') audio.hookBite(sim.hook ? sim.hook.anchor.distanceTo(sim.state.pos) : 0);
@@ -676,6 +760,7 @@ async function main() {
     for (const b of match.beds) mapView.setBedStage(b.team, b.stage, b.invulnT);
     const sight = dead || specActive ? null : match.bedInSight(camera.position, camera.getWorldDirection(_wf));
     for (const e of match.events.splice(0)) {
+      if (!isNetworkMatch || isHostPlayer) netMatch?.onHostMatchEvent(e);
       ui.onEvent(e);
       if (e.type === 'bedBroken' && e.byPlayer) stats.crystals++;
       if (e.type === 'win' || e.type === 'lose') {
@@ -732,11 +817,9 @@ async function main() {
     keepers.update(dt, time);
     guide.update(camera);
 
+    netMatch?.updateFrame(dt, time);
     botView.update(dt, local.alpha);
     npcView.update(dt, local.alpha, camera);
-
-    // Multiplayer synchronization loop
-    netMatch?.updateFrame(dt, time);
     grenadeWarn.update(camera, sim.state.pos);
     fx.down.copy(gfx.upDir).negate();
     fx.update(dt, combat, time);

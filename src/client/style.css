@@ -482,6 +482,10 @@ body.intro #hud { visibility: hidden; }
 .net-panel { display: flex; flex-direction: column; gap: 12px; color: #eee; }
 .net-panel h3 { margin: 0; font-size: 16px; font-weight: 600; color: #fff; }
 .net-panel p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+.net-name-row { display: flex; align-items: center; gap: 10px; }
+.net-name-row label { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.net-name-row input { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 4px; border: 1px solid var(--line); background: rgba(0, 0, 0, .4); color: #fff; font: inherit; font-size: 13px; }
+.net-name-row input:focus { outline: none; border-color: #5b9aff; }
 .net-actions { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 2px; }
 .net-box { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 6px; background: rgba(255, 255, 255, .04); border: 1px solid var(--line); }
 .net-box h4 { margin: 0; font-size: 13px; font-weight: 600; color: #fff; }
@@ -492,6 +496,10 @@ body.intro #hud { visibility: hidden; }
 .net-room-info { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .net-room-code-badge { font-size: 18px; font-family: monospace; letter-spacing: 2px; color: #4ade80; font-weight: 700; }
 .net-status-text { min-height: 18px; font-size: 12px; color: #93c5fd; }
+.net-status-text.error { color: #f87171; }
+#markers .player-tag { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%); padding: 2px 6px; border-radius: 3px; background: rgba(12, 16, 20, .72); border: 1px solid rgba(255, 255, 255, .18); color: #fff; font-size: 11px; white-space: nowrap; text-align: center; pointer-events: none; }
+#markers .player-tag .hp-bar { height: 2px; margin-top: 2px; background: rgba(255, 255, 255, .2); border-radius: 1px; overflow: hidden; }
+#markers .player-tag .hp-bar > i { display: block; height: 100%; background: currentColor; }
 .btn-net { border-color: rgba(91, 154, 255, .3); background: rgba(91, 154, 255, .1); }
 .btn-net:hover { background: rgba(91, 154, 255, .2); color: #fff; }
 .btn-sm { padding: 4px 8px; font-size: 11px; }

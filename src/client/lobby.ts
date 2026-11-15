@@ -1,4 +1,5 @@
 import { DIFFICULTY_LABEL, type Difficulty } from '../shared/bots';
+import { escapeHtml } from '../shared/escape';
 import { activeTeams, LobbyConfig, lobbyProblem, parseLobby, seatPlayer, TEAM_SEATS } from '../shared/lobby';
 import { TeamId, TEAMS } from '../shared/teams';
 
@@ -34,6 +35,7 @@ export class Lobby {
       this.act(b.dataset.act!, b.dataset.team as TeamId | undefined, Number(b.dataset.i));
     });
     this.el.addEventListener('change', (e) => {
+      if (this.isNetworkClient) return;
       const s = e.target as HTMLSelectElement;
       if (s.dataset.act === 'money') { this.config.infiniteMoney = (e.target as HTMLInputElement).checked; this.save(); this.onChange(this.problem); return; }
       if (s.dataset.act === 'level') { this.difficulty = s.value as Difficulty; this.onLevel(this.difficulty); }
@@ -91,6 +93,7 @@ export class Lobby {
   render() {
     const seats = this.config.seats;
     const active = new Set(activeTeams(this.config));
+    const client = this.isNetworkClient;
     const teams = TEAMS.map((t) => {
       const l = seats[t.id];
       const n = l.filter((s) => s).length;
@@ -98,24 +101,37 @@ export class Lobby {
         const at = `data-team="${t.id}" data-i="${i}"`;
         if (s?.kind === 'player') {
           const isMe = !s.id || s.id === this.localPlayerId;
-          const label = s.name || (isMe ? 'Ты' : 'Игрок');
+          const label = escapeHtml(s.name || (isMe ? 'Ты' : 'Игрок'));
           return `<li class="seat ${isMe ? 'you' : 'remote'}"><span>${label}</span></li>`;
         }
         if (s?.kind === 'bot') {
+          if (client) {
+            return `<li class="seat bot"><span class="lvl ${s.difficulty}">Бот · ${DIFFICULTY_LABEL[s.difficulty].toLowerCase()}</span></li>`;
+          }
           return `<li class="seat bot"><button class="lvl ${s.difficulty}" data-act="diff" ${at} title="Сменить сложность">Бот · ${DIFFICULTY_LABEL[s.difficulty].toLowerCase()}</button>`
             + `<button class="x" data-act="del" ${at} title="Убрать">×</button></li>`;
+        }
+        if (client) {
+          return `<li class="seat free"><button data-act="sit" ${at}>сесть</button></li>`;
         }
         return `<li class="seat free"><button data-act="bot" ${at}>+ бот</button><button data-act="sit" ${at}>сесть</button></li>`;
       }).join('');
       return `<section class="team${active.has(t.id) ? '' : ' off'}" style="--c:${hex(t.color)}"><h3><i></i>${t.name}<small>${n ? `${n} из ${TEAM_SEATS}` : 'нет острова'}</small></h3><ol>${rows}</ol></section>`;
     }).join('');
     const problem = this.problem;
-    this.el.innerHTML = `<header><h2>Состав матча</h2><p>Команда без игроков не получает острова. Клик по боту — сложность.</p></header>`
+    const headerNote = client
+      ? 'Настройки матча задаёт хост. Выбери свободную команду или место.'
+      : 'Команда без игроков не получает острова. Клик по боту — сложность.';
+    const quickBtns = client
+      ? ''
+      : `<div class="quick"><button data-act="fill2">По 2 бота</button><button data-act="fill">Полные команды</button><button data-act="clear">Убрать ботов</button></div>`;
+    const dis = client ? ' disabled' : '';
+    this.el.innerHTML = `<header><h2>Состав матча</h2><p>${headerNote}</p></header>`
       + `<div class="teams">${teams}</div>`
-      + `<footer><div class="quick"><button data-act="fill2">По 2 бота</button><button data-act="fill">Полные команды</button><button data-act="clear">Убрать ботов</button></div>`
-      + `<label>Новые боты <select data-act="level">${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label>`
-      + `<label class="money"><input type="checkbox" data-act="money"${this.config.infiniteMoney ? ' checked' : ''}> Бесконечные деньги</label></footer>`
-      + (problem ? `<p class="problem">${problem}</p>` : '');
+      + `<footer>${quickBtns}`
+      + `<label>Новые боты <select data-act="level"${dis}>${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label>`
+      + `<label class="money"><input type="checkbox" data-act="money"${this.config.infiniteMoney ? ' checked' : ''}${dis}> Бесконечные деньги</label></footer>`
+      + (problem ? `<p class="problem">${escapeHtml(problem)}</p>` : '');
     this.onChange(problem);
   }
 }

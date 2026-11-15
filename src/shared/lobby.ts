@@ -65,8 +65,23 @@ export function lobbyProblem(c: LobbyConfig): string | null {
   return null;
 }
 
+/** Whether `playerId` can legally occupy seat `(team, i)`. */
+export function canSeatPlayer(c: LobbyConfig, team: TeamId, i: number, playerId?: string): boolean {
+  const row = c.seats[team];
+  if (!row || i < 0 || i >= TEAM_SEATS) return false;
+  const cur = row[i];
+  if (cur?.kind === 'player' && cur.id && cur.id !== playerId) return false;
+  return true;
+}
+
+/** Teams with at least one human player (used so humans never spawn trapped inside bed forts). */
+export function humanTeams(c: LobbyConfig): TeamId[] {
+  return TEAMS.filter((t) => c.seats[t.id].some((s) => s?.kind === 'player')).map((t) => t.id);
+}
+
 /** Put a player into a seat (leaving their old one). */
 export function seatPlayer(c: LobbyConfig, team: TeamId, i: number, playerId?: string, name?: string) {
+  if (!canSeatPlayer(c, team, i, playerId)) return;
   for (const t of TEAMS) {
     c.seats[t.id] = c.seats[t.id].map((s) => {
       if (s?.kind !== 'player') return s;
@@ -76,6 +91,19 @@ export function seatPlayer(c: LobbyConfig, team: TeamId, i: number, playerId?: s
     });
   }
   c.seats[team][i] = { kind: 'player', id: playerId, name };
+}
+
+/** Replace any bot seats left in `seats` without breaking existing player seats, returning false if full. */
+export function firstFreeSeat(c: LobbyConfig, preferOrder: TeamId[] = ['blue', 'green', 'yellow', 'red']): { team: TeamId; seatIndex: number } | null {
+  for (const t of preferOrder) {
+    const idx = c.seats[t].findIndex((s) => s === null);
+    if (idx !== -1) return { team: t, seatIndex: idx };
+  }
+  for (const t of preferOrder) {
+    const idx = c.seats[t].findIndex((s) => s?.kind === 'bot');
+    if (idx !== -1) return { team: t, seatIndex: idx };
+  }
+  return null;
 }
 
 /** Free up any seat occupied by a player ID. */
