@@ -67,12 +67,13 @@ function tileHouses(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
       const yaw = z < 0 ? 0 : Math.PI;
       house(b, f, rng, cx + x, cz + z, 10, 10, yaw, SW, rng.pick(WALL_COLORS), rng.pick(ROOF_COLORS));
     } else {
-      // a yard: trees, a bench, crates by the fence
+      // a yard: trees, a bench, crates in non-overlapping spots
+      const sx = Math.sign(x), sz = Math.sign(z);
       b.block(f, cx + x, SW, cz + z, 5.5, 0.02, 5.5, 0x6f9a45, 'grass', false);
-      b.tree(f, cx + x + rng.range(-2, 2), SW, cz + z + rng.range(-2, 2), rng.range(0.8, 1.2), 'tree');
-      b.tree(f, cx + x + rng.range(-3, 3), SW, cz + z + rng.range(-3, 3), rng.range(0.5, 0.7), 'bush');
+      b.tree(f, cx + x + sx * rng.range(1.0, 2.0), SW, cz + z + sz * rng.range(0.6, 1.8), rng.range(0.8, 1.15), 'tree');
+      b.tree(f, cx + x - sx * rng.range(1.6, 2.6), SW, cz + z + sz * rng.range(1.6, 2.4), rng.range(0.5, 0.7), 'bush');
       bench(b, f, cx + x, cz + z + (z < 0 ? 4 : -4), z < 0 ? Math.PI : 0);
-      if (rng.chance(0.6)) crates(b, f, rng, cx + x + rng.pick([-3.5, 3.5]), SW, cz + z);
+      if (rng.chance(0.6)) crates(b, f, rng, cx + x - sx * 2.5, SW, cz + z - sz * 1.5);
     }
   }
 }
@@ -83,10 +84,16 @@ function tileParking(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
   building(b, f, rng, {
     cx, cz, w: 18, d: 18, floors: rng.int(2, 4), y0: SW, yaw: yawOf(rng), style: 'garage', frame: 0xb4aea2, glass: 0,
   });
-  for (let k = 0; k < 4; k++) cone(b, f, cx + rng.range(-10, 10), cz + rng.pick([-10.5, 10.5]), SW);
-  // ticket booth
-  b.block(f, cx - 10.5, SW, cz - 10.5, 0.9, 1.2, 0.9, 0xe0d6c0, 'plaster');
-  b.block(f, cx - 10.5, SW + 2.4, cz - 10.5, 1.1, 0.08, 1.1, 0x3a3d40, 'metal', false);
+  for (let k = 0; k < 4; k++) cone(b, f, cx + rng.range(-8.5, 8.5), cz + rng.pick([-10.5, 10.5]), SW);
+  // ticket booth along the west edge, clear of the corner lamp at (-11.5, -11.5)
+  const bx = cx - 10.3, bz = cz - 6.5;
+  b.block(f, bx, SW, bz, 0.75, 0.525, 0.75, 0xe0d6c0, 'plaster');
+  b.block(f, bx + 0.78, SW + 1.0, bz, 0.12, 0.04, 0.55, 0x3a3d40, 'metal', false);
+  for (const sx of [-0.67, 0.67]) for (const sz of [-0.67, 0.67])
+    b.block(f, bx + sx, SW + 1.05, bz + sz, 0.08, 0.48, 0.08, 0x2f3236, 'metal');
+  b.block(f, bx, SW + 1.05, bz, 0.68, 0.48, 0.68, 0x6f9fb4, 'window');
+  b.block(f, bx, SW + 2.01, bz, 0.75, 0.17, 0.75, 0xe0d6c0, 'plaster');
+  b.block(f, bx, SW + 2.35, bz, 0.95, 0.08, 0.95, 0x3a3d40, 'metal', false);
 }
 
 /** Construction site: a bare concrete frame with scaffolding, a crane, containers, crates and pipes. */
@@ -95,23 +102,24 @@ function tileConstruction(b: Builder, f: Frame, rng: Rng, cx: number, cz: number
   building(b, f, rng, {
     cx: cx + 3, cz: cz - 3, w: 12, d: 12, floors: rng.int(4, 7), y0: SW, yaw: 0, style: 'skeleton', frame: 0xb9b4a8, glass: 0,
   });
-  // fence along the street sides with gaps
-  for (const s of [-1, 1]) for (let a = -10; a <= 10; a += 4) if (Math.abs(a) > 2)
-    b.block(f, cx + a, SW, cz + s * 11.6, 1.9, 1.1, 0.04, 0xd9b35a, 'paint');
-  container(b, f, cx - 7, SW, cz + 5, rng.chance(0.5) ? 0 : Math.PI / 2, rng.pick(CONTAINER_COLORS));
-  if (rng.chance(0.5)) container(b, f, cx - 7, SW + 2.6, cz + 5, 0, rng.pick(CONTAINER_COLORS));
+  // fence along the street sides with gaps, inset from the corner street lamps
+  for (const s of [-1, 1]) for (const a of [-8.4, -4.6, 4.6, 8.4])
+    b.block(f, cx + a, SW, cz + s * 11.3, 1.7, 1.1, 0.04, 0xd9b35a, 'paint');
+  container(b, f, cx - 7, SW, cz - 1.5, 0, rng.pick(CONTAINER_COLORS));
+  if (rng.chance(0.5)) container(b, f, cx - 7, SW + 2.6, cz - 1.5, 0, rng.pick(CONTAINER_COLORS));
   const px = cx + 4, pz = cz + 7;
   for (let k = 0; k < 3; k++) pipe(b, f, [px - 3, SW + 0.5 + (k === 2 ? 0.85 : 0), pz + (k - 1) - (k === 2 ? 1 : 0)],
     [px + 3, SW + 0.5 + (k === 2 ? 0.85 : 0), pz + (k - 1) - (k === 2 ? 1 : 0)], 0.48, 0x7d8a92);
-  for (let k = 0; k < 3; k++) crates(b, f, rng, cx + rng.range(-9, -3), SW, cz + rng.range(-9, -3));
-  for (let k = 0; k < 5; k++) cone(b, f, cx + rng.range(-10, 10), cz + rng.range(-10, 10), SW);
+  crates(b, f, rng, cx - 6.6, SW, cz - 7.1);
+  crates(b, f, rng, cx - 1.8, SW, cz + 6.8);
+  for (let k = 0; k < 5; k++) cone(b, f, cx + rng.range(-8.5, 8.5), cz + rng.pick([-10.2, 10.2]), SW);
   // sand heap
   b.hull(f, [[cx - 9, SW, cz + 9], [cx - 5, SW, cz + 9], [cx - 9, SW, cz + 5.5], [cx - 5, SW, cz + 5.5], [cx - 7, SW + 1.6, cz + 7.2]], 0xc9a86a, 'dirt');
   // crane: mast + jib (no collision above head height)
-  const mx = cx - 9.5, mz = cz - 9.5;
+  const mx = cx - 9.2, mz = cz - 9.2;
   b.block(f, mx, SW, mz, 0.6, 16, 0.6, 0xe0b020, 'metal');
   b.box(f, mx + 6, SW + 32.4, mz, 9, 0.4, 0.45, 0xe0b020, 'metal', false);
-  b.box(f, mx - 4, SW + 31.6, mz, 1.4, 0.8, 0.8, 0x6a6d74, 'metal', false);
+  b.box(f, mx - 2.4, SW + 31.6, mz, 1.4, 0.8, 0.8, 0x6a6d74, 'metal', false);
   b.box(f, mx + 11, SW + 26, mz, 0.02, 6, 0.02, 0x2a2d30, 'metal', false);
   b.block(f, mx + 11, SW + 19, mz, 0.8, 0.5, 0.8, 0x7a7f86, 'metal', false);
 }
@@ -138,16 +146,24 @@ function tilePark(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, team: 
   // path, benches, trees and bushes
   b.span(f, cx - BLOCK, SW, cz - 9.4, cx + BLOCK, SW + 0.03, cz - 7.6, 0xd9ccaf, 'paving', false);
   for (const x of [-6, 0, 6]) bench(b, f, cx + x, cz - 10.4, 0);
-  for (let i = 0; i < (kind === 'park' ? 12 : 7); i++) {
-    let x = cx + rng.range(-10.5, 10.5), z = cz + rng.range(-10.5, 10.5);
-    if (x > P.x0 - 1.5 && x < P.x1 + 1.5 && z > P.z0 - 1.5 && z < P.z1 + 1.5) z = z > pz ? P.z1 + 2.2 : P.z0 - 2.2;
-    if (Math.abs(z - (cz - 8.5)) < 1.6) z = cz - 6;
-    b.tree(f, Math.max(cx - 10.5, Math.min(cx + 10.5, x)), SW, Math.max(cz - 10.5, Math.min(cz + 10.5, z)), rng.range(0.7, 1.4), rng.chance(0.55) ? 'tree' : 'bush');
+  const blocked = (x: number, z: number) =>
+    (x > P.x0 - 1.8 && x < P.x1 + 1.8 && z > P.z0 - 1.8 && z < P.z1 + 1.8) // pond + jetty
+    || z < cz - 6.8 // path & benches strip
+    || (kind === 'pond' && x > cx + 4.2 && z > cz + 6.5); // boathouse & crates
+  const placed: [number, number][] = [];
+  for (let i = 0, target = kind === 'park' ? 10 : 6; i < target; i++) {
+    for (let tries = 0; tries < 24; tries++) {
+      const x = cx + rng.range(-9.6, 9.6), z = cz + rng.range(-6.6, 9.6);
+      if (blocked(x, z) || placed.some(([tx, tz]) => Math.hypot(x - tx, z - tz) < 2.6)) continue;
+      placed.push([x, z]);
+      b.tree(f, x, SW, z, rng.range(0.7, 1.3), rng.chance(0.55) ? 'tree' : 'bush');
+      break;
+    }
   }
   if (kind === 'pond') {
-    // a boat house with crates on the far side
+    // a boat house with crates clearly in front of it
     b.span(f, cx + 6, SW, cz + 9, cx + 11, SW + 2.6, cz + 11.5, 0x8a6240, 'wood');
-    crates(b, f, rng, cx + 8.5, SW, cz + 7.5);
+    crates(b, f, rng, cx + 7.2, SW, cz + 6.5);
   }
 }
 
@@ -178,7 +194,7 @@ function tilePlaza(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
   for (const s of [-1, 1]) b.span(k, s * 1.6 - 0.1, 0, -1.2, s * 1.6 + 0.1, 2.6, 1.2, 0xe9e1cc, 'plaster');
   b.span(k, -1.8, 2.6, -1.4, 1.8, 2.8, 1.5, 0x3a78b8, 'paint');
   b.span(k, -1.5, 0, 0.6, 1.5, 1.0, 0.9, 0x5c5f63, 'metal');
-  if (rng.chance(0.6)) busStop(b, f, cx + rng.pick([-4, 4]), cz - BLOCK + 1.2, 0);
+  if (rng.chance(0.6)) busStop(b, f, cx + rng.pick([-4, 4]), cz - BLOCK + 0.9, Math.PI);
 }
 
 // --- neutral face ------------------------------------------------------------------------------
@@ -188,29 +204,34 @@ function tilePlaza(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
  * Pushes the shop (team '' = neutral) to the map data.
  */
 export function shopStall(b: Builder, st: Frame, R: number, color: number, team: string) {
-  b.block(st, 0, R, -1.35, 2.1, 1.6, 0.15, 0xe9e1cc, 'plaster');
-  b.box(st, 0, R + 3.25, -1.35, 2.15, 0.08, 0.2, color, 'paint', false);
+  // Back wall + cornice + solid header board behind the sign
+  b.block(st, 0, R, -1.35, 2.1, 1.8, 0.15, 0xe9e1cc, 'plaster');
+  b.box(st, 0, R + 3.66, -1.35, 2.18, 0.06, 0.19, color, 'paint', false);
+  b.block(st, 0, R + 3.72, -1.32, 1.48, 0.36, 0.08, 0x2f3236, 'metal', false);
+  b.signDecal(st, 0, R + 4.08, -1.22, 2.8, 0.62, 0, color, 'МАГАЗИН');
+  // Front awning posts + flush slanted striped awning (starts cleanly at the back wall front z = -1.20)
   for (const x of [-2.1, 2.1]) b.block(st, x, R, 1.6, 0.09, 1.42, 0.09, 0x3a3d40, 'metal');
-  const aw = st.tilt(0, R + 3.1, 0.15, 0, 0.17);
+  const aw = st.tilt(0, R + 3.06, 0.28, 0, 0.16);
   const stripes = 7;
   for (let i = 0; i < stripes; i++) {
     const x = -2.3 + (i + 0.5) * (4.6 / stripes);
     const c = i % 2 ? 0xf4efe4 : color;
-    b.box(aw, x, 0, 0, 2.3 / stripes, 0.035, 1.75, c, 'paint', false);
-    b.box(aw, x, -0.18, 1.74, 2.3 / stripes, 0.18, 0.02, c, 'paint', false);
+    b.box(aw, x, 0, 0, 2.3 / stripes, 0.035, 1.48, c, 'paint', false);
+    b.box(aw, x, -0.18, 1.46, 2.3 / stripes, 0.18, 0.02, c, 'paint', false);
   }
   b.block(st, 0, R, 0.95, 1.5, 0.5, 0.32, 0x5c5f63, 'metal');
   b.box(st, 0, R + 1.04, 0.95, 1.62, 0.05, 0.42, 0x2f3236, 'metal');
-  b.prop(st, 'trophy', 1.15, R + 1.09, 0.95, 1.3);
-  b.prop(st, 'block', -1.15, R + 1.09, 0.95, 0.7, 0.3);
-  for (const x of [-1, 1]) b.prop(st, 'weapon-rack', x, R, -0.85, 2.2);
-  b.signDecal(st, 0, R + 3.72, -1.18, 2.8, 0.62, 0, color, 'МАГАЗИН');
-  b.block(st, 0, R + 3.3, -1.32, 1.5, 0.12, 0.1, 0x2f3236, 'metal', false);
+  b.prop(st, 'trophy', 1.15, R + 1.09, 0.95, 1.0);
+  b.prop(st, 'block', -1.15, R + 1.09, 0.95, 0.5, 0.3);
+  for (const x of [-1.05, 1.05]) {
+    b.block(st, x, R, -0.88, 0.55, 0.225, 0.26, 0x3a3d40, 'metal', false);
+    b.prop(st, 'weapon-rack', x, R + 0.45, -0.88, 2.0);
+  }
   // the keeper stands on a low step behind the counter (the character is short, the counter is not)
   const step = 0.5;
-  b.block(st, 0, R, -0.2, 0.7, step / 2, 0.45, 0x3a3d40, 'metal');
+  b.block(st, 0, R, -0.15, 0.7, step / 2, 0.4, 0x3a3d40, 'metal');
   b.data.bases.push({ team, up: st.up(), shop: st.raw(0, R + 1.4, 1.2),
-    keeper: { pos: st.p(0, R + step + PLAYER_HEIGHT / 2, -0.2), quat: st.rot(0) } });
+    keeper: { pos: st.p(0, R + step + PLAYER_HEIGHT / 2, -0.15), quat: st.rot(0) } });
 }
 
 /** Market: a canopy over a neutral shop stall, crates, benches. The stall opens towards `yaw`. */
@@ -219,7 +240,11 @@ function tileMarket(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, yaw:
   for (const x of [-6, 6]) for (const z of [-5, 5]) b.block(m, x, SW, z, 0.15, 2.4, 0.15, 0x2f3236, 'metal');
   b.box(m, 0, SW + 4.95, 0, 6.6, 0.15, 5.6, 0xe6e2da, 'concrete', false);
   shopStall(b, m.sub(0, 0, -1.5), SW, NEUTRAL, '');
-  for (let k = 0; k < 3; k++) crates(b, m, rng, rng.pick([-9, 9]), SW, rng.pick([-8, -4, 4, 8]));
+  const mSpots: [number, number][] = [[-8.2, -8], [-8.2, 0], [-8.2, 8], [8.2, -8], [8.2, 0], [8.2, 8]];
+  for (let k = 0; k < 3; k++) {
+    const [sx, sz] = mSpots.splice(rng.int(0, mSpots.length - 1), 1)[0];
+    crates(b, m, rng, sx, SW, sz);
+  }
   for (const x of [-4, 4]) bench(b, m, x, 8, Math.PI);
 }
 
@@ -228,7 +253,8 @@ function tileMuseum(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
   building(b, f, rng, {
     cx, cz: cz + 1.5, w: 18, d: 18, floors: 2, y0: SW, yaw: 0, style: 'museum', frame: 0xe8e4dc, glass: 0x9ab3b8,
   });
-  b.signDecal(f, cx, SW + 7.2, cz + 1.5 - 9.15, 5, 1.1, Math.PI, 0x2a2d30, 'МУЗЕЙ');
+  b.box(f, cx, SW + 6.55, cz + 1.5 - 9.12, 2.65, 0.58, 0.04, 0x2f3236, 'metal', false);
+  b.signDecal(f, cx, SW + 6.55, cz + 1.5 - 9.17, 5, 1.1, Math.PI, 0xe8e4dc, 'МУЗЕЙ');
   const sx = cx - 7, sz = cz - 10;
   b.block(f, sx, SW, sz, 1.2, 0.3, 1.2, 0x9a958c, 'stone');
   b.block(f, sx, SW + 0.6, sz, 0.4, 1.2, 0.4, 0x6a5040, 'metal');
@@ -244,7 +270,7 @@ function tileSquare(b: Builder, f: Frame, cx: number, cz: number) {
     b.data.crystalSpots.push({ pos: f.p(x, SW + 0.16, z), up: f.up() });
     b.hull(f, [[x, SW + 2.6, z], [x, SW + 0.9, z], [x + 0.45, SW + 1.6, z], [x - 0.45, SW + 1.6, z], [x, SW + 1.6, z + 0.45], [x, SW + 1.6, z - 0.45]], 0x8af5ff, 'glow', false);
   }
-  for (const [x, z] of [[-10, -10], [10, -10], [-10, 10], [10, 10]]) b.tree(f, cx + x, SW, cz + z, 0.9, 'tree');
+  for (const [x, z] of [[-8.8, -8.8], [8.8, -8.8], [-8.8, 8.8], [8.8, 8.8]]) b.tree(f, cx + x, SW, cz + z, 0.9, 'tree');
 }
 
 // --- team hall ---------------------------------------------------------------------------------
@@ -270,17 +296,23 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
     if (door) {
       for (const s of [-1, 1]) b.block(w, s * (H + DOOR) / 2, SW, z, (H - DOOR) / 2, HALL_H / 2, T / 2, WALL, 'concrete');
       b.block(w, 0, SW + DH, z, DOOR, (HALL_H - DH) / 2, T / 2, WALL, 'concrete');
-      for (const s of [-1, 1]) b.block(w, s * (DOOR + 0.06), SW, z, 0.06, DH / 2 + 0.06, T / 2 + 0.04, DARK, 'metal', false);
-      b.block(w, 0, SW + DH, z, DOOR + 0.12, 0.06, T / 2 + 0.04, DARK, 'metal', false);
-      b.box(w, 0, SW + DH + 0.35, H + 0.04, DOOR + 1, 0.06, 0.03, team.color, 'glow', false);
-    } else b.block(w, 0, SW, z, H, HALL_H / 2, T / 2, WALL, 'concrete');
+      for (const s of [-1, 1]) {
+        b.block(w, s * (DOOR + 0.05), SW, z, 0.06, (DH - 0.01) / 2, T / 2 + 0.04, DARK, 'metal', false);
+        // Sculpted portal buttresses flanking the entrance with vertical team-colored energy strips
+        b.block(w, s * (DOOR + 0.55), SW, H + 0.22, 0.28, (DH + 0.8) / 2, 0.22, DARK, 'metal', false);
+        b.box(w, s * (DOOR + 0.55), SW + (DH + 0.4) / 2, H + 0.46, 0.08, (DH - 0.2) / 2, 0.03, team.color, 'glow', false);
+      }
+      b.block(w, 0, SW + DH - 0.01, z, DOOR + 0.12, 0.065, T / 2 + 0.04, DARK, 'metal', false);
+      b.block(w, 0, SW + DH + 0.28, H + 0.28, DOOR + 0.9, 0.16, 0.28, DARK, 'metal', false);
+      b.box(w, 0, SW + DH + 0.35, H + 0.58, DOOR + 0.8, 0.06, 0.03, team.color, 'glow', false);
+    } else b.block(w, 0, SW, z, H - T, HALL_H / 2, T / 2, WALL, 'concrete');
     // two ribbon windows on both faces (around the door opening)
     for (const [y0, y1] of [[1.1, 3.0], [4.7, 7.6]]) for (const face of [H + 0.03, H - T - 0.03]) {
       const hy = (y1 - y0) / 2;
       if (door && y0 < DH) for (const s of [-1, 1]) b.box(w, s * (H + DOOR + 1) / 2, SW + y0 + hy, face, (H - DOOR - 1) / 2 - 0.6, hy, 0.02, GLASS, 'glass', false);
       else b.box(w, 0, SW + y0 + hy, face, H - 0.6, hy, 0.02, GLASS, 'glass', false);
     }
-    b.box(w, 0, RT - 0.3, H + 0.05, H + 0.05, 0.05, 0.03, team.color, 'glow', false);
+    b.box(w, 0, RT - 0.3, H + 0.05, k % 2 === 0 ? H + 0.08 : H + 0.02, 0.05, 0.03, team.color, 'glow', false);
   }
   // ramps (solid wedges) along the east and west walls, each into an opening in the roof
   const RX0 = 8.5, RX1 = 11.5, RZ = 8;
@@ -288,32 +320,52 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
     const lo = -s * RZ, hi = s * RZ;
     const xa = s * RX0, xb = s * RX1;
     b.hull(h, [[xa, SW, lo], [xb, SW, lo], [xa, SW, hi], [xb, SW, hi], [xa, RT, hi], [xb, RT, hi]], 0xb8b3a8, 'concrete');
-    b.box(h, xa - s * 0.05, SW + HALL_H / 2 + 0.5, 0, 0.04, 0.04, RZ, DARK, 'metal', false);
+    const rail = h.tilt(xa - s * 0.05, SW + HALL_H / 2 + 0.85, 0, 0, -s * Math.atan2(HALL_H, 2 * RZ));
+    b.box(rail, 0, 0, 0, 0.04, 0.04, Math.hypot(RZ, HALL_H / 2), DARK, 'metal', false);
+    for (const t of [0, 0.35, 0.65, 1]) {
+      const rz = lo + (hi - lo) * t;
+      const ry = SW + HALL_H * t;
+      b.block(h, xa - s * 0.05, ry, rz, 0.04, 0.425, 0.04, DARK, 'metal', false);
+    }
   }
+  const HI = H - T;
   const roof = (x0: number, x1: number, z0: number, z1: number) =>
     b.box(h, (x0 + x1) / 2, RT - 0.2, (z0 + z1) / 2, (x1 - x0) / 2, 0.2, (z1 - z0) / 2, 0xbdb8ae, 'concrete');
-  roof(-RX0, RX0, -H, H);
-  roof(RX0, H, -H, 2); roof(RX0, H, RZ, H); roof(RX1, H, 2, RZ);
-  roof(-H, -RX0, -2, H); roof(-H, -RX0, -H, -RZ); roof(-H, -RX1, -RZ, -2);
+  roof(-RX0, RX0, -HI, HI);
+  roof(RX0, HI, -HI, 2); roof(RX0, HI, RZ, HI); roof(RX1, HI, 2, RZ);
+  roof(-HI, -RX0, -2, HI); roof(-HI, -RX0, -HI, -RZ); roof(-HI, -RX1, -RZ, -2);
   for (const s of [-1, 1]) {
-    b.block(h, s * (RX0 - 0.05), RT, s * 5, 0.05, 0.5, 3, DARK, 'metal');
-    b.block(h, s * (RX0 + RX1) / 2, RT, s * 2, 1.5, 0.5, 0.05, DARK, 'metal');
+    // Open post-and-rail safety guardrails around each roof stairwell opening (open at z = s * RZ where the ramp arrives)
+    const rx = s * (RX0 - 0.05);
+    for (const z of [s * 2, s * 5]) b.block(h, rx, RT, z, 0.04, 0.445, 0.04, DARK, 'metal');
+    for (const x of [s * ((RX0 + RX1) / 2), s * (RX1 + 0.05)]) b.block(h, x, RT, s * 2, 0.04, 0.445, 0.04, DARK, 'metal');
+    for (const [y, hy] of [[0.44, 0.03], [0.85, 0.04]]) {
+      b.box(h, rx, RT + y, s * 5, hy, hy, 3.0, DARK, 'metal');
+      b.box(h, s * (RX0 + RX1) / 2, RT + y, s * 2, (RX1 - RX0) / 2 + 0.05, hy, hy, DARK, 'metal');
+    }
   }
   for (const x of [-5, 0, 5]) b.box(h, x, RT - 0.45, 0, 0.25, 0.02, H - 3, 0xfff4dc, 'glow', false);
   for (let k = 0; k < 4; k++) {
     const w = h.sub(0, 0, 0, (k * Math.PI) / 2);
+    const inset = k % 2 ? 0.3 : 0;
+    const capInset = k % 2 ? 0.33 : -0.03;
     for (const s of [-1, 1]) {
-      const c = s * (H + 2.5) / 2, len = (H - 2.5) / 2;
+      const c = s * (H - inset + 2.5) / 2, len = (H - inset - 2.5) / 2;
       b.block(w, c, RT, H - 0.15, len, 0.5, 0.15, WALL, 'concrete');
-      b.block(w, c, RT + 1, H - 0.15, len + 0.02, 0.04, 0.18, team.color, 'paint', false);
+      const cc = s * (H - capInset + 2.5) / 2, clen = (H - capInset - 2.5) / 2;
+      b.block(w, cc, RT + 1, H - 0.15, clen, 0.04, 0.18, team.color, 'paint', false);
     }
   }
-  b.signDecal(h, 0, SW + 6.2, -H - 0.04, 7, 1.2, Math.PI, team.color, team.name.toUpperCase());
-  b.signDecal(h, 0, SW + 6.2, H + 0.04, 7, 1.2, 0, team.color, team.name.toUpperCase());
+  b.box(h, 0, SW + 4.05, -H - 0.05, 3.8, 0.58, 0.04, DARK, 'metal', false);
+  b.box(h, 0, SW + 4.05, H + 0.05, 3.8, 0.58, 0.04, DARK, 'metal', false);
+  b.signDecal(h, 0, SW + 4.05, -H - 0.11, 7, 1.1, Math.PI, team.color, team.name.toUpperCase());
+  b.signDecal(h, 0, SW + 4.05, H + 0.11, 7, 1.1, 0, team.color, team.name.toUpperCase());
 
-  // the crystal on its pedestal + fortification ring
-  b.block(h, 0, SW, 0, 1.5, 0.6, 1.5, 0xd8d2c4, 'stone');
-  b.block(h, 0, SW + 1.2, 0, 1.0, 0.4, 1.0, 0xe4dfd2, 'stone');
+  // the crystal on its pedestal + fortification ring (pedestal stays strictly inside ±1.50 so fort blocks at ±2 never clip or Z-fight)
+  b.box(h, 0, SW + 0.05, 0, 1.48, 0.05, 1.48, DARK, 'metal', false);
+  b.box(h, 0, SW + 0.12, 0, 1.44, 0.02, 1.44, team.color, 'glow', false);
+  b.block(h, 0, SW + 0.14, 0, 1.36, 0.53, 1.36, 0xd8d2c4, 'stone');
+  b.block(h, 0, SW + 1.2, 0, 0.94, 0.4, 0.94, 0xe4dfd2, 'stone');
   const cy = SW + 4;
   const fort: StatueDef['fort'] = [];
   const layers: BlockMaterial[] = ['stone', 'stone', 'metal'];
@@ -323,15 +375,29 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
   });
   b.data.statues.push({ team: team.id, pos: h.p(0, cy + 2.5, 0), bed: h.p(0, cy, 0), up: f.up(), color: team.color, fort });
 
+  // Full-height interior structural columns flanking the doorways and roof corner beacons
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const px = sx * 2.95, pz = sz * (H - T - 0.45);
+    b.block(h, px, SW, pz, 0.38, 0.225, 0.38, 0xd8d2c4, 'stone');
+    b.block(h, px, SW + 0.45, pz, 0.26, (HALL_H - 1.25) / 2, 0.26, DARK, 'metal');
+    b.block(h, px, RT - 0.80, pz, 0.36, 0.20, 0.36, DARK, 'metal');
+    b.box(h, px, SW + 4.325, pz, 0.28, 3.625, 0.07, team.color, 'glow', false);
+    b.box(h, px, SW + 4.325, pz, 0.07, 3.625, 0.28, team.color, 'glow', false);
+    // Roof corner architectural beacons tucked cleanly inside the parapet corners
+    const rx = sx * (H - 0.72), rz = sz * (H - 0.72);
+    b.block(h, rx, RT, rz, 0.36, 0.80, 0.36, DARK, 'metal', false);
+    b.block(h, rx, RT + 1.60, rz, 0.26, 0.22, 0.26, team.color, 'glow', false);
+    b.block(h, rx, RT + 2.04, rz, 0.38, 0.06, 0.38, DARK, 'metal', false);
+  }
+
   // spawn in the back-right quarter, looking towards the front door
   const [spx, spz] = [5, 6];
   b.floorDecal(h, 'spawn', spx, SW, spz, 3.2, 3.2, 0, team.color);
   b.floorDecal(h, 'text', spx, SW, spz - 3.6, 4.2, 1.05, 0, team.color, team.name);
   b.data.spawns[team.id] = { pos: h.p(spx, SW + PLAYER_HEIGHT / 2 + 0.05, spz), quat: f.rot(0), yaw: 0 };
 
-  // shop against the back wall, west of the door, open towards the crystal
-  shopStall(b, h.sub(-6, 0, H - T - 1.5, Math.PI), SW, team.color, team.id);
-  for (const s of [-1, 1]) b.prop(h, 'banner', s * 3.4, SW, -H + T + 0.4, 2.6, 0, team.color);
+  // shop against the back wall, west of the door/column, open towards the crystal
+  shopStall(b, h.sub(-5.9, 0, H - T - 1.56, Math.PI), SW, team.color, team.id);
 }
 
 /** Hall doors and the crystal stands, hall-local → face-local. */
@@ -366,11 +432,11 @@ export function fillTile(b: Builder, f: Frame, rng: Rng, t: Tile, cx: number, cz
 /** Parked cars and buses along a tile's side of a road (`open`: the face rim). */
 export function parkCars(b: Builder, s: Frame, rng: Rng, H: number, open: boolean, avoid: (a: number) => boolean) {
   const lane = -4.9; // at the kerb of this tile's half of the 12 m road
-  for (let a = -H + 6; a < H - 6; a += rng.range(5.5, 9)) {
+  for (let a = -H + 9; a <= H - 9; a += rng.range(5.8, 9)) {
     if (!rng.chance(open ? 0.1 : 0.22) || avoid(a)) continue;
-    if (!open && rng.chance(0.15) && a < H - 14) {
-      bus(b, s, a + 5, lane + 0.3, Math.PI / 2 + (rng.chance(0.5) ? 0 : Math.PI), rng.pick(BUS_COLORS));
-      a += 10;
+    if (!open && rng.chance(0.15) && a <= 0 && !avoid(a + 3.5) && !avoid(a + 8)) {
+      bus(b, s, a + 3.5, lane + 0.3, Math.PI / 2 + (rng.chance(0.5) ? 0 : Math.PI), rng.pick(BUS_COLORS));
+      a += 9.5;
     } else car(b, s, a, lane, Math.PI / 2 + (rng.chance(0.5) ? 0 : Math.PI), rng.pick(CAR_COLORS));
   }
 }

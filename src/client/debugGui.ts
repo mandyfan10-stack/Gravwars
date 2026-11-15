@@ -11,8 +11,8 @@ export interface DebugToggles {
 }
 
 /** Live tuning of movement in Source units (u/s), like cvars. */
-export function createDebugGui(cfg: MovementConfig, mover: Mover, toggles: DebugToggles, onChange: () => void) {
-  const gui = new GUI({ title: 'Настройки (G)' });
+export function createDebugGui(cfg: MovementConfig, mover: Mover) {
+  const gui = new GUI({ title: 'Отладка (`)' });
   const hu = {
     sv_gravity: cfg.gravity / HU,
     sv_maxspeed: cfg.maxSpeed / HU,
@@ -58,10 +58,6 @@ export function createDebugGui(cfg: MovementConfig, mover: Mover, toggles: Debug
     mv.controllers.forEach((c) => c.updateDisplay());
     mover.applyConfig();
   } }, 'reset').name('Сбросить к Source');
-  const view = gui.addFolder('Графика');
-  view.add(toggles, 'bloom').name('Свечение (bloom)').onChange(onChange);
-  view.add(toggles, 'fov', 60, 120, 1).name('FOV').onChange(onChange);
-  view.add(toggles, 'sensitivity', 0.0005, 0.006, 0.0001).name('Чувствительность').onChange(onChange);
   gui.hide();
   return gui;
 }

@@ -35,6 +35,7 @@ export class Lobby {
     });
     this.el.addEventListener('change', (e) => {
       const s = e.target as HTMLSelectElement;
+      if (s.dataset.act === 'money') { this.config.infiniteMoney = (e.target as HTMLInputElement).checked; this.save(); this.onChange(this.problem); return; }
       if (s.dataset.act === 'level') { this.difficulty = s.value as Difficulty; this.onLevel(this.difficulty); }
     });
     this.render();
@@ -52,10 +53,21 @@ export class Lobby {
     localStorage.setItem(KEY, JSON.stringify(this.config));
   }
 
+  localPlayerId = '';
+  isNetworkClient = false;
+  onSeatRequest?: (team: TeamId, i: number) => void;
+
   private act(act: string, team: TeamId | undefined, i: number) {
+    if (this.isNetworkClient && act !== 'sit') return;
     const seats = this.config.seats;
     if (act === 'bot' && team) seats[team][i] = { kind: 'bot', difficulty: this.difficulty };
-    else if (act === 'sit' && team) seatPlayer(this.config, team, i);
+    else if (act === 'sit' && team) {
+      if (this.onSeatRequest) {
+        this.onSeatRequest(team, i);
+        return;
+      }
+      seatPlayer(this.config, team, i);
+    }
     else if (act === 'del' && team) seats[team][i] = null;
     else if (act === 'diff' && team) {
       const s = seats[team][i];
@@ -76,7 +88,7 @@ export class Lobby {
     this.render();
   }
 
-  private render() {
+  render() {
     const seats = this.config.seats;
     const active = new Set(activeTeams(this.config));
     const teams = TEAMS.map((t) => {
@@ -84,7 +96,11 @@ export class Lobby {
       const n = l.filter((s) => s).length;
       const rows = l.map((s, i) => {
         const at = `data-team="${t.id}" data-i="${i}"`;
-        if (s?.kind === 'player') return `<li class="seat you"><span>Ты</span></li>`;
+        if (s?.kind === 'player') {
+          const isMe = !s.id || s.id === this.localPlayerId;
+          const label = s.name || (isMe ? 'Ты' : 'Игрок');
+          return `<li class="seat ${isMe ? 'you' : 'remote'}"><span>${label}</span></li>`;
+        }
         if (s?.kind === 'bot') {
           return `<li class="seat bot"><button class="lvl ${s.difficulty}" data-act="diff" ${at} title="Сменить сложность">Бот · ${DIFFICULTY_LABEL[s.difficulty].toLowerCase()}</button>`
             + `<button class="x" data-act="del" ${at} title="Убрать">×</button></li>`;
@@ -97,7 +113,8 @@ export class Lobby {
     this.el.innerHTML = `<header><h2>Состав матча</h2><p>Команда без игроков не получает острова. Клик по боту — сложность.</p></header>`
       + `<div class="teams">${teams}</div>`
       + `<footer><div class="quick"><button data-act="fill2">По 2 бота</button><button data-act="fill">Полные команды</button><button data-act="clear">Убрать ботов</button></div>`
-      + `<label>Новые боты <select data-act="level">${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label></footer>`
+      + `<label>Новые боты <select data-act="level">${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label>`
+      + `<label class="money"><input type="checkbox" data-act="money"${this.config.infiniteMoney ? ' checked' : ''}> Бесконечные деньги</label></footer>`
       + (problem ? `<p class="problem">${problem}</p>` : '');
     this.onChange(problem);
   }

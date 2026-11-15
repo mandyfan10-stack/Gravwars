@@ -1,13 +1,15 @@
 import type { BotRoster, Difficulty } from './bots';
 import { TeamId, TEAMS } from './teams';
 
-/** A seat in a team: the local player, a bot of some difficulty, or empty. */
-export type Seat = { kind: 'player' } | { kind: 'bot'; difficulty: Difficulty } | null;
+/** A seat in a team: a player (local or remote), a bot of some difficulty, or empty. */
+export type Seat = { kind: 'player'; id?: string; name?: string } | { kind: 'bot'; difficulty: Difficulty } | null;
 export const TEAM_SEATS = 5;
 
 /** Who plays: four teams × five seats. A team with nobody in it gets no face. */
 export interface LobbyConfig {
   seats: Record<TeamId, Seat[]>;
+  /** Pre-match mode: the player's wallet never runs out. */
+  infiniteMoney?: boolean;
 }
 
 const empty = (): Seat[] => Array(TEAM_SEATS).fill(null);
@@ -20,7 +22,15 @@ export function defaultLobby(difficulty: Difficulty = 'normal'): LobbyConfig {
   return { seats };
 }
 
-export function playerTeam(c: LobbyConfig): TeamId | null {
+export function playerTeam(c: LobbyConfig, playerId?: string): TeamId | null {
+  for (const t of TEAMS) {
+    if (playerId) {
+      if (c.seats[t.id].some((s) => s?.kind === 'player' && s.id === playerId)) return t.id;
+    } else {
+      if (c.seats[t.id].some((s) => s?.kind === 'player' && !s.id)) return t.id;
+    }
+  }
+  // Fallback to first player if no specific id matched
   for (const t of TEAMS) if (c.seats[t.id].some((s) => s?.kind === 'player')) return t.id;
   return null;
 }
@@ -30,10 +40,19 @@ export function activeTeams(c: LobbyConfig): TeamId[] {
   return TEAMS.filter((t) => c.seats[t.id].some((s) => s)).map((t) => t.id);
 }
 
-export function botRoster(c: LobbyConfig): BotRoster {
+export function botRoster(c: LobbyConfig, spectator = false): BotRoster {
   const r: BotRoster = {};
+  const active = activeTeams(c);
   for (const t of TEAMS) {
-    const bots = c.seats[t.id].filter((s): s is { kind: 'bot'; difficulty: Difficulty } => s?.kind === 'bot').map((s) => s.difficulty);
+    let bots = c.seats[t.id].filter((s): s is { kind: 'bot'; difficulty: Difficulty } => s?.kind === 'bot').map((s) => s.difficulty);
+    if (spectator) {
+      if (c.seats[t.id].some((s) => s?.kind === 'player')) {
+        bots = ['normal', ...bots];
+      }
+      if (active.includes(t.id)) {
+        while (bots.length < 2) bots.push('normal');
+      }
+    }
     if (bots.length) r[t.id] = bots;
   }
   return r;
@@ -42,14 +61,28 @@ export function botRoster(c: LobbyConfig): BotRoster {
 /** Why the match cannot start (null: it can). */
 export function lobbyProblem(c: LobbyConfig): string | null {
   if (!playerTeam(c)) return 'Займи место в одной из команд';
-  if (activeTeams(c).length < 2) return 'Нужна хотя бы ещё одна команда с ботами';
+  if (activeTeams(c).length < 2) return 'Нужна хотя бы ещё одна команда с ботами или игроками';
   return null;
 }
 
-/** Put the player into a seat (leaving the old one). */
-export function seatPlayer(c: LobbyConfig, team: TeamId, i: number) {
-  for (const t of TEAMS) c.seats[t.id] = c.seats[t.id].map((s) => (s?.kind === 'player' ? null : s));
-  c.seats[team][i] = { kind: 'player' };
+/** Put a player into a seat (leaving their old one). */
+export function seatPlayer(c: LobbyConfig, team: TeamId, i: number, playerId?: string, name?: string) {
+  for (const t of TEAMS) {
+    c.seats[t.id] = c.seats[t.id].map((s) => {
+      if (s?.kind !== 'player') return s;
+      if (playerId && s.id === playerId) return null;
+      if (!playerId && !s.id) return null;
+      return s;
+    });
+  }
+  c.seats[team][i] = { kind: 'player', id: playerId, name };
+}
+
+/** Free up any seat occupied by a player ID. */
+export function removePlayerSeat(c: LobbyConfig, playerId: string) {
+  for (const t of TEAMS) {
+    c.seats[t.id] = c.seats[t.id].map((s) => (s?.kind === 'player' && s.id === playerId ? null : s));
+  }
 }
 
 /** Parse a stored config; anything broken → the default. */
@@ -59,7 +92,7 @@ export function parseLobby(raw: string | null, difficulty: Difficulty = 'normal'
     const ok = TEAMS.every((t) => Array.isArray(c.seats?.[t.id]) && c.seats[t.id].length === TEAM_SEATS
       && c.seats[t.id].every((s) => s === null || s.kind === 'player' || (s.kind === 'bot' && ['easy', 'normal', 'hard'].includes(s.difficulty))));
     const players = TEAMS.reduce((n, t) => n + c.seats[t.id].filter((s) => s?.kind === 'player').length, 0);
-    if (ok && players <= 1) return c;
+    if (ok && players <= TEAM_SEATS * TEAMS.length) return { ...c, infiniteMoney: c.infiniteMoney === true };
   } catch { /* default */ }
   return defaultLobby(difficulty);
 }

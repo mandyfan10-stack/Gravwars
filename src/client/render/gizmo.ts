@@ -36,13 +36,13 @@ export class GravityGizmo {
     this.camera.quaternion.copy(view);
     this.camera.position.set(0, 0, 4.2).applyQuaternion(view);
     this.camera.updateMatrixWorld();
-    const size = 140;
+    const size = 128;
     const full = renderer.getSize(this.tmp);
     renderer.autoClear = false;
     renderer.clearDepth();
     renderer.setScissorTest(true);
-    renderer.setViewport(20, 10, size, size);
-    renderer.setScissor(20, 10, size, size);
+    renderer.setViewport(16, 78, size, size);
+    renderer.setScissor(16, 78, size, size);
     renderer.render(this.scene, this.camera);
     renderer.setScissorTest(false);
     renderer.setViewport(0, 0, full.x, full.y);

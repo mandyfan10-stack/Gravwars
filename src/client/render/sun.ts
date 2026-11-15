@@ -83,8 +83,8 @@ export function createSun() {
   const sphere = new Mesh(new SphereGeometry(SUN_RADIUS, 48, 24), ball);
   group.add(sphere);
 
-  const glowTex = radial(256, [[0, 'rgba(255,240,210,1)'], [0.12, 'rgba(255,214,140,0.9)'], [0.32, 'rgba(255,170,80,0.35)'], [1, 'rgba(255,140,60,0)']]);
-  const haloTex = radial(256, [[0, 'rgba(255,220,170,0.5)'], [0.4, 'rgba(255,190,120,0.12)'], [1, 'rgba(255,170,100,0)']]);
+  const glowTex = radial(256, [[0, 'rgba(255,246,215,1)'], [0.16, 'rgba(255,220,135,0.92)'], [0.42, 'rgba(255,182,82,0.45)'], [1, 'rgba(255,150,60,0)']]);
+  const haloTex = radial(256, [[0, 'rgba(255,228,165,0.65)'], [0.45, 'rgba(245,198,120,0.22)'], [1, 'rgba(235,180,100,0)']]);
   const sprite = (map: CanvasTexture, scale: number, opacity: number) => {
     const m = new SpriteMaterial({ map, blending: AdditiveBlending, depthWrite: false, transparent: true, opacity, fog: false });
     const s = new Sprite(m);
@@ -92,8 +92,8 @@ export function createSun() {
     group.add(s);
     return s;
   };
-  const corona = sprite(glowTex, SUN_RADIUS * 6, 0.9);
-  const halo = sprite(haloTex, SUN_RADIUS * 22, 0.55);
+  const corona = sprite(glowTex, SUN_RADIUS * 7.5, 0.95);
+  const halo = sprite(haloTex, SUN_RADIUS * 28, 0.65);
   const rayA = sprite(rays(512, 46, 7), SUN_RADIUS * 9, 0.6);
   const rayB = sprite(rays(512, 30, 13), SUN_RADIUS * 12, 0.35);
   for (const s of [corona, halo, rayA, rayB]) s.renderOrder = 2;

@@ -63,8 +63,8 @@ export function buildPhysicsWorld(R: Rapier, map: MapData): PhysicsWorld {
   }
   for (const t of map.trees) {
     if (t.kind !== 'tree') continue;
-    const th = 1.6 * t.scale;
-    const r = 0.18 * t.scale;
+    const th = 4.0 * t.scale;
+    const r = 0.28 * t.scale;
     q.setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(...t.up));
     add(R.ColliderDesc.cuboid(r, th / 2, r)
       .setTranslation(t.pos[0] + t.up[0] * th / 2, t.pos[1] + t.up[1] * th / 2, t.pos[2] + t.up[2] * th / 2)

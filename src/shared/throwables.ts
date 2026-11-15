@@ -4,7 +4,7 @@ import { DEFAULT_MOVEMENT } from './constants';
 import type { ItemId, Pickups } from './economy';
 
 export const THROW = {
-  /** Release speed, m/s, plus this share of the thrower's own velocity. */
+  /** Release speed, m/s (normal speed), plus this share of the thrower's own velocity. */
   speed: 15,
   inherit: 0.6,
   /** A bottle breaks on whatever it hits: a little damage, and an NPC stands dazed for `stun` s. */
@@ -58,7 +58,7 @@ export class Throws {
   throw(kind: ItemId, owner: number, eye: Vector3, dir: Vector3, ownerVel: Vector3, down: Vector3): Thrown {
     const up = down.clone().negate();
     // aim a touch above the crosshair: a lob, not a laser
-    const v = dir.clone().normalize().addScaledVector(up, 0.12).normalize().multiplyScalar(THROW.speed).addScaledVector(ownerVel, THROW.inherit);
+    const v = dir.clone().normalize().addScaledVector(up, 0.06).normalize().multiplyScalar(THROW.speed).addScaledVector(ownerVel, THROW.inherit);
     const t: Thrown = {
       id: this.nextId++, kind, owner, team: this.combat.target(owner)?.team ?? null, pos: eye.clone().addScaledVector(dir, 0.4), vel: v,
       down: down.clone().normalize(), age: 0, spin: 8 + Math.random() * 6, alive: true,
@@ -77,7 +77,7 @@ export class Throws {
       _a.copy(t.pos);
       _b.copy(t.pos).addScaledVector(t.vel, dt);
       const wh = this.combat.rayWorld(_a, _b);
-      const th = this.combat.rayTargets(t, _a, _b);
+      const th = this.combat.rayTargets({ owner: t.owner, team: t.team, skipCars: true }, _a, _b);
       if (th && (!wh || th.t <= wh.t)) {
         const pos = _a.clone().lerp(_b, th.t);
         const tg = th.target;

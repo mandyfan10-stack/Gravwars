@@ -104,7 +104,7 @@ export class BotView {
       v.hp = b.target.hp;
       m.group.visible = true;
       const w = b.weapons.current;
-      const held = fishing ? 'rod' : w === 'pistol' ? 'pistol' : isGun(w) ? 'rifle' : 'fists';
+      const held = fishing ? 'rod' : isGun(w) ? w : 'fists';
       if (held !== m.held) m.setHeld(held);
       const s = b.sim.state;
       // big jumps (portal, respawn) are not interpolated

@@ -92,9 +92,11 @@ export function wallWithHoles(b: Builder, f: Frame, x0: number, x1: number, y0: 
 /** Furniture and crates for one storey (free area x ∈ [ax0, ax1], z ∈ [az0, az1], floor at y). */
 function furnish(b: Builder, f: Frame, rng: Rng, ax0: number, ax1: number, az0: number, az1: number, y: number,
   kind: 'office' | 'store' | 'museum', keep: (x: number, z: number) => boolean) {
+  const placed: [number, number][] = [];
   for (let k = 0, n = rng.int(1, 3); k < n; k++) {
-    const x = rng.range(ax0 + 1.2, ax1 - 1.2), z = rng.range(az0 + 1.2, az1 - 1.2);
-    if (keep(x, z)) continue;
+    const x = rng.range(ax0 + 1.5, ax1 - 1.5), z = rng.range(az0 + 1.5, az1 - 1.5);
+    if (keep(x, z) || placed.some(([px, pz]) => Math.hypot(x - px, z - pz) < 1.8)) continue;
+    placed.push([x, z]);
     if (kind === 'museum') {
       // an exhibit on a plinth
       b.block(f, x, y, z, 0.6, 0.45, 0.6, 0xe8e4dc, 'stone');
@@ -120,16 +122,19 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
   const N = s.floors;
   const top = GF + N * STOREY;
   const roofless = s.style === 'skeleton';
-  // stair core in the +x / -z corner
-  const lx0 = XI - 6;
+  // stair core in the +x / -z corner, inset cleanly inside perimeter columns and parapets
+  const margin = glazed ? 0.45 : 0.6;
+  const lx0 = X - margin - 6;
   const core = Math.min(12, 2 * ZI);
   const r0 = -ZI + (core - 6) / 2;
   const lanes: 1 | 2 = N > 1 ? 2 : 1;
   const climbs = roofless ? N - 1 : N; // a skeleton has no roof to climb onto
   const holes = stairs(b, f, lx0, r0, climbs, lanes, GF, s.style === 'skeleton' ? 0xb9b4a8 : 0xc9c4b8);
   const doorX = -3;
+  const partZ = -ZI + core + 0.1;
   const keepClear = (x: number, z: number) =>
     (x > lx0 - 1.5 && z < -ZI + core + 1.5) // stair core
+    || (glazed && s.d >= 18 && Math.abs(z - partZ) < 1.2) // interior plaster partition
     || (Math.abs(x - doorX) < DOOR_W / 2 + 1 && Math.abs(z) > ZI - 3.5) // door corridors
     || Math.abs(x - doorX) < 1.6; // the way between the doors
 
@@ -146,11 +151,16 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
 
   // columns: corners (+ mid points on long sides of the open styles)
   const colTop = roofless ? top - STOREY : top;
-  const cols: [number, number][] = [[-X, -Z], [X, -Z], [-X, Z], [X, Z]];
-  if (!glazed) for (const sx of [-1, 1]) for (let z = -Z + 6; z < Z - 1; z += 6) cols.push([sx * X, z]);
-  for (const [x, z] of cols) {
+  const cols: [number, number, number][] = [
+    [-X, -Z, s.style === 'garage' ? top + 1 : colTop],
+    [X, -Z, s.style === 'garage' ? top + 1 : colTop],
+    [-X, Z, s.style === 'garage' ? top + 1 : colTop],
+    [X, Z, s.style === 'garage' ? top + 1 : colTop],
+  ];
+  if (!glazed) for (const sx of [-1, 1]) for (let z = -Z + 6; z < Z - 1; z += 6) cols.push([sx * X, z, colTop]);
+  for (const [x, z, ct] of cols) {
     const cx = x - Math.sign(x) * 0.25, cz = z === -Z || z === Z ? z - Math.sign(z) * 0.25 : z;
-    b.span(f, cx - 0.25, GF, cz - 0.25, cx + 0.25, colTop, cz + 0.25, s.style === 'tower' ? 0x5b6168 : s.frame, s.style === 'tower' ? 'metal' : 'concrete');
+    b.span(f, cx - 0.25, GF, cz - 0.25, cx + 0.25, ct, cz + 0.25, s.style === 'tower' ? 0x5b6168 : s.frame, s.style === 'tower' ? 'metal' : 'concrete');
   }
 
   // facades
@@ -178,7 +188,7 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
       for (let L = 1; L <= N; L++) {
         if (roofless) break;
         const y = GF + L * STOREY;
-        b.span(side, -len + 0.5, y, depth - 0.25, len - 0.5, y + 1, depth, s.frame, 'concrete');
+        b.span(side, -len + 0.5, y, depth - 0.24, len - 0.5, y + 1, depth - 0.02, s.frame, 'concrete');
       }
     }
   }
@@ -186,16 +196,29 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
   if (!roofless) {
     if (glazed) for (let k = 0; k < 4; k++) {
       const side = f.sub(0, 0, 0, (k * Math.PI) / 2);
-      const len = k % 2 === 0 ? X : Z, depth = k % 2 === 0 ? Z : X;
+      const len = k % 2 === 0 ? X + 0.1 : Z - 0.3, depth = k % 2 === 0 ? Z : X;
       b.span(side, -len, top, depth - 0.3, len, top + 1, depth + 0.1, s.frame, 'concrete');
     }
     const h = holes[N - 1];
     if (h) {
-      // rails on the hole's long sides (the open end is where the ramp arrives; the facade side has the parapet)
-      b.span(f, h[0] - 0.1, top, h[2], h[0], top + 1, h[3], 0x2f3236, 'metal');
-      if (h[1] < XI - 0.5) b.span(f, h[1], top, h[2], h[1] + 0.1, top + 1, h[3], 0x2f3236, 'metal');
-      const far = N % 2 === 1 ? h[2] : h[3]; // the low end of the last ramp: closed
-      b.span(f, h[0], top, far - 0.05, h[1], top + 1, far + 0.05, 0x2f3236, 'metal');
+      // open post-and-rail guardrails on the hole's long sides and closed low end
+      const far = N % 2 === 1 ? h[2] : h[3];
+      const rails: [number, number, number, number][] = [
+        [h[0] - 0.05, h[2], h[0] - 0.05, h[3]],
+        [h[0] - 0.05, far, h[1] + (h[1] < XI - 0.5 ? 0.05 : 0), far],
+      ];
+      if (h[1] < XI - 0.5) rails.push([h[1] + 0.05, h[2], h[1] + 0.05, h[3]]);
+      for (const [x0, z0, x1, z1] of rails) {
+        const len = Math.hypot(x1 - x0, z1 - z0);
+        const steps = Math.max(1, Math.round(len / 2.2));
+        for (let i = 0; i <= steps; i++) {
+          const px = x0 + ((x1 - x0) * i) / steps, pz = z0 + ((z1 - z0) * i) / steps;
+          b.block(f, px, top, pz, 0.04, 0.48, 0.04, 0x2f3236, 'metal');
+        }
+        const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+        const hx = Math.abs(x1 - x0) / 2 + 0.04, hz = Math.abs(z1 - z0) / 2 + 0.04;
+        for (const ry of [0.46, 0.92]) b.box(f, cx, top + ry, cz, hx, 0.035, hz, 0x2f3236, 'metal');
+      }
     }
     if (s.style !== 'garage') {
       b.block(f, -X / 2, top, Z / 2, 1.4, 0.8, 1.1, 0x9a9da2, 'metal');

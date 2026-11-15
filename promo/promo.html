@@ -1,0 +1,560 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>GravWars promo</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script>
+const W = 1080, H = 1920, T = 41;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const FONT = '"Segoe UI", Arial, sans-serif';
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const eo = (t) => 1 - Math.pow(1 - clamp(t), 3);
+const eio = (t) => { t = clamp(t); return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+const back = (t) => { t = clamp(t); const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+function rng(seed) { return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; }
+const TEAM = { red: '#ff3b3b', blue: '#3b6bff', green: '#3bff6b', yellow: '#ffd23b' };
+const HL = '#ffd23b';
+const SCENES = [0, 4.5, 10.5, 16.5, 22.5, 28, 33, 37, 41];
+
+// ---------- background
+const STARS = (() => { const r = rng(7); return Array.from({ length: 180 }, () => ({ x: r() * W, y: r() * H, s: 1 + r() * 3, p: r() * 6 })); })();
+function background(t) {
+  const gr = g.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, '#0d0a26'); gr.addColorStop(1, '#22134a');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  for (const s of STARS) {
+    g.globalAlpha = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 2 + s.p));
+    g.fillStyle = '#fff';
+    g.fillRect(s.x, (s.y + t * 6 * s.s) % H, s.s, s.s);
+  }
+  g.globalAlpha = 1;
+}
+
+// ---------- text with *highlight* segments, auto-fit width
+function text(s, x, y, size, o = {}) {
+  const { color = '#fff', alpha = 1, scale = 1, rot = 0, maxW = 960, align = 'center', stroke = true } = o;
+  if (alpha <= 0) return;
+  g.save(); g.globalAlpha *= alpha; g.translate(x, y); g.rotate(rot);
+  g.font = `900 ${size}px ${FONT}`; g.textBaseline = 'middle'; g.textAlign = 'left';
+  const lines = s.split('\n').map((l) => l.split('*').map((seg, i) => ({ seg, hl: i % 2 === 1, w: g.measureText(seg).width })));
+  const widths = lines.map((l) => l.reduce((a, b) => a + b.w, 0));
+  const fit = Math.min(1, maxW / Math.max(...widths));
+  g.scale(scale * fit, scale * fit);
+  const lh = size * 1.12;
+  lines.forEach((l, i) => {
+    const yy = (i - (lines.length - 1) / 2) * lh;
+    let xx = align === 'center' ? -widths[i] / 2 : 0;
+    for (const p of l) {
+      if (stroke) { g.lineWidth = size * 0.2; g.strokeStyle = 'rgba(0,0,0,0.92)'; g.lineJoin = 'round'; g.strokeText(p.seg, xx, yy); }
+      g.fillStyle = p.hl ? (o.hl || HL) : color; g.fillText(p.seg, xx, yy);
+      xx += p.w;
+    }
+  });
+  g.restore();
+}
+function caption(s, t, t0, t1, y = 400, size = 84, o = {}) {
+  if (t < t0 || t > t1) return;
+  const a = prog(t, t0, t0 + 0.28);
+  text(s, 540, y, size, { ...o, scale: 0.55 + 0.45 * back(a), alpha: a * (1 - prog(t, t1 - 0.18, t1)) });
+}
+
+// ---------- characters
+function guy(x, y, o = {}) {
+  const { s = 1, color = TEAM.red, ang = 0, walk = 0, face = 1, gun = false, alpha = 1 } = o;
+  g.save(); g.globalAlpha *= alpha; g.translate(x, y); g.rotate(ang); g.scale(s * face, s);
+  const sw = Math.sin(walk) * 0.55, bob = -Math.abs(Math.sin(walk)) * 4;
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  // legs
+  for (const a of [sw, -sw]) {
+    g.strokeStyle = '#151522'; g.lineWidth = 17;
+    g.beginPath(); g.moveTo(0, -40 + bob); g.lineTo(Math.sin(a) * 40, -40 + bob + Math.cos(a) * 40); g.stroke();
+    g.strokeStyle = '#3a3f55'; g.lineWidth = 11; g.stroke();
+  }
+  g.translate(0, bob);
+  // body
+  g.fillStyle = color; g.strokeStyle = '#151522'; g.lineWidth = 5;
+  g.beginPath(); g.roundRect(-23, -98, 46, 64, 14); g.fill(); g.stroke();
+  // vest
+  g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(-18, -84, 36, 30);
+  // arm
+  g.strokeStyle = '#151522'; g.lineWidth = 15;
+  g.beginPath(); g.moveTo(2, -84); g.lineTo(30, -64); g.stroke();
+  g.strokeStyle = color; g.lineWidth = 9; g.stroke();
+  if (gun) { g.fillStyle = '#20232e'; g.beginPath(); g.roundRect(22, -76, 46, 12, 3); g.fill(); g.fillRect(28, -66, 9, 14); }
+  // head + helmet
+  g.fillStyle = '#f2c79b'; g.strokeStyle = '#151522'; g.lineWidth = 5;
+  g.beginPath(); g.arc(0, -122, 23, 0, Math.PI * 2); g.fill(); g.stroke();
+  g.fillStyle = '#2a2f3a'; g.beginPath(); g.arc(0, -124, 25, Math.PI * 1.02, Math.PI * 1.98); g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = color; g.fillRect(-22, -134, 44, 5);
+  g.fillStyle = '#151522'; g.beginPath(); g.arc(11, -118, 3.8, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+
+// ---------- city strip in local frame: ground at y=0, up = -y
+function city(seed, x0, x1, o = {}) {
+  const r = rng(seed); let x = x0;
+  const pal = ['#3d4a6b', '#4b5a80', '#56658f', '#5e4b7a', '#3f6070'];
+  while (x < x1 - 40) {
+    const w = 50 + r() * 70, h = (o.low ? 40 : 60) + r() * (o.low ? 90 : 190);
+    if (r() < 0.22) { // tree
+      g.fillStyle = '#5b3b22'; g.fillRect(x + 18, -30, 8, 30);
+      g.fillStyle = '#2fae5a'; g.beginPath(); g.arc(x + 22, -42, 22, 0, Math.PI * 2); g.fill();
+      x += 50; continue;
+    }
+    g.fillStyle = pal[Math.floor(r() * pal.length)]; g.strokeStyle = '#141428'; g.lineWidth = 3;
+    g.fillRect(x, -h, w, h); g.strokeRect(x, -h, w, h);
+    g.fillStyle = '#ffe28a';
+    for (let wy = -h + 12; wy < -16; wy += 22) for (let wx = x + 9; wx < x + w - 12; wx += 18) {
+      if (r() < 0.6) g.fillRect(wx, wy, 8, 10);
+    }
+    x += w + 8 + r() * 14;
+  }
+}
+
+function sun(x, y, r, t) {
+  g.save(); g.translate(x, y);
+  g.rotate(t * 0.6);
+  g.fillStyle = 'rgba(255,210,90,0.35)';
+  for (let i = 0; i < 12; i++) { g.rotate(Math.PI / 6); g.beginPath(); g.moveTo(-r * 0.25, 0); g.lineTo(0, r * 2.3); g.lineTo(r * 0.25, 0); g.fill(); }
+  g.restore();
+  const gr = g.createRadialGradient(x, y, 0, x, y, r * 1.9);
+  gr.addColorStop(0, '#fffbe6'); gr.addColorStop(0.45, '#ffd23b'); gr.addColorStop(0.7, 'rgba(255,140,40,0.6)'); gr.addColorStop(1, 'rgba(255,120,40,0)');
+  g.fillStyle = gr; g.beginPath(); g.arc(x, y, r * 1.9, 0, Math.PI * 2); g.fill();
+}
+
+// cube cross-section: 4 inner faces with cities, people standing on every face
+function cube(cx, cy, S, rot, t, alpha = 1) {
+  g.save(); g.globalAlpha *= alpha; g.translate(cx, cy); g.rotate(rot);
+  const h = S / 2;
+  g.save(); g.beginPath(); g.rect(-h, -h, S, S); g.clip();
+  g.fillStyle = 'rgba(10,6,30,0.85)'; g.fillRect(-h, -h, S, S);
+  sun(0, 0, S * 0.08, t);
+  const cols = [TEAM.red, TEAM.green, TEAM.yellow, TEAM.blue];
+  for (let k = 0; k < 4; k++) {
+    g.save(); g.rotate(k * Math.PI / 2); g.translate(0, h);
+    g.fillStyle = '#2b3550'; g.fillRect(-h * 0.78, -18, h * 1.56, 18);
+    g.fillStyle = cols[k]; g.fillRect(-h * 0.78, -18, h * 1.56, 5);
+    g.save(); g.translate(0, -18); g.scale(S / 760, S / 760); city(11 + k * 5, -h * 0.74 * 760 / S, h * 0.74 * 760 / S, { low: true });
+    guy(Math.sin(t * 0.8 + k) * 60, 0, { s: 0.75, color: cols[k], walk: t * 9 + k, face: Math.cos(t * 0.8 + k) > 0 ? 1 : -1 });
+    g.restore();
+    g.restore();
+  }
+  g.restore();
+  g.strokeStyle = '#8fd3ff'; g.lineWidth = 9; g.shadowColor = '#8fd3ff'; g.shadowBlur = 30;
+  g.strokeRect(-h, -h, S, S); g.shadowBlur = 0;
+  g.restore();
+}
+
+// ---------- crystal
+function crystal(x, y, s, color, t, o = {}) {
+  const { hp = 1, broken = -1, alpha = 1 } = o;
+  g.save(); g.globalAlpha *= alpha; g.translate(x, y);
+  // pedestal
+  g.fillStyle = '#39405a'; g.strokeStyle = '#141428'; g.lineWidth = 4;
+  g.beginPath(); g.roundRect(-s * 0.8, s * 1.05, s * 1.6, s * 0.35, 8); g.fill(); g.stroke();
+  const pts = [[0, -1.3], [0.52, -0.55], [0.48, 0.55], [0, 1.05], [-0.48, 0.55], [-0.52, -0.55]];
+  if (broken < 0) {
+    const bob = Math.sin(t * 3 + x) * s * 0.06;
+    g.translate(0, bob);
+    g.shadowColor = color; g.shadowBlur = 40;
+    const gr = g.createLinearGradient(-s, -s, s, s); gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.35, color); gr.addColorStop(1, '#141428');
+    g.fillStyle = gr; g.beginPath(); pts.forEach(([px, py], i) => (i ? g.lineTo : g.moveTo).call(g, px * s, py * s)); g.closePath(); g.fill();
+    g.shadowBlur = 0; g.strokeStyle = '#fff'; g.globalAlpha *= 0.7; g.lineWidth = 3; g.stroke();
+    g.beginPath(); g.moveTo(0, -1.3 * s); g.lineTo(0, 1.05 * s); g.moveTo(-0.52 * s, -0.55 * s); g.lineTo(0, -0.1 * s); g.lineTo(0.52 * s, -0.55 * s); g.stroke();
+    g.globalAlpha /= 0.7;
+    if (hp < 1) { // cracks
+      g.strokeStyle = '#141428'; g.lineWidth = 3; const r = rng(3); g.beginPath();
+      for (let i = 0; i < Math.floor((1 - hp) * 7); i++) { const a = r() * 6.28; g.moveTo(0, 0); g.lineTo(Math.cos(a) * s * 0.5, Math.sin(a) * s * 0.8); }
+      g.stroke();
+    }
+  } else { // shards
+    const r = rng(9);
+    for (let i = 0; i < 16; i++) {
+      const a = r() * 6.28, v = 300 + r() * 500, sz = s * (0.15 + r() * 0.25);
+      const px = Math.cos(a) * v * broken, py = Math.sin(a) * v * broken - 200 * broken + 900 * broken * broken;
+      g.save(); g.globalAlpha *= clamp(1 - broken / 0.9); g.translate(px, py); g.rotate(broken * (r() * 12 - 6));
+      g.fillStyle = color; g.beginPath(); g.moveTo(0, -sz); g.lineTo(sz * 0.6, sz * 0.5); g.lineTo(-sz * 0.6, sz * 0.4); g.closePath(); g.fill();
+      g.restore();
+    }
+    if (broken < 0.25) { g.globalAlpha *= 1 - broken / 0.25; g.fillStyle = '#fff'; g.beginPath(); g.arc(0, 0, s * (1 + broken * 6), 0, 6.28); g.fill(); }
+  }
+  g.restore();
+  if (hp < 1 && broken < 0) {
+    g.fillStyle = '#141428'; g.fillRect(x - s * 0.8, y + s * 1.6, s * 1.6, 16);
+    g.fillStyle = color; g.fillRect(x - s * 0.8 + 3, y + s * 1.6 + 3, (s * 1.6 - 6) * hp, 10);
+  }
+}
+function gem(x, y, s, color = '#c78bff') {
+  g.save(); g.translate(x, y); g.fillStyle = color; g.strokeStyle = '#141428'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(0, -s); g.lineTo(s * 0.7, -s * 0.2); g.lineTo(0, s); g.lineTo(-s * 0.7, -s * 0.2); g.closePath(); g.fill(); g.stroke(); g.restore();
+}
+function coin(x, y, s) {
+  g.save(); g.translate(x, y);
+  g.fillStyle = '#ffcc33'; g.strokeStyle = '#8a5a00'; g.lineWidth = s * 0.14;
+  g.beginPath(); g.arc(0, 0, s, 0, 6.28); g.fill(); g.stroke();
+  g.fillStyle = '#8a5a00'; g.font = `900 ${s * 1.2}px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('$', 0, s * 0.05);
+  g.restore();
+}
+
+// ---------- item icons (size ~ 1 unit = s px)
+function icon(kind, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s / 100, s / 100); g.strokeStyle = '#141428'; g.lineWidth = 6; g.lineJoin = 'round';
+  if (kind === 'apple') {
+    g.fillStyle = '#e8343a'; g.beginPath(); g.arc(-18, 5, 38, 0, 6.28); g.arc(18, 5, 38, 0, 6.28); g.fill();
+    g.beginPath(); g.arc(-18, 5, 38, Math.PI * 0.55, Math.PI * 1.6); g.stroke(); g.beginPath(); g.arc(18, 5, 38, -Math.PI * 0.6, Math.PI * 0.45); g.stroke();
+    g.strokeStyle = '#5b3b22'; g.beginPath(); g.moveTo(0, -30); g.lineTo(4, -55); g.stroke();
+    g.fillStyle = '#2fae5a'; g.beginPath(); g.ellipse(22, -48, 18, 9, -0.4, 0, 6.28); g.fill();
+  } else if (kind === 'fish') {
+    g.fillStyle = '#5fb8ff'; g.beginPath(); g.ellipse(-5, 0, 48, 26, 0, 0, 6.28); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(38, 0); g.lineTo(62, -24); g.lineTo(62, 24); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#141428'; g.beginPath(); g.arc(-30, -6, 6, 0, 6.28); g.fill();
+  } else if (kind === 'bottle') {
+    g.fillStyle = '#3fbf6f'; g.beginPath(); g.roundRect(-22, -20, 44, 75, 10); g.fill(); g.stroke();
+    g.beginPath(); g.roundRect(-9, -55, 18, 38, 4); g.fill(); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.45)'; g.fillRect(-14, -8, 7, 50);
+  } else if (kind === 'bandit') {
+    g.fillStyle = '#f2c79b'; g.beginPath(); g.arc(0, 0, 45, 0, 6.28); g.fill(); g.stroke();
+    g.fillStyle = '#2b2b35'; g.beginPath(); g.arc(0, -4, 47, Math.PI, 0); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#c0242a'; g.fillRect(-46, -2, 92, 18);
+    g.fillStyle = '#141428'; g.beginPath(); g.arc(-15, 7, 5, 0, 6.28); g.arc(15, 7, 5, 0, 6.28); g.fill();
+  }
+  g.restore();
+}
+function weapon(kind, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s / 100, s / 100); g.fillStyle = '#2a2e3d'; g.strokeStyle = '#0c0c16'; g.lineWidth = 5; g.lineJoin = 'round';
+  const R = (a, b, c, d, r = 4, col) => { if (col) g.fillStyle = col; g.beginPath(); g.roundRect(a, b, c, d, r); g.fill(); g.stroke(); };
+  if (kind === 'pistol') { R(-50, -22, 95, 26); R(-45, 0, 30, 50, 6); R(-15, 4, 18, 14, 3); }
+  else if (kind === 'shotgun') { R(-30, -14, 150, 14, 3); R(-25, 2, 110, 12, 3, '#8a5a32'); R(-140, -16, 115, 26, 6, '#2a2e3d'); R(-150, -10, 50, 50, 8, '#8a5a32'); }
+  else if (kind === 'ak') { R(-60, -20, 120, 26); R(60, -14, 70, 10, 2); R(10, 2, 45, 14, 3, '#8a5a32'); R(-135, -16, 80, 26, 8, '#8a5a32'); R(-20, 4, 26, 52, 6, '#2a2e3d'); R(-48, 4, 18, 34, 5); }
+  else if (kind === 'rocket') { R(-120, -24, 240, 46, 20, '#4a5a3a'); R(118, -28, 22, 54, 6, '#2a2e3d'); R(-20, 18, 22, 38, 5); R(30, 18, 18, 26, 4); g.fillStyle = '#ff5a2a'; g.beginPath(); g.moveTo(140, -16); g.lineTo(175, 0); g.lineTo(140, 16); g.closePath(); g.fill(); g.stroke(); }
+  g.restore();
+}
+function key(x, y, w, label, size = 54, a = 1) {
+  g.save(); g.globalAlpha *= a;
+  g.fillStyle = '#0c0c16'; g.beginPath(); g.roundRect(x, y + 10, w, 110, 18); g.fill();
+  g.fillStyle = '#f1f2f8'; g.beginPath(); g.roundRect(x, y, w, 110, 18); g.fill();
+  g.strokeStyle = '#0c0c16'; g.lineWidth = 5; g.stroke();
+  g.fillStyle = '#141428'; g.font = `900 ${size}px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, x + w / 2, y + 57);
+  g.restore();
+}
+function boom(x, y, p, r) { // p 0..1
+  if (p <= 0 || p >= 1) return;
+  g.save(); g.globalAlpha = 1 - p;
+  const gr = g.createRadialGradient(x, y, 0, x, y, r * (0.4 + p));
+  gr.addColorStop(0, '#fffbe0'); gr.addColorStop(0.4, '#ffb030'); gr.addColorStop(0.8, '#ff4a1a'); gr.addColorStop(1, 'rgba(255,60,20,0)');
+  g.fillStyle = gr; g.beginPath(); g.arc(x, y, r * (0.4 + p), 0, 6.28); g.fill();
+  g.restore();
+}
+
+// ================= SCENES =================
+function s1(t) { // hook: world in a cube
+  const S = 760 * (0.55 + 0.45 * eo(t / 0.9));
+  cube(540, 1130, S, -0.4 + eo(t / 1.6) * Math.PI * 0.75 + t * 0.12, t);
+  caption('Здесь нет\n*верха* и *низа*', t, 0, 1.55, 400, 100);
+  if (t >= 1.5) {
+    const a = prog(t, 1.5, 1.75);
+    text('GRAVWARS', 540, 330, 150, { color: '#fff', hl: HL, scale: lerp(2.4, 1, eo(a)), alpha: a });
+    text('GRAVWARS', 540, 330, 150, { color: HL, scale: lerp(2.4, 1, eo(a)), alpha: a, stroke: false });
+  }
+  caption('Битва 4 команд\nвнутри *гигантского куба*', t, 1.9, 4.5, 540, 62);
+}
+
+function s2(t) { // gravity flip
+  const th = eio(prog(t, 2.0, 3.0)) * Math.PI / 2;
+  let fx, fy, ca, dist;
+  if (t < 2.0) { const p = prog(t, 0.2, 2.0); fx = lerp(-460, -34, p); fy = 0; ca = 0; dist = fx; }
+  else if (t < 3.0) { const p = eio(prog(t, 2.0, 3.0)); fx = lerp(-34, 0, p); fy = lerp(0, -34, p) - Math.sin(p * Math.PI) * 30; ca = -p * Math.PI / 2; dist = 0; }
+  else { fx = 0; fy = -34 - (t - 3) * 190; ca = -Math.PI / 2; dist = -fy; }
+  const C = [380, 1300];
+  g.save(); g.translate(C[0], C[1]); g.rotate(th); g.translate(-fx, -fy);
+  g.fillStyle = '#2b3550'; g.fillRect(-3000, 0, 6000, 3000); g.fillRect(0, -3000, 3000, 6000);
+  const pulse = t > 1.3 && t < 2.6 ? 0.5 + 0.5 * Math.sin(t * 18) : 0;
+  g.fillStyle = '#4fd27a'; g.fillRect(-3000, 0, 3000, 12);
+  g.fillStyle = pulse ? `rgba(255,230,90,${0.6 + 0.4 * pulse})` : '#4fd27a'; g.fillRect(0, -3000, 12, 3000);
+  if (pulse) { g.save(); g.shadowColor = HL; g.shadowBlur = 50 * pulse; g.fillStyle = HL; g.fillRect(0, -3000, 6, 3000); g.restore(); }
+  g.save(); city(21, -1500, -280); g.restore();
+  g.save(); g.rotate(-Math.PI / 2); city(33, 330, 2600); g.restore();
+  guy(fx, fy, { s: 1.15, color: TEAM.red, ang: ca, walk: dist * 0.05 });
+  g.restore();
+  // gravity arrow next to the player (always toward his feet)
+  const ax = C[0] - 95, ay = C[1] - 150;
+  g.save(); g.globalAlpha = 0.9; g.strokeStyle = HL; g.fillStyle = HL; g.lineWidth = 10; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(ax, ay); g.lineTo(ax, ay + 90); g.stroke();
+  g.beginPath(); g.moveTo(ax - 22, ay + 75); g.lineTo(ax, ay + 110); g.lineTo(ax + 22, ay + 75); g.closePath(); g.fill();
+  g.restore();
+  text('g', ax - 40, ay + 40, 50, { color: HL });
+  text('ГЛАВНАЯ ФИШКА', 540, 260, 46, { color: HL, alpha: prog(t, 0, 0.3) });
+  caption('Подойди к *стене*…', t, 0.1, 2.05, 410, 86);
+  caption('…и она станет *полом*!', t, 2.05, 4.2, 410, 86);
+  caption('Гравитация тянет\nк *ближайшей* поверхности', t, 4.2, 6.0, 430, 70);
+}
+
+function s3(t) { // crystals
+  const cs = [
+    { c: TEAM.red, n: 'КРАСНЫЕ', x: 290, y: 930 },
+    { c: TEAM.blue, n: 'СИНИЕ', x: 790, y: 930 },
+    { c: TEAM.green, n: 'ЗЕЛЁНЫЕ', x: 290, y: 1390 },
+    { c: TEAM.yellow, n: 'ЖЁЛТЫЕ', x: 790, y: 1390 },
+  ];
+  const breakAt = [Infinity, 3.0, 4.1, 4.4];
+  cs.forEach((k, i) => {
+    const a = back(prog(t, 0.1 + i * 0.12, 0.5 + i * 0.12));
+    if (a <= 0) return;
+    g.save(); g.translate(k.x, k.y); g.scale(a, a); g.translate(-k.x, -k.y);
+    const hp = i === 1 ? 1 - prog(t, 2.0, 3.0) : 1;
+    const br = t >= breakAt[i] ? t - breakAt[i] : -1;
+    crystal(k.x, k.y, 85, k.c, t, { hp: i === 1 && t < 3 ? Math.max(hp, 0.05) : 1, broken: br });
+    text(k.n, k.x, k.y + 190, 44, { color: k.c });
+    if (br >= 0) text('✕', k.x, k.y + 10, 150, { color: '#ff4040', scale: back(prog(br, 0, 0.3)), alpha: prog(br, 0.15, 0.35) });
+    g.restore();
+  });
+  // "you" tag + crown
+  if (t > 0.5) text('ТЫ', 290, 760, 46, { color: '#fff', alpha: prog(t, 0.5, 0.8) });
+  if (t > 4.7) { const a = back(prog(t, 4.7, 5.0)); g.save(); g.translate(290, 760); g.scale(a, a);
+    g.fillStyle = HL; g.strokeStyle = '#141428'; g.lineWidth = 6; g.beginPath();
+    g.moveTo(-70, 30); g.lineTo(-80, -40); g.lineTo(-35, -5); g.lineTo(0, -55); g.lineTo(35, -5); g.lineTo(80, -40); g.lineTo(70, 30); g.closePath(); g.fill(); g.stroke(); g.restore(); }
+  // shooter + tracers at the blue crystal
+  if (t > 1.6 && t < 3.3) {
+    const gx = 540, gy = 1230;
+    guy(gx, gy, { s: 1, color: TEAM.red, gun: true, alpha: prog(t, 1.6, 1.8) * (1 - prog(t, 3.1, 3.3)) });
+    if (t > 2.0 && t < 3.0) {
+      const k = (t * 10) % 1;
+      const sx = gx + 70, sy = gy - 70, ex = 790, ey = 930;
+      g.strokeStyle = '#fff6a0'; g.lineWidth = 7; g.lineCap = 'round'; g.shadowColor = HL; g.shadowBlur = 20;
+      g.beginPath(); g.moveTo(lerp(sx, ex, k), lerp(sy, ey, k)); g.lineTo(lerp(sx, ex, Math.min(1, k + 0.25)), lerp(sy, ey, Math.min(1, k + 0.25))); g.stroke();
+      g.shadowBlur = 0;
+    }
+  }
+  caption('Защищай свой *кристалл*', t, 0, 2.0, 380, 80);
+  caption('Пока он цел — ты возрождаешься', t, 0.3, 2.0, 510, 48);
+  caption('Ломай *чужие*!', t, 2.0, 4.0, 380, 96);
+  caption('Без кристалла — респавна нет', t, 2.3, 4.0, 510, 48);
+  caption('Последняя команда\n*побеждает*!', t, 4.0, 6.0, 420, 84);
+}
+
+function s4(t) { // economy + shop
+  const items = [['apple', 'Яблоки'], ['fish', 'Рыбалка'], ['bottle', 'Бутылки'], ['bandit', 'Бандиты']];
+  const xs = [165, 395, 625, 855], iy = 1200;
+  const vals = [[3, 3, 4], [3, 3, 4], [3, 3, 4], [4, 4, 3]];
+  let money = 0;
+  const fade = 1 - prog(t, 3.3, 3.6);
+  items.forEach(([k, n], i) => {
+    const a = back(prog(t, 1.3 + i * 0.3, 1.6 + i * 0.3));
+    if (a > 0 && fade > 0) {
+      g.save(); g.globalAlpha = fade; icon(k, xs[i], iy, 120 * a); g.restore();
+      text(n, xs[i], iy + 120, 40, { alpha: fade * clamp(a) });
+    }
+    vals[i].forEach((v, j) => {
+      const t0 = 1.6 + i * 0.3 + j * 0.12, p = prog(t, t0, t0 + 0.5);
+      if (p >= 1) money += v;
+      else if (p > 0) {
+        const x = lerp(xs[i], 480, eio(p)), y = lerp(iy - 60, 700, eio(p)) - Math.sin(p * Math.PI) * 200;
+        coin(x, y, 30);
+      }
+    });
+  });
+  const spend = prog(t, 4.6, 5.0);
+  money = Math.round(money * (1 - spend));
+  // wallet
+  const wa = prog(t, 0.2, 0.5);
+  g.save(); g.globalAlpha = wa; coin(470, 700, 46); g.restore();
+  text(String(money), 530, 702, 90, { align: 'left', alpha: wa, color: money > 0 ? HL : '#fff' });
+  // shop
+  const tiles = [['pistol', 'Пистолет', '19'], ['shotgun', 'Дробовик', '27'], ['ak', 'Автомат', '41'], ['rocket', 'Ракетница', '4']];
+  const pos = [[290, 1020], [790, 1020], [290, 1390], [790, 1390]];
+  tiles.forEach(([k, n, price], i) => {
+    const a = back(prog(t, 3.5 + i * 0.1, 3.85 + i * 0.1));
+    if (a <= 0) return;
+    const [x, y] = pos[i];
+    g.save(); g.translate(x, y); g.scale(a, a);
+    const hover = i === 2 && t > 4.2;
+    g.fillStyle = hover ? 'rgba(255,210,60,0.22)' : 'rgba(255,255,255,0.08)'; g.strokeStyle = hover ? HL : 'rgba(255,255,255,0.35)'; g.lineWidth = 5;
+    g.beginPath(); g.roundRect(-220, -160, 440, 320, 26); g.fill(); g.stroke();
+    weapon(k, 0, -40, k === 'rocket' ? 95 : k === 'shotgun' ? 100 : 120);
+    g.restore();
+    text(n, x, y + 75 * a, 46, { alpha: clamp(a) });
+    if (k === 'rocket') { text(price, x - 18, y + 125 * a, 46, { color: '#c78bff', alpha: clamp(a) }); if (a > 0.5) gem(x + 26, y + 125, 20); }
+    else text(price + ' $', x, y + 125 * a, 46, { color: HL, alpha: clamp(a) });
+    if (i === 2 && t > 4.6) text('КУПЛЕНО', x, y - 40, 70, { color: '#4fff8a', rot: -0.2, scale: lerp(1.8, 1, eo(prog(t, 4.6, 4.8))), alpha: prog(t, 4.6, 4.7) });
+  });
+  // cursor
+  if (t > 3.9 && t < 6) {
+    const p = eio(prog(t, 3.9, 4.5)), cx = lerp(560, 330, p), cy = lerp(1700, 1430, p), press = t > 4.55 && t < 4.7 ? 0.85 : 1;
+    g.save(); g.translate(cx, cy); g.scale(press * 1.6, press * 1.6);
+    g.fillStyle = '#fff'; g.strokeStyle = '#000'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(0, 40); g.lineTo(10, 30); g.lineTo(18, 46); g.lineTo(24, 43); g.lineTo(16, 28); g.lineTo(29, 28); g.closePath(); g.fill(); g.stroke(); g.restore();
+  }
+  caption('Старт — с *пустыми*\nкарманами', t, 0, 1.3, 400, 80);
+  caption('Зарабатывай *сам*', t, 1.3, 3.4, 400, 86);
+  caption('Покупай *оружие*', t, 3.4, 6.0, 400, 86);
+}
+
+function s5(t) { // bridge over the abyss and up the neighbour face
+  const CY = 1480, CX = 900, EDGE = 420, TOP = 960;
+  // own face
+  g.fillStyle = '#2b3550'; g.fillRect(-10, CY, EDGE + 10, 500);
+  g.fillStyle = TEAM.red; g.fillRect(-10, CY, EDGE + 10, 8);
+  g.save(); g.translate(0, CY); city(41, 10, EDGE - 10); g.restore();
+  // neighbour face (vertical, its city only above TOP)
+  g.fillStyle = '#2b3550'; g.fillRect(CX, -10, 300, TOP + 10);
+  g.fillStyle = TEAM.blue; g.fillRect(CX, -10, 8, TOP + 10);
+  g.save(); g.translate(CX, TOP); g.rotate(-Math.PI / 2); city(52, 20, TOP - 20); g.restore();
+  // cube edge beam
+  g.save(); g.shadowColor = '#8fd3ff'; g.shadowBlur = 40; g.fillStyle = '#bfe8ff'; g.beginPath(); g.arc(CX, CY, 16, 0, 6.28); g.fill(); g.restore();
+  text('пропасть', 660, 1660, 40, { color: 'rgba(255,255,255,0.45)', stroke: false });
+  text('ребро куба', CX - 10, CY + 60, 34, { color: '#8fd3ff', alpha: 0.8 });
+  // pieces: 8 floor slabs, then 6 ramps zigzagging up
+  const ramps = [];
+  let y = CY;
+  for (let k = 0; k < 6; k++) { const ny = y - (CY - TOP) / 6; ramps.push(k % 2 ? [740, y, 860, ny] : [860, y, 740, ny]); y = ny; }
+  const path = [[380, CY], [860, CY]];
+  ramps.forEach((r) => path.push([r[2], r[3]]));
+  const at = (i) => 0.2 + i * 0.22;
+  for (let j = 0; j < 8; j++) {
+    const p = back(prog(t, at(j), at(j) + 0.2)); if (p <= 0) continue;
+    g.save(); g.translate(EDGE + j * 60 + 30, CY + 8); g.scale(p, p);
+    g.fillStyle = '#c08a4e'; g.strokeStyle = '#4a2c10'; g.lineWidth = 4; g.fillRect(-29, -8, 58, 18); g.strokeRect(-29, -8, 58, 18); g.restore();
+  }
+  ramps.forEach((r, k) => {
+    const p = eo(prog(t, at(8 + k), at(8 + k) + 0.2)); if (p <= 0) return;
+    g.strokeStyle = '#4a2c10'; g.lineWidth = 22; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(r[0], r[1]); g.lineTo(lerp(r[0], r[2], p), lerp(r[1], r[3], p)); g.stroke();
+    g.strokeStyle = '#c08a4e'; g.lineWidth = 13; g.stroke();
+  });
+  if (t > at(13) + 0.1) { g.fillStyle = '#c08a4e'; g.strokeStyle = '#4a2c10'; g.lineWidth = 4; g.fillRect(820, TOP - 4, 80, 16); g.strokeRect(820, TOP - 4, 80, 16); }
+  // player along the path
+  const seg = []; let L = 0;
+  for (let i = 1; i < path.length; i++) { const d = Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]); seg.push(d); L += d; }
+  let px, py, face = 1, ang = 0, walk = 0;
+  const u = prog(t, 0.9, 3.9) * L;
+  if (t < 3.9) {
+    let d = u, i = 0;
+    while (i < seg.length - 1 && d > seg[i]) { d -= seg[i]; i++; }
+    const q = clamp(d / seg[i]);
+    px = lerp(path[i][0], path[i + 1][0], q); py = lerp(path[i][1], path[i + 1][1], q);
+    face = path[i + 1][0] >= path[i][0] ? 1 : -1; walk = u * 0.06;
+  } else if (t < 4.3) {
+    const p = eio(prog(t, 3.9, 4.3)); px = lerp(860, CX, p); py = lerp(TOP, TOP - 40, p); ang = -p * Math.PI / 2; walk = 0;
+  } else { px = CX; py = TOP - 40 - (t - 4.3) * 200; ang = -Math.PI / 2; walk = (t - 4.3) * 12; }
+  guy(px, py - 6 * (t < 3.9 ? 1 : 0), { s: 0.85, color: TEAM.red, face, ang, walk });
+  caption('Строй *мост*\nчерез пропасть', t, 0, 2.6, 400, 84);
+  caption('…и вверх по *стене*\nсоседней грани', t, 2.6, 4.2, 400, 76);
+  caption('Ты в *чужом* городе!', t, 4.2, 5.5, 400, 84);
+}
+
+function s6(t) { // fights: wind, rocket jump, hook
+  const D = 5 / 3, k = Math.min(2, Math.floor(t / D)), lt = t - k * D;
+  const slide = (1 - eo(lt / 0.25)) * W;
+  g.save(); g.translate(slide, 0);
+  if (k === 0) {
+    // wind streaks
+    g.strokeStyle = 'rgba(160,220,255,0.35)'; g.lineWidth = 5; g.lineCap = 'round';
+    const r = rng(5);
+    for (let i = 0; i < 14; i++) { const x = 200 + r() * 700, y0 = ((r() * 1000 + lt * 700) % 1000) + 700; g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y0 + 60); g.stroke(); }
+    text('ВЕТЕР ↓', 880, 760, 46, { color: '#a0dcff' });
+    g.fillStyle = '#4b5a80'; g.strokeStyle = '#141428'; g.lineWidth = 4;
+    g.fillRect(-10, 1380, 330, 600); g.strokeRect(-10, 1380, 330, 600);
+    g.fillRect(760, 1500, 330, 500); g.strokeRect(760, 1500, 330, 500);
+    g.fillStyle = '#ffe28a';
+    for (let y = 1420; y < 1900; y += 60) for (let x = 30; x < 300; x += 70) g.fillRect(x, y, 28, 30);
+    for (let y = 1540; y < 1900; y += 60) for (let x = 800; x < 1060; x += 70) g.fillRect(x, y, 28, 30);
+    guy(170, 1380, { s: 1.1, color: TEAM.red, gun: true });
+    guy(910, 1500, { s: 1.1, color: TEAM.blue, face: -1 });
+    const sx = 250, sy = 1300, ex = 905, ey = 1370, cx = 600, cy = 1170;
+    g.setLineDash([18, 16]); g.strokeStyle = 'rgba(255,255,255,0.5)'; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(sx, sy); g.lineTo(ex, 1160); g.stroke(); g.setLineDash([]);
+    const p = prog(lt, 0.25, 0.95);
+    const B = (q) => [(1 - q) * (1 - q) * sx + 2 * (1 - q) * q * cx + q * q * ex, (1 - q) * (1 - q) * sy + 2 * (1 - q) * q * cy + q * q * ey];
+    g.strokeStyle = '#ffe680'; g.lineWidth = 8; g.shadowColor = HL; g.shadowBlur = 20; g.beginPath();
+    for (let q = Math.max(0, p - 0.35); q <= p; q += 0.02) { const [x, y] = B(q); g.lineTo(x, y); }
+    g.stroke(); g.shadowBlur = 0;
+    if (lt > 0.95) text('ПОПАЛ!', 900, 1150, 60, { color: '#ff5050', scale: back(prog(lt, 0.95, 1.15)) });
+  } else if (k === 1) {
+    g.fillStyle = '#2b3550'; g.fillRect(0, 1450, W, 500); g.fillStyle = '#4fd27a'; g.fillRect(0, 1450, W, 10);
+    g.fillStyle = '#4b5a80'; g.strokeStyle = '#141428'; g.lineWidth = 4; g.fillRect(640, 1000, 440, 450); g.strokeRect(640, 1000, 440, 450);
+    g.fillStyle = '#ffe28a'; for (let y = 1040; y < 1420; y += 60) for (let x = 680; x < 1060; x += 70) g.fillRect(x, y, 28, 30);
+    const p = prog(lt, 0.4, 1.2);
+    const x = lerp(300, 790, p), y = lerp(1450, 1000, p) - Math.sin(p * Math.PI) * 330;
+    boom(300, 1440, prog(lt, 0.3, 0.9), 160);
+    guy(x, y, { s: 1.1, color: TEAM.red, ang: p > 0 && p < 1 ? p * Math.PI * 2 : 0, walk: 0, gun: true });
+  } else {
+    g.fillStyle = '#2b3550'; g.fillRect(0, 1450, W, 500); g.fillStyle = '#4fd27a'; g.fillRect(0, 1450, W, 10);
+    g.fillStyle = '#56658f'; g.strokeStyle = '#141428'; g.lineWidth = 4; g.fillRect(640, 860, 440, 590); g.strokeRect(640, 860, 440, 590);
+    g.fillStyle = '#ffe28a'; for (let y = 900; y < 1420; y += 60) for (let x = 680; x < 1060; x += 70) g.fillRect(x, y, 28, 30);
+    const hx = 660, hy = 860;
+    const pull = eio(prog(lt, 0.55, 1.15));
+    const gx = lerp(240, 720, pull), gy = lerp(1450, 860, pull) - Math.sin(pull * Math.PI) * 60;
+    const fly = prog(lt, 0.2, 0.5);
+    const hand = [gx + 30, gy - 70];
+    const tip = [lerp(hand[0], hx, fly), lerp(hand[1], hy, fly)];
+    if (lt > 0.2 && pull < 1) {
+      g.strokeStyle = '#d9c9a0'; g.lineWidth = 5; g.beginPath(); g.moveTo(hand[0], hand[1]);
+      g.quadraticCurveTo((hand[0] + tip[0]) / 2, (hand[1] + tip[1]) / 2 + 60 * (1 - pull), tip[0], tip[1]); g.stroke();
+      g.strokeStyle = '#9aa0b0'; g.lineWidth = 7; g.beginPath(); g.moveTo(tip[0] - 16, tip[1] - 12); g.lineTo(tip[0], tip[1]); g.lineTo(tip[0] + 16, tip[1] - 12); g.stroke();
+    }
+    guy(gx, gy, { s: 1.1, color: TEAM.red });
+  }
+  g.restore();
+  caption('Пули *сносит ветер*', t, 0, D, 400, 86);
+  caption('*Рокет-джамп*', t, D, 2 * D, 400, 100);
+  caption('*Крюк-кошка*', t, 2 * D, 5, 400, 100);
+}
+
+function s7(t) { // controls
+  text('КАК ИГРАТЬ', 540, 330, 104, { color: HL, scale: back(prog(t, 0, 0.3)), alpha: prog(t, 0, 0.15) });
+  const rows = [
+    [['W', 'A', 'S', 'D'], 'ходить'],
+    [['ПРОБЕЛ'], 'прыжок'],
+    [['ЛКМ'], 'стрелять, бить'],
+    [['Q'], 'строить'],
+    [['E'], 'магазин'],
+  ];
+  rows.forEach(([keys, label], i) => {
+    const a = eo(prog(t, 0.3 + i * 0.32, 0.6 + i * 0.32));
+    if (a <= 0) return;
+    const y = 560 + i * 195, off = (1 - a) * -300;
+    g.save(); g.translate(off, 0);
+    if (keys.length === 4) keys.forEach((k, j) => key(90 + j * 112, y, 100, k, 54, a));
+    else key(90, y, keys[0].length > 3 ? 300 : keys[0].length > 1 ? 180 : 100, keys[0], keys[0].length > 3 ? 46 : 54, a);
+    text(label, 560, y + 57, 62, { align: 'left', alpha: a, maxW: 500 });
+    g.restore();
+  });
+}
+
+function s8(t) { // call to action
+  cube(540, 1060, 560, t * 0.35 + 1, t + 37, 0.75);
+  const pulse = 1 + Math.sin(t * 6) * 0.03;
+  const a = prog(t, 0, 0.3);
+  text('GRAVWARS', 540, 330, 150, { color: HL, scale: lerp(2, 1, eo(a)) * pulse, alpha: a });
+  caption('Готов *перевернуть*\nмир?', t, 0.4, 4.1, 560, 84);
+  caption('Пиши *«ХОЧУ»*\nв комментариях', t, 1.4, 4.1, 1570, 64);
+  if (t > 1.6) {
+    const y = 1680 + Math.sin(t * 8) * 12;
+    g.fillStyle = HL; g.strokeStyle = '#000'; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(510, y); g.lineTo(570, y); g.lineTo(570, y + 30); g.lineTo(600, y + 30); g.lineTo(540, y + 80); g.lineTo(480, y + 30); g.lineTo(510, y + 30); g.closePath(); g.fill(); g.stroke();
+  }
+}
+
+const FNS = [s1, s2, s3, s4, s5, s6, s7, s8];
+window.render = (t) => {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1; g.shadowBlur = 0; g.setLineDash([]);
+  let i = 0; while (i < FNS.length - 1 && t >= SCENES[i + 1]) i++;
+  const lt = t - SCENES[i];
+  // shake on impacts
+  const shakes = [1.5, 6.5, 13.5, 29.97];
+  let sh = 0; for (const s of shakes) { const d = t - s; if (d >= 0 && d < 0.3) sh = Math.max(sh, (1 - d / 0.3) * 18); }
+  background(t);
+  g.save(); g.translate(Math.sin(t * 97) * sh, Math.cos(t * 83) * sh);
+  FNS[i](lt);
+  g.restore();
+  // transition flash
+  if (i > 0 && lt < 0.18) { g.fillStyle = `rgba(255,255,255,${0.45 * (1 - lt / 0.18)})`; g.fillRect(0, 0, W, H); }
+  // progress bar
+  g.fillStyle = 'rgba(255,255,255,0.15)'; g.fillRect(0, 0, W, 8);
+  g.fillStyle = HL; g.fillRect(0, 0, W * clamp(t / T), 8);
+};
+window.DURATION = T;
+window.render(0);
+</script></body></html>

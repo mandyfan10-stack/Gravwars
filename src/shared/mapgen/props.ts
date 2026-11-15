@@ -134,9 +134,13 @@ export function crates(b: Builder, f: Frame, rng: Rng, x: number, y0: number, z:
   const h0 = rng.pick([0.5, 0.6]);
   b.crate(f, x, y0, z, h0, rng.range(-0.3, 0.3), rng.pick(CRATE_COLORS));
   if (rng.chance(0.5)) b.crate(f, x + rng.range(-0.1, 0.1), y0 + 2 * h0, z + rng.range(-0.1, 0.1), 0.4, rng.range(0, Math.PI), rng.pick(CRATE_COLORS));
+  const baseA = rng.range(0, Math.PI * 2);
   for (let k = 0, n = rng.int(0, 2); k < n; k++) {
-    const a = rng.range(0, Math.PI * 2);
-    b.crate(f, x + Math.cos(a) * 1.5, y0, z + Math.sin(a) * 1.5, rng.pick([0.35, 0.45]), rng.range(0, Math.PI), rng.pick(CRATE_COLORS));
+    const a = baseA + k * 2.1 + rng.range(-0.2, 0.2);
+    b.crate(f, x + Math.cos(a) * 1.65, y0, z + Math.sin(a) * 1.65, rng.pick([0.35, 0.45]), rng.range(0, Math.PI), rng.pick(CRATE_COLORS));
   }
-  if (rng.chance(0.35)) b.barrel(f, x + rng.pick([-1.8, 1.8]), y0, z + rng.range(-0.6, 0.6), rng.pick([0x2f6fa3, 0xb5482f, 0x3f7f4a, 0x6a6d74]));
+  if (rng.chance(0.35)) {
+    const ba = baseA + 4.2 + rng.range(-0.2, 0.2);
+    b.barrel(f, x + Math.cos(ba) * 1.75, y0, z + Math.sin(ba) * 1.75, rng.pick([0x2f6fa3, 0xb5482f, 0x3f7f4a, 0x6a6d74]));
+  }
 }

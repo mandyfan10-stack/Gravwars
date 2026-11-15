@@ -4,7 +4,7 @@ import {
 } from 'three';
 import type { GameAssets } from './assets';
 import { pixelGlint } from './pixelart';
-import { pistolModel, rifleModel } from './guns';
+import { crossbowModel, hookGunModel, launcherModel, pistolModel, rifleModel, shotgunModel } from './guns';
 import { bakeMeshes } from './bake';
 import { buildHuman, HumanRig, Outfit, solveArm } from './human';
 
@@ -67,7 +67,7 @@ export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0)
 }
 
 /** fists / none: empty hands (punching / standing behind a counter); grenade: the right arm up, about to throw. */
-export type HeldItem = 'rifle' | 'pistol' | 'fists' | 'none' | 'grenade' | 'rod';
+export type HeldItem = 'rifle' | 'pistol' | 'shotgun' | 'crossbow' | 'rocket' | 'hook' | 'fists' | 'none' | 'grenade' | 'rod';
 export type { Outfit } from './human';
 
 export interface ModelState {
@@ -94,9 +94,21 @@ const LEFT = 0, RIGHT = 1;
 /** Elbow directions (chest space): out to the side and down. */
 const POLE_R = new Vector3(-1, -0.7, -0.3).normalize();
 const POLE_L = new Vector3(1, -0.9, -0.2).normalize();
-/** Where the guns sit (chest space, metres): rifle butt in the right shoulder, pistol out in both hands. */
+/** Where the guns sit (chest space, metres): long guns on the right shoulder, pistols in front, launcher over the shoulder. */
 const RIFLE_AT = new Vector3(-0.1, 0.22, 0.3);
+const ROCKET_AT = new Vector3(-0.15, 0.34, 0.26);
 const PISTOL_AT = new Vector3(-0.03, 0.27, 0.46);
+type Gun3P = 'rifle' | 'pistol' | 'shotgun' | 'crossbow' | 'rocket' | 'hook';
+const isGun3P = (h: HeldItem): h is Gun3P =>
+  h === 'rifle' || h === 'pistol' || h === 'shotgun' || h === 'crossbow' || h === 'rocket' || h === 'hook';
+const GUN_POSE: Record<Gun3P, { at: Vector3; r: [number, number, number]; l: [number, number, number]; kick: number; pitch: number }> = {
+  rifle: { at: RIFLE_AT, r: [0, -0.035, 0.07], l: [0, 0.0, -0.2], kick: 0.04, pitch: 0.08 },
+  shotgun: { at: RIFLE_AT, r: [0, -0.035, 0.08], l: [0, 0.01, -0.25], kick: 0.06, pitch: 0.14 },
+  crossbow: { at: RIFLE_AT, r: [0, -0.035, 0.04], l: [0, 0.0, -0.22], kick: 0.02, pitch: 0.05 },
+  rocket: { at: ROCKET_AT, r: [0, -0.03, 0.0], l: [0, -0.02, -0.3], kick: 0.07, pitch: 0.12 },
+  pistol: { at: PISTOL_AT, r: [0, -0.035, 0.015], l: [0.03, -0.05, 0.03], kick: 0.05, pitch: 0.25 },
+  hook: { at: PISTOL_AT, r: [0, -0.035, 0.02], l: [0.03, -0.05, 0.035], kick: 0.04, pitch: 0.18 },
+};
 /** Fishing rod: butt in both hands in front of the belly, the rod up and out over the water. */
 const ROD_AT = new Vector3(-0.08, -0.12, 0.3);
 const ROD_LEN = 1.9;
@@ -109,14 +121,16 @@ const gunMaterial = () => (gunMat ??= new MeshStandardMaterial({ vertexColors: t
 
 /**
  * A person (see human.ts) animated procedurally: walk / run cycle from the speed, jump and fall poses, arms on the
- * gun by IK (both hands on the rifle or the pistol), a punch, an overhand grenade throw, recoil, a fall when killed.
- * The group sits at the capsule centre and is oriented by the player's gravity frame; the body turns with yaw.
+ * gun by IK (both hands on the rifle, shotgun, crossbow, launcher, hook or pistol), a punch, an overhand grenade
+ * throw, recoil, a fall when killed. The group sits at the capsule centre and is oriented by the player's gravity
+ * frame; the body turns with yaw.
  */
 export class PlayerModel {
   readonly group = new Group();
   private readonly rig: HumanRig;
   private readonly body = new Group();
-  private readonly guns: Record<'rifle' | 'pistol', Object3D>;
+  private readonly guns: Partial<Record<Gun3P, Object3D>> = {};
+  private readonly teamColor: number;
   private readonly grenade: Group;
   private readonly rod = new Group();
   /** Tip of the rod (the line hangs from it). */
@@ -141,27 +155,17 @@ export class PlayerModel {
   held: HeldItem = 'rifle';
 
   constructor(_assets: GameAssets | null, color: number, held: HeldItem = 'rifle', grime = 0, outfit: Outfit = 'soldier') {
+    this.teamColor = color;
     this.rig = buildHuman(outfit, color, grime);
     this.body.position.y = FEET;
     this.body.add(this.rig.root);
     this.group.add(this.body);
     const chest = this.rig.chest;
-    const rifle = rifleModel().root;
-    rifle.rotation.y = Math.PI;
-    rifle.position.copy(RIFLE_AT);
-    const pistol = pistolModel().root;
-    pistol.rotation.y = Math.PI;
-    pistol.position.copy(PISTOL_AT);
-    chest.add(rifle, pistol);
-    this.guns = { rifle, pistol };
-    // third person: no moving parts, so each gun is one draw call
-    for (const g of [rifle, pistol]) bakeMeshes(g, gunMaterial());
     // glint at the pistol muzzle (telegraphs an aimed burst)
     this.glint = new Sprite(new SpriteMaterial({ map: glintTexture(), color: new Color(2.2, 1.9, 1.5), blending: AdditiveBlending,
       depthWrite: false, transparent: true, toneMapped: false }));
     this.glint.position.copy(pistolModel().muzzle).add(new Vector3(0, 0, -0.03));
     this.glint.visible = false;
-    pistol.add(this.glint);
     // a grenade in the right hand (wind-up before a throw)
     this.grenade = grenadeMesh();
     bakeMeshes(this.grenade, gunMaterial());
@@ -180,10 +184,31 @@ export class PlayerModel {
     this.setHeld(held);
   }
 
+  /** Lazily build and bake a third-person gun mesh (one draw call per gun, only built when equipped). */
+  private ensureGun(id: Gun3P): Object3D {
+    let g = this.guns[id];
+    if (g) return g;
+    g = (id === 'rifle' ? rifleModel()
+      : id === 'pistol' ? pistolModel()
+      : id === 'shotgun' ? shotgunModel()
+      : id === 'crossbow' ? crossbowModel()
+      : id === 'rocket' ? launcherModel()
+      : hookGunModel(this.teamColor)).root;
+    g.rotation.y = Math.PI;
+    g.position.copy(GUN_POSE[id].at);
+    this.rig.chest.add(g);
+    const baked = bakeMeshes(g, gunMaterial());
+    if (baked) baked.castShadow = this.shadows;
+    if (id === 'pistol') g.add(this.glint);
+    g.visible = false;
+    this.guns[id] = g;
+    return g;
+  }
+
   /** Switch the gun model and the arm pose. */
   setHeld(held: HeldItem) {
-    this.guns.rifle.visible = held === 'rifle';
-    this.guns.pistol.visible = held === 'pistol';
+    if (isGun3P(held)) this.ensureGun(held);
+    for (const [k, g] of Object.entries(this.guns)) if (g) g.visible = k === held;
     this.grenade.visible = held === 'grenade';
     this.rod.visible = held === 'rod';
     if (held !== this.held) { this.punchT = 0; this.throwT = 0; }
@@ -318,7 +343,7 @@ export class PlayerModel {
     r.pelvis.position.y = 0.975 + bob - run * 0.04 * move + Math.sin(this.breath * 1.7) * 0.003;
     r.pelvis.rotation.set(0, Math.sin(ph) * 0.12 * move, Math.sin(ph) * 0.03 * move);
     // chest: counter-twist, lean into a run, breathing
-    const aim = this.held === 'rifle' || this.held === 'pistol';
+    const aim = isGun3P(this.held);
     r.chest.rotation.set(0.06 + run * 0.2 * move + Math.sin(this.breath * 1.7) * 0.012 - lean, -Math.sin(ph) * (aim ? 0.04 : 0.16) * move, 0);
     r.head.rotation.x = -r.chest.rotation.x * 0.7;
 
@@ -335,20 +360,20 @@ export class PlayerModel {
     };
     freeArm(LEFT);
     freeArm(RIGHT);
-    const gunPose = (at: Vector3, rifle: boolean) => {
+    const gunPose = (id: Gun3P) => {
+      const p = GUN_POSE[id];
+      const g = this.ensureGun(id);
       // recoil: the gun kicks back and up, the hands follow
-      const g = rifle ? this.guns.rifle : this.guns.pistol;
-      g.position.copy(at).add(_p.set(0, this.recoil * 0.015, -this.recoil * (rifle ? 0.04 : 0.05)));
-      g.rotation.set(-this.recoil * (rifle ? 0.08 : 0.25), Math.PI, 0);
+      g.position.copy(p.at).add(_p.set(0, this.recoil * 0.015, -this.recoil * p.kick));
+      g.rotation.set(-this.recoil * p.pitch, Math.PI, 0);
       _gq.copy(g.quaternion);
       // right hand on the grip, left on the handguard / cupping the right
-      _t.set(0, -0.035, rifle ? 0.07 : 0.015).applyQuaternion(_gq).add(g.position);
+      _t.set(...p.r).applyQuaternion(_gq).add(g.position);
       solveArm(uR, fR, _t, POLE_R);
-      _t2.set(rifle ? 0 : 0.03, rifle ? 0.0 : -0.05, rifle ? -0.2 : 0.03).applyQuaternion(_gq).add(g.position);
+      _t2.set(...p.l).applyQuaternion(_gq).add(g.position);
       solveArm(uL, fL, _t2, POLE_L);
     };
-    if (this.held === 'rifle') gunPose(RIFLE_AT, true);
-    else if (this.held === 'pistol') gunPose(PISTOL_AT, false);
+    if (isGun3P(this.held)) gunPose(this.held);
     else if (this.held === 'fists' && this.punchT > 0) {
       // a straight right: out fast, back slower; the left stays up in guard
       const k = this.punchT > 0.22 ? (0.32 - this.punchT) / 0.1 : this.punchT / 0.22;

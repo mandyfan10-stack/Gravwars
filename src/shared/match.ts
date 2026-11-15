@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { BlockSystem } from './blocks';
-import { Combat, CRYSTAL } from './combat';
+import { Combat, CRYSTAL, MAX_HP } from './combat';
 import type { Currency } from './economy';
 import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
@@ -17,7 +17,11 @@ export const PICKUP_RADIUS = 2.4;
  * back at `regen` HP/s once nobody has hit it for `regenDelay` s. Only shots from within CRYSTAL.range hurt it.
  */
 export const BED_HP = 80;
-export const BED_REGEN = { delay: 10, rate: 8 };
+export const BED_REGEN = { delay: 5, rate: 10 };
+/** Stage 1 -> Stage 2 transition: 10 s invulnerability, then a 10 m explosion stunning enemies and reviving dead players. */
+export const CRYSTAL_INVULN_TIME = 10;
+export const CRYSTAL_BLAST_RADIUS = 10;
+export const CRYSTAL_STUN_TIME = 3.5;
 /** The UI points at an enemy crystal you look at from this far (and says to come closer beyond CRYSTAL.range). */
 export const BED_SIGHT = 40;
 export const SHOP_RADIUS = 4.5;
@@ -25,10 +29,23 @@ export const SHOP_RADIUS = 4.5;
 export const KILL_REWARD = 3;
 
 export interface Generator { currency: 'crystal'; pos: Vector3; up: Vector3; stored: number; timer: number }
-export interface Bed { team: TeamId; pos: Vector3; up: Vector3; alive: boolean; hp: number; calm: number }
+export interface Bed {
+  team: TeamId;
+  pos: Vector3;
+  up: Vector3;
+  alive: boolean;
+  hp: number;
+  calm: number;
+  /** Two-stage crystal: Stage 1 breaks into a 10 s invulnerable shield, then explodes into Stage 2. */
+  stage: 1 | 2;
+  /** Seconds of invulnerability remaining before the Stage 1 -> 2 explosion (0 = vulnerable). */
+  invulnT: number;
+}
 
 export type MatchEvent =
   | { type: 'pickup'; currency: 'crystal'; amount: number }
+  | { type: 'bedStage1Broken'; team: TeamId; byPlayer: boolean }
+  | { type: 'bedStageBlast'; team: TeamId; pos: Vector3 }
   | { type: 'bedBroken'; team: TeamId; byPlayer: boolean }
   /** A crystal took damage (HP bar, "your crystal is under attack"). */
   | { type: 'bedHit'; team: TeamId; hp: number; byPlayer: boolean }
@@ -50,6 +67,9 @@ export class Match {
   characterFilter?: (collider: { handle: number }) => boolean;
   /** Living members of a team other than the local player (bots). Set by the bot manager. */
   membersAlive: (team: TeamId) => number = () => 0;
+  /** Callback fired when a crystal finishes its 10 s Stage 1 invulnerability and revives all dead players/bots. */
+  onReviveAll?: (crystalTeam: TeamId) => void;
+  private combat: Combat | null = null;
 
   /** Own shop kiosk, if the team has a base. */
   readonly shop: Vector3 | null;
@@ -62,7 +82,10 @@ export class Match {
     const base = map.bases.find((b) => b.team === team);
     this.shop = base ? new Vector3(...base.shop) : null;
     this.shops = map.bases.filter((b) => b.team === team || b.team === '').map((b) => new Vector3(...b.shop));
-    this.beds = map.statues.map((s) => ({ team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up), alive: true, hp: BED_HP, calm: 0 }));
+    this.beds = map.statues.map((s) => ({
+      team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up),
+      alive: true, hp: BED_HP, calm: 0, stage: 1 as const, invulnT: 0,
+    }));
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
     // fortify enemy beds
     for (const s of map.statues) {
@@ -81,18 +104,29 @@ export class Match {
 
   /** Shots and blows of `combat` hurt the crystals (it tells who hit and how hard; `owner` 0 = the local player). */
   attach(combat: Combat) {
+    this.combat = combat;
     combat.crystals = this.beds;
     combat.onCrystal = (c, damage, owner) => this.damageBed(c.team, damage, owner === 0);
   }
 
-  /** A crystal takes `damage` (final HP); at 0 it breaks. */
+  /** A crystal takes `damage` (final HP); Stage 1 breaks into a 10 s invulnerable phase, Stage 2 breaks for good. */
   damageBed(team: TeamId, damage: number, byPlayer = false) {
     const bed = this.bed(team);
-    if (!bed.alive || this.result) return;
+    if (!bed.alive || bed.invulnT > 0 || this.result) return;
     bed.hp = Math.max(0, bed.hp - damage);
     bed.calm = 0;
     this.events.push({ type: 'bedHit', team, hp: bed.hp, byPlayer });
-    if (bed.hp <= 0) this.destroyBed(team, byPlayer);
+    if (bed.hp <= 0) {
+      if (bed.stage === 1) {
+        bed.stage = 2;
+        bed.invulnT = CRYSTAL_INVULN_TIME;
+        bed.hp = BED_HP;
+        bed.calm = 0;
+        this.events.push({ type: 'bedStage1Broken', team, byPlayer });
+      } else {
+        this.destroyBed(team, byPlayer);
+      }
+    }
   }
 
   get ownBedAlive() {
@@ -117,12 +151,20 @@ export class Match {
     }
   }
 
-  /** Generators + pickup. Runs at the simulation tick. */
+  /** Generators + pickup + crystal stage transition. Runs at the simulation tick. */
   tick(dt: number, playerPos: Vector3) {
     if (!this.result) this.time += dt;
     this.checkWin();
     for (const b of this.beds) {
-      if (!b.alive || b.hp >= BED_HP) continue;
+      if (!b.alive) continue;
+      if (b.invulnT > 0) {
+        b.invulnT = Math.max(0, b.invulnT - dt);
+        if (b.invulnT === 0) {
+          this.triggerCrystalBlast(b);
+        }
+        continue;
+      }
+      if (b.hp >= BED_HP) continue;
       b.calm += dt;
       if (b.calm >= BED_REGEN.delay) b.hp = Math.min(BED_HP, b.hp + BED_REGEN.rate * dt);
     }
@@ -195,8 +237,27 @@ export class Match {
     if (!bed.alive) return;
     bed.alive = false;
     bed.hp = 0;
+    bed.invulnT = 0;
     this.events.push({ type: 'bedBroken', team, byPlayer });
     this.checkWin();
+  }
+
+  /** Stage 1 invulnerability ended: explode, stun all enemies within 10 m, and revive all dead players/fighters. */
+  private triggerCrystalBlast(bed: Bed) {
+    this.events.push({ type: 'bedStageBlast', team: bed.team, pos: bed.pos.clone() });
+    if (this.combat) {
+      this.combat.events.push({ type: 'explode', pos: bed.pos.clone(), radius: CRYSTAL_BLAST_RADIUS });
+      for (const tg of this.combat.targets) {
+        if (tg.alive && tg.team !== bed.team && tg.center.distanceTo(bed.pos) <= CRYSTAL_BLAST_RADIUS) {
+          tg.stun = Math.max(tg.stun ?? 0, CRYSTAL_STUN_TIME);
+        } else if (!tg.npc && !tg.alive) {
+          tg.alive = true;
+          tg.hp = MAX_HP;
+          tg.respawnIn = -1;
+        }
+      }
+    }
+    this.onReviveAll?.(bed.team);
   }
 
   /** Called when the local player dies. False = eliminated (no bed). */

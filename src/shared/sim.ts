@@ -10,10 +10,10 @@ import { getTeam, TeamDef, TeamId } from './teams';
 export type RespawnReason = 'void' | 'manual' | 'spawn' | 'killed';
 
 /**
- * Grappling hook: the claw flies out at `fly` m/s up to `range` m; if it bites into something it pulls its owner
- * there at up to `pull` m/s (gravity is held off meanwhile) until they arrive, stop moving, jump, or `maxPull` s pass.
+ * Grappling hook: the claw flies out at `fly` m/s up to `range` m (35 m), magnetizing to surfaces within `magnet` m (0.25 m);
+ * when it attaches it gives an immediate pull impulse and pulls its owner there at up to `pull` m/s.
  */
-export const HOOK = { range: 30, fly: 110, pull: 24, grip: 7, arrive: 1.1, maxPull: 3, cooldown: 0.5 };
+export const HOOK = { range: 35, magnet: 0.25, fly: 110, pull: 24, grip: 7, arrive: 1.1, maxPull: 3, cooldown: 0.5 };
 
 export interface HookState {
   /** Where the claw bit (or where it gives up, for a miss). */
@@ -94,10 +94,32 @@ export class PlayerSim {
   throwHook(eye: Vector3, dir: Vector3, filter?: (c: { handle: number }) => boolean): boolean {
     if (this.hook || this.hookCd > 0) return false;
     const d = dir.clone().normalize();
-    const hit = this.mover.world.castRay(new this.R.Ray(eye, d), HOOK.range, true, undefined, undefined, this.mover.collider, undefined, filter);
-    const dist = hit ? hit.timeOfImpact : HOOK.range;
+    let hit = this.mover.world.castRay(new this.R.Ray(eye, d), HOOK.range, true, undefined, undefined, this.mover.collider, undefined, filter);
+    let anchorPos: Vector3 | null = hit ? eye.clone().addScaledVector(d, hit.timeOfImpact) : null;
+    let dist = hit ? hit.timeOfImpact : HOOK.range;
+    // 0.25 m surface magnetism around the hook path when the direct line misses a nearby edge/surface
+    if (!hit) {
+      const u = new Vector3(Math.abs(d.y) < 0.9 ? 0 : 1, Math.abs(d.y) < 0.9 ? 1 : 0, 0).cross(d).normalize();
+      const v = new Vector3().crossVectors(d, u);
+      let bestToi = Infinity;
+      for (const r of [HOOK.magnet * 0.5, HOOK.magnet]) {
+        for (let k = 0; k < 8; k++) {
+          const a = (k / 8) * Math.PI * 2;
+          const orig = eye.clone().addScaledVector(u, Math.cos(a) * r).addScaledVector(v, Math.sin(a) * r);
+          const h = this.mover.world.castRay(new this.R.Ray(orig, d), HOOK.range, true, undefined, undefined, this.mover.collider, undefined, filter);
+          if (h && h.timeOfImpact > 0.4 && h.timeOfImpact < bestToi) {
+            // Ensure the line from eye to the magnetized point isn't blocked right in front of the player
+            bestToi = h.timeOfImpact;
+            hit = h;
+            anchorPos = orig.addScaledVector(d, h.timeOfImpact);
+            dist = bestToi;
+          }
+        }
+        if (hit) break;
+      }
+    }
     this.hook = {
-      anchor: eye.clone().addScaledVector(d, dist), from: eye.clone(), dist, phase: 'fly', miss: !hit, t: 0, best: Infinity, still: 0,
+      anchor: anchorPos ?? eye.clone().addScaledVector(d, dist), from: eye.clone(), dist, phase: 'fly', miss: !hit, t: 0, best: Infinity, still: 0,
     };
     this.hookCd = HOOK.cooldown;
     return true;
@@ -121,6 +143,22 @@ export class PlayerSim {
       h.phase = h.miss ? 'back' : 'pull';
       h.t = 0;
       this.events.push({ type: 'hook', what: h.miss ? 'miss' : 'attach' });
+      if (!h.miss) {
+        // Immediate impulse upon attach
+        const s = this.state;
+        const up = upOf(s.frame, _up);
+        const pullDir = _to.copy(h.anchor).sub(s.pos);
+        if (pullDir.lengthSq() > 1e-4) {
+          pullDir.normalize();
+          const boost = Math.max(s.vel.dot(pullDir), HOOK.pull * 0.72);
+          s.vel.addScaledVector(pullDir, boost - s.vel.dot(pullDir));
+          if (s.onGround) {
+            s.vel.addScaledVector(up, 2.2);
+            s.onGround = false;
+            s.airT = -1;
+          }
+        }
+      }
       return;
     }
     if (h.phase === 'back') {

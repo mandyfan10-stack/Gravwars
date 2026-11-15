@@ -1,5 +1,5 @@
 import type { Target } from '../shared/combat';
-import type { Match } from '../shared/match';
+import { BED_HP, type Match } from '../shared/match';
 import { TEAMS, TeamId } from '../shared/teams';
 import { teamHex } from './hud';
 
@@ -45,8 +45,11 @@ export class MatchStats {
     const rows = TEAMS.filter((t) => m.beds.some((b) => b.team === t.id)).map((t) => {
       const mine = t.id === m.team;
       const out = m.isOut(t.id);
-      const alive = mine ? (playerAlive && !out ? 1 : 0) : m.membersAlive(t.id);
-      const bed = m.bed(t.id).alive ? 'цел' : 'разрушен';
+      const alive = m.membersAlive(t.id) + (mine && playerAlive && !out ? 1 : 0);
+      const b = m.bed(t.id);
+      const bed = !b.alive ? 'разрушен'
+        : b.invulnT > 0 ? `неуязвим (${Math.ceil(b.invulnT)} с)`
+        : `ст. ${b.stage === 1 ? 'I' : 'II'}${b.hp < BED_HP ? ` (${Math.ceil((b.hp / BED_HP) * 100)}%)` : ''}`;
       return `<tr class="${mine ? 'mine' : ''}${out ? ' out' : ''}" style="--c:${teamHex(t.color)}">`
         + `<td class="team"><i></i>${t.name}${mine ? '<small>ты</small>' : ''}</td>`
         + `<td>${out ? 'выбыли' : bed}</td><td>${alive}</td><td>${this.teamKills[t.id]}</td></tr>`;

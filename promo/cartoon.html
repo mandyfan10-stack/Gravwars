@@ -1,0 +1,1448 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>GravWars — Мультфильм о проекте</title>
+<style>
+  html, body { margin: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720"></canvas>
+<script>
+const W = 1280, H = 720, T = 55;
+const cv = document.getElementById('c');
+const g = cv.getContext('2d');
+const FONT = '"Inter", "Segoe UI", Arial, sans-serif';
+
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const eo = (t) => 1 - Math.pow(1 - clamp(t), 3);
+const eio = (t) => { t = clamp(t); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+const back = (t) => { t = clamp(t); const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+function rng(seed) {
+  return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+}
+
+const TEAM = { red: '#ff3b3b', blue: '#3b6bff', green: '#3bff6b', yellow: '#ffd23b' };
+const HL = '#ffd23b';
+const CYAN = '#38d8ff';
+const HAZE = '#d8c394';
+const SCENES = [0, 6.5, 13.5, 21.0, 29.0, 38.5, 46.5, 55.0];
+
+// ---------- Pre-rendered Inverted Dyson-Sphere City Skybox (from src/client/render/sky.ts)
+const SKY_TILE = (() => {
+  const oc = document.createElement('canvas');
+  oc.width = 1600;
+  oc.height = 900;
+  const ctx = oc.getContext('2d');
+  const r = rng(2026);
+
+  // Warm golden-amber haze gradient (top & bottom inverted city horizons glowing toward golden center)
+  const bg = ctx.createLinearGradient(0, 0, 0, oc.height);
+  bg.addColorStop(0, '#c2ad80');
+  bg.addColorStop(0.28, '#d8c394');
+  bg.addColorStop(0.5, '#f2dfb0');
+  bg.addColorStop(0.72, '#d8c394');
+  bg.addColorStop(1, '#c2ad80');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, oc.width, oc.height);
+
+  // Inverted distant European city blocks along top and bottom curved Dyson cylinder horizons
+  const roofs = ['#c46e45', '#9c5230', '#b5532f', '#d47a45', '#a94a30'];
+  const walls = ['#c2b08c', '#8c9e73', '#859ca8', '#ad5945', '#d8cdb6'];
+
+  function drawDysonStrip(yBase, dir, alpha, scale) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // Sandy-beige ground band
+    ctx.fillStyle = '#bfb087';
+    ctx.fillRect(0, dir > 0 ? yBase : yBase - 130 * scale, oc.width, 130 * scale);
+    // Winding turquoise river ribbon with olive banks
+    ctx.strokeStyle = '#6b8036';
+    ctx.lineWidth = 34 * scale;
+    ctx.beginPath();
+    for (let x = 0; x <= oc.width; x += 40) {
+      const y = yBase + dir * (46 + Math.sin(x * 0.008) * 18) * scale;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = '#47adb8';
+    ctx.lineWidth = 18 * scale;
+    ctx.stroke();
+
+    // Terracotta-roofed blocks & olive parks
+    let x = -20;
+    while (x < oc.width + 40) {
+      const bw = (38 + r() * 44) * scale;
+      const bh = (28 + r() * 38) * scale;
+      const by = dir > 0 ? yBase + (8 + r() * 70) * scale : yBase - (8 + r() * 70) * scale - bh;
+      if (r() < 0.22) {
+        ctx.fillStyle = '#59702b';
+        ctx.fillRect(x, by, bw, bh);
+        ctx.fillStyle = '#384f1a';
+        ctx.beginPath();
+        ctx.arc(x + bw * 0.5, by + bh * 0.5, bw * 0.26, 0, 6.28);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = walls[Math.floor(r() * walls.length)];
+        ctx.fillRect(x, by, bw, bh);
+        ctx.fillStyle = roofs[Math.floor(r() * roofs.length)];
+        ctx.fillRect(x - 2, dir > 0 ? by + bh * 0.45 : by, bw + 4, bh * 0.55);
+      }
+      x += bw + (8 + r() * 14) * scale;
+    }
+    ctx.restore();
+  }
+
+  // Far inverted upper city + lower city faded into golden haze
+  drawDysonStrip(0, 1, 0.38, 1.0);
+  drawDysonStrip(120, 1, 0.22, 0.72);
+  drawDysonStrip(oc.height, -1, 0.38, 1.0);
+  drawDysonStrip(oc.height - 120, -1, 0.22, 0.72);
+
+  // Soft warm steam/cloud wisps
+  for (let i = 0; i < 18; i++) {
+    const cx = r() * oc.width;
+    const cy = 140 + r() * (oc.height - 280);
+    const rw = 160 + r() * 240;
+    const gr = ctx.createRadialGradient(cx, cy, 10, cx, cy, rw);
+    gr.addColorStop(0, 'rgba(255, 244, 214, 0.22)');
+    gr.addColorStop(1, 'rgba(216, 195, 148, 0)');
+    ctx.fillStyle = gr;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rw, rw * 0.35, 0, 0, 6.28);
+    ctx.fill();
+  }
+  return oc;
+})();
+
+function background(t, rot = 0, darkOverlay = 0) {
+  g.save();
+  g.fillStyle = HAZE;
+  g.fillRect(0, 0, W, H);
+  // Subtle drift of the Dyson-sphere city skybox
+  const dx = -((t * 14) % 320);
+  g.translate(W / 2, H / 2);
+  g.rotate(rot);
+  g.drawImage(SKY_TILE, -800 + dx * 0.3, -450, 1600, 900);
+
+  // Radiant golden-yellow vanishing core glow in skybox
+  const core = g.createRadialGradient(260, -130, 10, 260, -130, 520);
+  core.addColorStop(0, 'rgba(255, 248, 214, 0.78)');
+  core.addColorStop(0.28, 'rgba(255, 220, 122, 0.36)');
+  core.addColorStop(1, 'rgba(216, 195, 148, 0)');
+  g.fillStyle = core;
+  g.fillRect(-900, -600, 1800, 1200);
+  g.restore();
+
+  if (darkOverlay > 0) {
+    g.fillStyle = `rgba(24, 26, 36, ${darkOverlay})`;
+    g.fillRect(0, 0, W, H);
+  }
+}
+
+// ---------- Typography & HUD-style Plates (matching actual Inter + translucent dark HUD)
+function text(s, x, y, size, o = {}) {
+  const { color = '#fff', alpha = 1, scale = 1, rot = 0, maxW = 1160, align = 'center', stroke = true, strokeW = 0.19 } = o;
+  if (alpha <= 0.005) return;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.translate(x, y);
+  g.rotate(rot);
+  g.font = `900 ${size}px ${FONT}`;
+  g.textBaseline = 'middle';
+  g.textAlign = 'left';
+  const lines = s.split('\n').map((l) => l.split('*').map((seg, i) => ({ seg, hl: i % 2 === 1, w: g.measureText(seg).width })));
+  const widths = lines.map((l) => l.reduce((a, b) => a + b.w, 0));
+  const fit = Math.min(1, maxW / Math.max(1, ...widths));
+  g.scale(scale * fit, scale * fit);
+  const lh = size * 1.16;
+  lines.forEach((l, i) => {
+    const yy = (i - (lines.length - 1) / 2) * lh;
+    let xx = align === 'center' ? -widths[i] / 2 : align === 'right' ? -widths[i] : 0;
+    for (const p of l) {
+      if (stroke) {
+        g.lineWidth = size * strokeW;
+        g.strokeStyle = 'rgba(14, 16, 22, 0.94)';
+        g.lineJoin = 'round';
+        g.strokeText(p.seg, xx, yy);
+      }
+      g.fillStyle = p.hl ? (o.hl || HL) : color;
+      g.fillText(p.seg, xx, yy);
+      xx += p.w;
+    }
+  });
+  g.restore();
+}
+
+// Signature GRAVWARS menu title (G red, R blue, A green, V yellow directional shadows + WARS)
+function gravwarsLogo(x, y, size, scale = 1, alpha = 1) {
+  if (alpha <= 0.01) return;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.translate(x, y);
+  g.scale(scale, scale);
+  g.font = `900 ${size}px ${FONT}`;
+  g.textBaseline = 'middle';
+  g.textAlign = 'left';
+  const letters = [
+    { ch: 'G', col: TEAM.red, dx: 0, dy: 6 },
+    { ch: 'R', col: TEAM.blue, dx: 0, dy: -6 },
+    { ch: 'A', col: TEAM.green, dx: 6, dy: 0 },
+    { ch: 'V', col: TEAM.yellow, dx: -6, dy: 0 },
+    { ch: 'WARS', col: 'rgba(255,255,255,0.2)', dx: 0, dy: 0, fade: true },
+  ];
+  const widths = letters.map((l) => g.measureText(l.ch).width);
+  const totalW = widths.reduce((a, b) => a + b, 0);
+  let cx = -totalW / 2;
+  letters.forEach((l, i) => {
+    // colored offset shadow (drawn with extra offset so outline never hides it)
+    if (l.dx || l.dy) {
+      g.fillStyle = l.col;
+      g.fillText(l.ch, cx + l.dx * 1.45, l.dy * 1.45);
+    }
+    // crisp dark outline + bright fill
+    g.lineWidth = size * 0.09;
+    g.strokeStyle = 'rgba(14, 16, 22, 0.95)';
+    g.lineJoin = 'round';
+    g.strokeText(l.ch, cx, 0);
+    g.fillStyle = l.fade ? 'rgba(255, 255, 255, 0.88)' : '#ffffff';
+    g.fillText(l.ch, cx, 0);
+    cx += widths[i];
+  });
+  g.restore();
+}
+
+function banner(s, t, t0, t1, y = 66, size = 36, o = {}) {
+  if (t < t0 || t > t1) return;
+  const inA = prog(t, t0, t0 + 0.24);
+  const outA = 1 - prog(t, t1 - 0.18, t1);
+  const alpha = inA * outA;
+  const sc = 0.78 + 0.22 * back(inA);
+  // Translucent HUD pill behind banner for crisp legibility over bright golden skybox
+  g.save();
+  g.globalAlpha *= alpha;
+  g.font = `900 ${size}px ${FONT}`;
+  const clean = s.replace(/\*/g, '');
+  const tw = Math.min(1140, g.measureText(clean).width);
+  const pw = tw * sc + 56, ph = (size + 26) * sc;
+  g.fillStyle = 'rgba(14, 16, 22, 0.72)';
+  g.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+  g.lineWidth = 2;
+  g.beginPath();
+  g.roundRect((o.x ?? W / 2) - pw / 2, y - ph / 2, pw, ph, ph / 2);
+  g.fill();
+  g.stroke();
+  g.restore();
+  text(s, o.x ?? W / 2, y, size, { ...o, scale: sc, alpha, strokeW: 0.16 });
+}
+
+function pill(x, y, txt, col = CYAN, alpha = 1, size = 20) {
+  if (alpha <= 0.01) return;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.font = `800 ${size}px ${FONT}`;
+  const tw = g.measureText(txt).width;
+  const pw = tw + 28, ph = size + 18;
+  g.fillStyle = 'rgba(14, 16, 22, 0.86)';
+  g.strokeStyle = col;
+  g.lineWidth = 3;
+  g.beginPath();
+  g.roundRect(x - pw / 2, y - ph / 2, pw, ph, ph / 2);
+  g.fill();
+  g.stroke();
+  g.fillStyle = '#fff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(txt, x, y + 1);
+  g.restore();
+}
+
+function speech(x, y, txt, col = '#141428', alpha = 1) {
+  if (alpha <= 0.01) return;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.font = `800 18px ${FONT}`;
+  const w = Math.max(70, g.measureText(txt).width + 24), h = 34;
+  g.fillStyle = '#fff';
+  g.strokeStyle = '#141428';
+  g.lineWidth = 3;
+  g.beginPath();
+  g.roundRect(x - w / 2, y - h - 10, w, h, 12);
+  g.fill();
+  g.stroke();
+  g.beginPath();
+  g.moveTo(x - 7, y - 10); g.lineTo(x, y); g.lineTo(x + 7, y - 10); g.closePath();
+  g.fill(); g.stroke();
+  g.fillStyle = col;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(txt, x, y - h / 2 - 9);
+  g.restore();
+}
+
+// ---------- Central Sun (sun.ts: plasma core + corona + halo + counter-rotating rays)
+function sun(x, y, r, t) {
+  const halo = g.createRadialGradient(x, y, 0, x, y, r * 3.1);
+  halo.addColorStop(0, 'rgba(255, 246, 215, 0.95)');
+  halo.addColorStop(0.32, 'rgba(255, 220, 135, 0.65)');
+  halo.addColorStop(0.68, 'rgba(255, 182, 82, 0.25)');
+  halo.addColorStop(1, 'rgba(245, 198, 120, 0)');
+  g.fillStyle = halo;
+  g.beginPath();
+  g.arc(x, y, r * 3.1, 0, Math.PI * 2);
+  g.fill();
+
+  for (const dir of [1, -1]) {
+    g.save();
+    g.translate(x, y);
+    g.rotate(t * 0.35 * dir);
+    g.fillStyle = dir > 0 ? 'rgba(255, 240, 200, 0.38)' : 'rgba(255, 215, 140, 0.28)';
+    for (let i = 0; i < 10; i++) {
+      g.rotate((Math.PI * 2) / 10);
+      g.beginPath();
+      g.moveTo(-r * 0.2, 0);
+      g.lineTo(0, r * (dir > 0 ? 2.6 : 2.1));
+      g.lineTo(r * 0.2, 0);
+      g.fill();
+    }
+    g.restore();
+  }
+
+  const core = g.createRadialGradient(x, y, 0, x, y, r);
+  core.addColorStop(0, '#fffdf4');
+  core.addColorStop(0.65, '#ffe08a');
+  core.addColorStop(1, '#ffaa44');
+  g.fillStyle = core;
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+  g.fill();
+}
+
+// ---------- Authentic 1.83m Cartoon Humanoid (human.ts / playerModel.ts / keeperView.ts / npcView.ts)
+function guy(x, y, o = {}) {
+  const {
+    s = 1, color = TEAM.red, ang = 0, walk = 0, face = 1,
+    gun = null, alpha = 1, mood = 'normal', crouch = false,
+    role = 'soldier', wave = 0, armAng = null,
+  } = o;
+  if (alpha <= 0.01) return;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.translate(x, y);
+  g.rotate(ang);
+  g.scale(s * face, s);
+
+  const sw = Math.sin(walk) * 0.55;
+  const bob = crouch ? 14 : -Math.abs(Math.sin(walk)) * 4;
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+
+  const legCol = role === 'bandit' ? '#2c3a52' : role === 'bum' ? '#4a3d33' : role === 'vendor' ? '#1c1f2b' : '#3a3d40';
+  const bodyCol = role === 'bandit' ? '#4b2a5c' : role === 'bum' ? '#6a5a44' : role === 'vendor' ? '#24262c' : color;
+
+  // Shopkeeper glowing team aura behind body (keeperView.ts)
+  if (role === 'vendor') {
+    const au = g.createLinearGradient(0, -140, 0, 0);
+    au.addColorStop(0, 'rgba(255,255,255,0)');
+    au.addColorStop(1, color + '55');
+    g.fillStyle = au;
+    g.fillRect(-32, -135, 64, 135);
+  }
+
+  // Legs with natural stance offset
+  const legOffsets = [-5, 5];
+  [sw, -sw].forEach((a, idx) => {
+    const hipX = legOffsets[idx];
+    const hipY = crouch ? -26 : -38;
+    const len = crouch ? 26 : 38;
+    g.strokeStyle = '#14161c';
+    g.lineWidth = 15;
+    g.beginPath();
+    g.moveTo(hipX, hipY + bob);
+    g.lineTo(hipX + Math.sin(a) * len, hipY + bob + Math.cos(a) * len);
+    g.stroke();
+    g.strokeStyle = legCol;
+    g.lineWidth = 9.5;
+    g.stroke();
+  });
+  g.translate(0, bob);
+
+  // Torso
+  g.fillStyle = bodyCol;
+  g.strokeStyle = '#14161c';
+  g.lineWidth = 4.2;
+  g.beginPath();
+  g.roundRect(-20, -94, 40, 60, 12);
+  g.fill();
+  g.stroke();
+
+  if (role === 'soldier') {
+    // Olive tactical plate carrier (#4a4b42) + team chest patch
+    g.fillStyle = '#4a4b42';
+    g.beginPath(); g.roundRect(-16, -86, 32, 34, 6); g.fill();
+    g.fillStyle = color;
+    g.fillRect(-8, -80, 16, 6);
+  } else if (role === 'vendor') {
+    g.fillStyle = '#eeeeea';
+    g.beginPath(); g.moveTo(-6, -92); g.lineTo(6, -92); g.lineTo(0, -64); g.closePath(); g.fill();
+    g.fillStyle = '#5c1f24';
+    g.fillRect(-2.5, -88, 5, 24);
+  } else if (role === 'bandit') {
+    g.fillStyle = '#381e46';
+    g.fillRect(-16, -92, 32, 10);
+  }
+
+  // Arm + dark tactical glove (#232527) + weapon
+  const aTheta = armAng !== null ? armAng : wave ? -1.8 + Math.sin(wave * 8) * 0.45 : -0.22;
+  const ax = 4, ay = -80;
+  const hx = ax + Math.cos(aTheta) * 28, hy = ay + Math.sin(aTheta) * 28;
+  g.strokeStyle = '#14161c'; g.lineWidth = 13.5;
+  g.beginPath(); g.moveTo(ax, ay); g.lineTo(hx, hy); g.stroke();
+  g.strokeStyle = bodyCol; g.lineWidth = 8;
+  g.stroke();
+  if (role === 'soldier') {
+    g.fillStyle = '#232527';
+    g.beginPath(); g.arc(hx, hy, 5.5, 0, 6.28); g.fill();
+  }
+
+  if (gun) {
+    g.save();
+    g.translate(hx, hy);
+    g.rotate(aTheta + 0.22);
+    weapon(gun, 22, -2, gun === 'rocket' ? 28 : gun === 'ak' ? 32 : gun === 'crossbow' ? 32 : 30, color);
+    g.restore();
+  }
+
+  // Head
+  g.fillStyle = '#e8bd94';
+  g.strokeStyle = '#14161c';
+  g.lineWidth = 4.2;
+  g.beginPath();
+  g.arc(0, -118, 21, 0, Math.PI * 2);
+  g.fill();
+  g.stroke();
+
+  if (role === 'soldier') {
+    // Tactical olive helmet (#3d4038) with team-colored band
+    g.fillStyle = '#3d4038';
+    g.beginPath(); g.arc(0, -120, 23, Math.PI * 1.02, Math.PI * 1.98); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = color;
+    g.fillRect(-20, -130, 40, 5);
+  } else if (role === 'bandit') {
+    // Purple hoodie hood
+    g.fillStyle = '#4b2a5c';
+    g.beginPath(); g.arc(-2, -120, 23, Math.PI * 0.65, Math.PI * 2.05); g.closePath(); g.fill(); g.stroke();
+  } else if (role === 'bum') {
+    g.fillStyle = '#5a3f33';
+    g.beginPath(); g.arc(0, -123, 22, Math.PI, 0); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#5a5048';
+    g.beginPath(); g.arc(3, -104, 14, 0, Math.PI); g.fill();
+  } else if (role === 'vendor') {
+    // Black sunglasses
+    g.fillStyle = '#14151e';
+    g.fillRect(0, -124, 19, 8);
+    g.fillRect(-4, -123, 5, 3);
+  }
+
+  if (role !== 'vendor') {
+    g.fillStyle = role === 'bum' ? '#fff' : '#14161c';
+    if (mood === 'dizzy') {
+      g.strokeStyle = '#14161c'; g.lineWidth = 2.5;
+      g.beginPath(); g.moveTo(6, -121); g.lineTo(13, -114); g.moveTo(13, -121); g.lineTo(6, -114); g.stroke();
+    } else {
+      g.beginPath(); g.arc(10, -117, mood === 'shock' ? 4.8 : 3.5, 0, 6.28); g.fill();
+      if (mood === 'angry') {
+        g.strokeStyle = '#14161c'; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(4, -125); g.lineTo(16, -121); g.stroke();
+      } else if (mood === 'happy') {
+        g.strokeStyle = '#14161c'; g.lineWidth = 2.5;
+        g.beginPath(); g.arc(6, -109, 6, 0.1, Math.PI - 0.1); g.stroke();
+      }
+    }
+  }
+  g.restore();
+}
+
+// ---------- Weapons & Ground Pickups (guns.ts / pickupView.ts)
+function weapon(kind, x, y, s, teamCol = TEAM.red) {
+  g.save();
+  g.translate(x, y);
+  g.scale(s / 100, s / 100);
+  g.fillStyle = '#2e3134';
+  g.strokeStyle = '#121318';
+  g.lineWidth = 5;
+  g.lineJoin = 'round';
+  const R = (a, b, c, d, r = 4, col) => {
+    if (col) g.fillStyle = col;
+    g.beginPath(); g.roundRect(a, b, c, d, r); g.fill(); g.stroke();
+  };
+  if (kind === 'pistol') {
+    R(-50, -22, 95, 26, 4, '#2e3134'); R(-45, 0, 30, 50, 6, '#1b1c1e');
+  } else if (kind === 'shotgun') {
+    R(-30, -14, 150, 14, 3, '#1f2226'); R(-25, 2, 110, 12, 3, '#7b4526'); R(-140, -16, 115, 26, 6, '#2e3134'); R(-150, -10, 50, 50, 8, '#7b4526');
+  } else if (kind === 'ak') {
+    R(-60, -20, 120, 26, 4, '#2e3134'); R(60, -14, 70, 10, 2, '#1f2226'); R(10, 2, 45, 14, 3, '#7b4526'); R(-135, -16, 80, 26, 8, '#7b4526'); R(-20, 4, 26, 52, 6, '#5b2c1d');
+  } else if (kind === 'crossbow') {
+    R(-95, -12, 195, 20, 6, '#7b4526');
+    R(-30, -28, 60, 14, 4, '#1f2226'); // scope
+    g.strokeStyle = '#1f2226'; g.lineWidth = 7;
+    g.beginPath(); g.moveTo(78, -62); g.quadraticCurveTo(106, 0, 78, 62); g.stroke();
+    g.strokeStyle = '#b9c6e2'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(78, -60); g.lineTo(-16, -2); g.lineTo(78, 60); g.stroke();
+    R(-6, -5, 95, 7, 2, CYAN);
+  } else if (kind === 'rocket') {
+    R(-120, -24, 240, 46, 20, '#4a5236'); R(118, -28, 22, 54, 6, '#1f2226'); R(-20, 18, 22, 38, 5, '#1f2226');
+    g.fillStyle = '#6b6f45'; g.beginPath(); g.moveTo(140, -16); g.lineTo(175, 0); g.lineTo(140, 16); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#c8a530'; g.fillRect(142, -10, 10, 20);
+  } else if (kind === 'shovel') {
+    R(-95, -7, 150, 14, 5, '#d6865b');
+    R(-108, -20, 16, 40, 4, teamCol);
+    R(50, -24, 58, 48, 8, '#a0a8c9');
+  } else if (kind === 'rod') {
+    g.strokeStyle = '#2c3138'; g.lineWidth = 9;
+    g.beginPath(); g.moveTo(-80, 25); g.lineTo(110, -45); g.stroke();
+    R(-82, 16, 36, 14, 5, '#b98a5a');
+  } else if (kind === 'hook') {
+    R(-65, -14, 90, 28, 6, teamCol);
+    g.strokeStyle = '#2e3134'; g.lineWidth = 8;
+    g.beginPath(); g.moveTo(25, 0); g.lineTo(68, 0); g.moveTo(50, -24); g.lineTo(74, 0); g.lineTo(50, 24); g.stroke();
+  }
+  g.restore();
+}
+
+function itemIcon(kind, x, y, s) {
+  g.save();
+  g.translate(x, y);
+  g.scale(s / 100, s / 100);
+  g.strokeStyle = '#14161c';
+  g.lineWidth = 6;
+  g.lineJoin = 'round';
+  if (kind === 'apple') {
+    g.fillStyle = '#b8322a'; g.beginPath(); g.arc(-18, 5, 38, 0, 6.28); g.arc(18, 5, 38, 0, 6.28); g.fill();
+    g.beginPath(); g.arc(-18, 5, 38, Math.PI * 0.55, Math.PI * 1.6); g.stroke();
+    g.beginPath(); g.arc(18, 5, 38, -Math.PI * 0.6, Math.PI * 0.45); g.stroke();
+    g.strokeStyle = '#5c4028'; g.beginPath(); g.moveTo(0, -30); g.lineTo(4, -55); g.stroke();
+    g.fillStyle = '#4b8a38'; g.beginPath(); g.ellipse(22, -48, 18, 9, -0.4, 0, 6.28); g.fill();
+  } else if (kind === 'fish') {
+    g.fillStyle = '#8c9aa3'; g.beginPath(); g.ellipse(-5, 0, 48, 26, 0, 0, 6.28); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(38, 0); g.lineTo(62, -24); g.lineTo(62, 24); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#14161c'; g.beginPath(); g.arc(-30, -6, 6, 0, 6.28); g.fill();
+  } else if (kind === 'bottle') {
+    g.fillStyle = '#3f7a3a'; g.beginPath(); g.roundRect(-22, -20, 44, 75, 10); g.fill(); g.stroke();
+    g.beginPath(); g.roundRect(-9, -55, 18, 38, 4); g.fill(); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.4)'; g.fillRect(-14, -8, 7, 50);
+  }
+  g.restore();
+}
+
+function coin(x, y, s) {
+  g.save();
+  g.translate(x, y);
+  g.fillStyle = '#e2c27a';
+  g.strokeStyle = '#73561c';
+  g.lineWidth = Math.max(2, s * 0.14);
+  g.beginPath(); g.arc(0, 0, s, 0, 6.28); g.fill(); g.stroke();
+  g.fillStyle = '#73561c';
+  g.font = `900 ${s * 1.2}px ${FONT}`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('$', 0, s * 0.06);
+  g.restore();
+}
+
+// ---------- Crystal Cluster (crystal.ts: central prism + 6 satellite crystals + icosahedron dome & torus rings)
+function crystal(x, y, s, color, t, o = {}) {
+  const { hp = 1, broken = -1, shield = 0, alpha = 1, stage = 1 } = o;
+  g.save();
+  g.globalAlpha *= alpha;
+  g.translate(x, y);
+
+  // Pedestal base
+  g.fillStyle = '#6c6b66'; g.strokeStyle = '#14161c'; g.lineWidth = 4;
+  g.beginPath(); g.roundRect(-s * 0.95, s * 1.05, s * 1.9, s * 0.34, 8); g.fill(); g.stroke();
+
+  const drawShard = (ox, oy, sc, rot) => {
+    g.save();
+    g.translate(ox, oy);
+    g.rotate(rot);
+    g.scale(sc, sc);
+    const pts = [[0, -1.3], [0.46, -0.52], [0.42, 0.55], [0, 1.0], [-0.42, 0.55], [-0.46, -0.52]];
+    const gr = g.createLinearGradient(-s * 0.5, -s, s * 0.5, s);
+    gr.addColorStop(0, '#ffffff');
+    gr.addColorStop(0.35, color);
+    gr.addColorStop(1, '#182038');
+    g.fillStyle = gr;
+    g.beginPath();
+    pts.forEach(([px, py], i) => (i ? g.lineTo : g.moveTo).call(g, px * s, py * s));
+    g.closePath();
+    g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.85)';
+    g.lineWidth = 2.6;
+    g.stroke();
+    g.beginPath();
+    g.moveTo(0, -1.3 * s); g.lineTo(0, 1.0 * s);
+    g.moveTo(-0.46 * s, -0.52 * s); g.lineTo(0, -0.1 * s); g.lineTo(0.46 * s, -0.52 * s);
+    g.stroke();
+    g.restore();
+  };
+
+  if (broken < 0) {
+    // 6 satellite shards around pedestal
+    drawShard(-s * 0.62, s * 0.62, 0.36, -0.42);
+    drawShard(s * 0.62, s * 0.62, 0.36, 0.42);
+    drawShard(-s * 0.36, s * 0.72, 0.28, -0.2);
+    drawShard(s * 0.36, s * 0.72, 0.28, 0.2);
+
+    // Floating main prism
+    const bob = Math.sin(t * 3.2 + x * 0.05) * s * 0.06;
+    g.save();
+    g.translate(0, bob);
+    g.shadowColor = color;
+    g.shadowBlur = stage === 2 ? 44 : 28;
+    drawShard(0, 0, stage === 2 ? 0.88 : 1.0, 0);
+    g.shadowBlur = 0;
+
+    // Rising pixel sparks
+    const r = rng(31);
+    for (let i = 0; i < 10; i++) {
+      const sy = s * 0.8 - ((t * 55 + r() * 140) % (s * 2.2));
+      const sx = (r() - 0.5) * s * 1.1;
+      g.fillStyle = i % 2 ? '#fff' : color;
+      g.fillRect(sx, sy, 4, 4);
+    }
+
+    if (hp < 1) {
+      g.strokeStyle = '#14161c'; g.lineWidth = 3.5;
+      const rc = rng(17);
+      g.beginPath();
+      for (let i = 0; i < Math.floor((1 - hp) * 8); i++) {
+        const a = rc() * 6.28;
+        g.moveTo(0, 0); g.lineTo(Math.cos(a) * s * 0.48, Math.sin(a) * s * 0.85);
+      }
+      g.stroke();
+    }
+    g.restore();
+
+    // Stage 1 -> 2 wireframe icosahedron dome + 2 spinning torus rings!
+    if (shield > 0) {
+      const sr = s * (1.45 + Math.sin(t * 10) * 0.04);
+      g.save();
+      g.strokeStyle = '#9be8ff';
+      g.fillStyle = 'rgba(110, 225, 255, 0.16)';
+      g.lineWidth = 3;
+      g.beginPath(); g.arc(0, -s * 0.05, sr, 0, 6.28); g.fill(); g.stroke();
+      // Wireframe facets
+      g.beginPath();
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2 + t * 0.9;
+        g.moveTo(Math.cos(a) * sr, -s * 0.05 + Math.sin(a) * sr);
+        g.lineTo(Math.cos(a + 2.1) * sr * 0.65, -s * 0.05 + Math.sin(a + 2.1) * sr * 0.65);
+      }
+      g.stroke();
+      // 2 rotating orbital torus rings
+      g.lineWidth = 4.5;
+      g.strokeStyle = '#ffffff';
+      g.save(); g.translate(0, -s * 0.05); g.rotate(t * 2.2);
+      g.beginPath(); g.ellipse(0, 0, sr * 1.12, sr * 0.32, 0, 0, 6.28); g.stroke();
+      g.rotate(1.1 - t * 3.8);
+      g.strokeStyle = color;
+      g.beginPath(); g.ellipse(0, 0, sr * 1.12, sr * 0.32, 0, 0, 6.28); g.stroke();
+      g.restore();
+      g.restore();
+    }
+  } else {
+    const r = rng(19);
+    for (let i = 0; i < 18; i++) {
+      const a = r() * 6.28, v = 260 + r() * 480, sz = s * (0.16 + r() * 0.24);
+      const px = Math.cos(a) * v * broken, py = Math.sin(a) * v * broken - 160 * broken + 820 * broken * broken;
+      g.save();
+      g.globalAlpha *= clamp(1 - broken / 0.9);
+      g.translate(px, py);
+      g.rotate(broken * (r() * 12 - 6));
+      g.fillStyle = color;
+      g.beginPath(); g.moveTo(0, -sz); g.lineTo(sz * 0.6, sz * 0.5); g.lineTo(-sz * 0.6, sz * 0.4); g.closePath(); g.fill();
+      g.restore();
+    }
+  }
+  g.restore();
+
+  if (hp < 1 && broken < 0) {
+    g.fillStyle = '#14161c'; g.fillRect(x - s * 0.85, y + s * 1.5, s * 1.7, 14);
+    g.fillStyle = color; g.fillRect(x - s * 0.85 + 2, y + s * 1.5 + 2, (s * 1.7 - 4) * clamp(hp), 10);
+  }
+}
+
+function boom(x, y, p, r) {
+  if (p <= 0 || p >= 1) return;
+  g.save();
+  g.globalAlpha = 1 - p;
+  const rad = r * (0.35 + p);
+  const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+  gr.addColorStop(0, '#fffce6');
+  gr.addColorStop(0.35, '#ffb838');
+  gr.addColorStop(0.75, '#ff4818');
+  gr.addColorStop(1, 'rgba(255,50,10,0)');
+  g.fillStyle = gr;
+  g.beginPath(); g.arc(x, y, rad, 0, 6.28); g.fill();
+  g.restore();
+}
+
+// ---------- Authentic City Strip (Skyscrapers, Terracotta-roof Old Town Houses, 3 Tree Species)
+function city(seed, x0, x1, o = {}) {
+  const r = rng(seed);
+  let x = x0;
+  const wallCols = ['#e8dcc0', '#e3b48f', '#9fc4b8', '#e6d27a', '#9aa3a8'];
+  const roofCols = ['#c8643a', '#b5532f', '#d47a45'];
+  const glassCols = ['#6f9fb4', '#7fa7a0', '#8e9fb8'];
+  while (x < x1 - 30) {
+    const kind = r();
+    if (kind < 0.25) {
+      // Tree (leafy or pine)
+      g.fillStyle = '#5c4028'; g.fillRect(x + 14, -28, 7, 28);
+      if (r() < 0.5) {
+        g.fillStyle = '#3d6e29'; g.beginPath(); g.arc(x + 17.5, -40, 18, 0, 6.28); g.fill();
+        g.fillStyle = '#6f9a45'; g.beginPath(); g.arc(x + 15, -44, 12, 0, 6.28); g.fill();
+      } else {
+        g.fillStyle = '#244b2a';
+        g.beginPath(); g.moveTo(x + 17.5, -62); g.lineTo(x + 34, -22); g.lineTo(x + 1, -22); g.closePath(); g.fill();
+      }
+      x += 44; continue;
+    }
+    const w = 44 + r() * 58;
+    const isHouse = kind < 0.56 || o.low;
+    const h = isHouse ? 46 + r() * 38 : 95 + r() * 130;
+    g.strokeStyle = '#2c2f36';
+    g.lineWidth = 2.6;
+    if (isHouse) {
+      g.fillStyle = wallCols[Math.floor(r() * wallCols.length)];
+      g.fillRect(x, -h, w, h); g.strokeRect(x, -h, w, h);
+      // Terracotta gable roof
+      g.fillStyle = roofCols[Math.floor(r() * roofCols.length)];
+      g.beginPath(); g.moveTo(x - 4, -h); g.lineTo(x + w / 2, -h - 22); g.lineTo(x + w + 4, -h); g.closePath();
+      g.fill(); g.stroke();
+    } else {
+      g.fillStyle = '#9aa3a8';
+      g.fillRect(x, -h, w, h); g.strokeRect(x, -h, w, h);
+      g.fillStyle = glassCols[Math.floor(r() * glassCols.length)];
+      for (let wy = -h + 12; wy < -14; wy += 20) {
+        g.fillRect(x + 6, wy, w - 12, 10);
+      }
+    }
+    x += w + 10 + r() * 12;
+  }
+}
+
+// ---------- Real 3D Projected Hollow Cube World (NO edgeBeams! Cruciform jagged islands + central Sun)
+function drawCube3D(cx, cy, size, rx, ry, t) {
+  const verts = [
+    [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+    [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+  ];
+  // Very subtle atmospheric guide lines (no glowing neon beams, matching edgeBeams disabled in cube.ts)
+  const edges = [
+    [0,1],[1,2],[2,3],[3,0], [4,5],[5,6],[6,7],[7,4], [0,4],[1,5],[2,6],[3,7],
+  ];
+  const faces = [
+    { idx: [0, 1, 5, 4], col: TEAM.red },    // -y
+    { idx: [3, 2, 6, 7], col: '#bdb39b' },   // +y neutral
+    { idx: [0, 3, 7, 4], col: TEAM.green },  // -x
+    { idx: [1, 2, 6, 5], col: TEAM.yellow }, // +x
+    { idx: [0, 1, 2, 3], col: TEAM.blue },   // -z
+  ];
+
+  const cxR = Math.cos(rx), sxR = Math.sin(rx);
+  const cyR = Math.cos(ry), syR = Math.sin(ry);
+  const proj = (v) => {
+    let [x, y, z] = v;
+    const x1 = x * cyR - z * syR;
+    const z1 = x * syR + z * cyR;
+    const y2 = y * cxR - z1 * sxR;
+    const z2 = y * sxR + z1 * cxR;
+    const d = 3.6;
+    const sc = (size * 0.5 * d) / (d - z2);
+    return [cx + x1 * sc, cy - y2 * sc, z2];
+  };
+
+  const pVerts = verts.map(proj);
+
+  // Subtle cube volume silhouette lines
+  g.save();
+  g.strokeStyle = 'rgba(110, 95, 65, 0.22)';
+  g.lineWidth = 1.5;
+  g.setLineDash([6, 6]);
+  for (const [a, b] of edges) {
+    const p1 = pVerts[a], p2 = pVerts[b];
+    g.beginPath(); g.moveTo(p1[0], p1[1]); g.lineTo(p2[0], p2[1]); g.stroke();
+  }
+  g.restore();
+
+  // Sort faces back-to-front
+  const faceList = faces.map((f) => {
+    const pts = f.idx.map((i) => pVerts[i]);
+    const avgZ = pts.reduce((a, p) => a + p[2], 0) / 4;
+    return { ...f, pts, avgZ };
+  }).sort((a, b) => a.avgZ - b.avgZ);
+
+  for (const f of faceList) {
+    const mx = f.pts.reduce((a, p) => a + p[0], 0) / 4;
+    const my = f.pts.reduce((a, p) => a + p[1], 0) / 4;
+
+    // Cruciform/irregular city island (omitting outer corners like planTiles in cube.ts!)
+    const islandPts = [];
+    for (let k = 0; k < 4; k++) {
+      const a = f.pts[k], b = f.pts[(k + 1) % 4];
+      const p1 = [lerp(mx, lerp(a[0], b[0], 0.22), 0.60), lerp(my, lerp(a[1], b[1], 0.22), 0.60)];
+      const p2 = [lerp(mx, lerp(a[0], b[0], 0.78), 0.60), lerp(my, lerp(a[1], b[1], 0.78), 0.60)];
+      islandPts.push(p1, p2);
+    }
+
+    g.save();
+    g.beginPath();
+    islandPts.forEach(([px, py], i) => (i ? g.lineTo : g.moveTo).call(g, px, py));
+    g.closePath();
+    g.fillStyle = '#77736d'; // asphalt/concrete island
+    g.fill();
+    g.strokeStyle = '#8f8a80';
+    g.lineWidth = 4;
+    g.stroke();
+
+    // Base hall square + terracotta & glass city blocks inside island
+    f.pts.forEach(([px, py], idx) => {
+      const bx = lerp(mx, px, 0.36);
+      const by = lerp(my, py, 0.36);
+      g.fillStyle = idx % 2 ? '#c8643a' : '#6f9fb4';
+      g.fillRect(bx - 8, by - 8, 16, 16);
+      g.strokeStyle = '#2c2f36';
+      g.lineWidth = 1.5;
+      g.strokeRect(bx - 8, by - 8, 16, 16);
+    });
+
+    // Team crystal cluster dot at center
+    g.fillStyle = f.col;
+    g.strokeStyle = '#14161c';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.arc(mx, my, 7, 0, 6.28);
+    g.fill();
+    g.stroke();
+    g.restore();
+  }
+
+  // Central Sun at (0,0,0)
+  sun(cx, cy, size * 0.085, t);
+}
+
+// ---------- Gravity Gizmo (gizmo.ts: golden sun center + team arrows)
+function drawGizmo(x, y, rot = 0) {
+  g.save();
+  g.translate(x, y);
+  g.rotate(rot);
+  const dirs = [
+    [0, 26, TEAM.red],
+    [0, -26, '#8a8f96'],
+    [-26, 0, TEAM.green],
+    [26, 0, TEAM.yellow],
+  ];
+  for (const [dx, dy, col] of dirs) {
+    g.strokeStyle = col; g.lineWidth = 4; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(dx, dy); g.stroke();
+    g.fillStyle = col;
+    g.beginPath(); g.arc(dx, dy, 4.5, 0, 6.28); g.fill();
+  }
+  g.fillStyle = '#ffd98a';
+  g.beginPath(); g.arc(0, 0, 6.5, 0, 6.28); g.fill();
+  g.restore();
+}
+
+// ==================== SCENES ====================
+
+// S1 (0..6.5s): World Inside a Cube (with Dyson skybox + new GRAVWARS logo)
+function s1(t) {
+  const zoom = lerp(0.58, 1.0, eo(prog(t, 0, 1.4)));
+  const rx = 0.28 + Math.sin(t * 0.7) * 0.07;
+  const ry = -0.6 + t * 0.45;
+  drawCube3D(W * 0.5, H * 0.64, 385 * zoom, rx, ry, t);
+
+  if (t > 1.2) {
+    const a = back(prog(t, 1.2, 1.8));
+    guy(175, H - 18, { s: 0.9 * a, color: TEAM.red, wave: t, mood: 'happy' });
+    guy(18, H * 0.56, { s: 0.85 * a, color: TEAM.green, ang: Math.PI / 2, wave: t + 1 });
+    guy(W - 18, H * 0.56, { s: 0.85 * a, color: TEAM.yellow, ang: -Math.PI / 2, wave: t + 2 });
+    guy(W - 175, 18, { s: 0.85 * a, color: TEAM.blue, ang: Math.PI, wave: t + 3 });
+  }
+
+  banner('Внутри этого мира нет *верха* и *низа*', t, 0.1, 1.9, 86, 38);
+
+  if (t >= 1.95) {
+    const a = prog(t, 1.95, 2.25);
+    const sc = lerp(2.1, 1.0, eo(a));
+    gravwarsLogo(W * 0.5, 84, 90, sc, a);
+    banner('6 граней-городов  •  4 команды  •  *3D-шутер в кубе*', t, 2.35, 6.4, 158, 28);
+  }
+}
+
+// S2 (6.5..13.5s): Gravity Flip Across the 36m Abyss (with jagged concrete/rebar rim + Gizmo!)
+function s2(t) {
+  const flipP = eio(prog(t, 3.1, 4.1));
+  const th = flipP * (Math.PI / 2);
+
+  let fx, fy, ca, walkD;
+  if (t < 1.8) {
+    const p = prog(t, 0.1, 1.8);
+    fx = lerp(-540, -145, p); fy = 0; ca = 0; walkD = fx;
+  } else if (t < 3.1) {
+    const p = prog(t, 1.8, 3.1);
+    fx = lerp(-145, -18, p);
+    fy = lerp(0, -140, p);
+    ca = -0.35; walkD = p * 220;
+  } else if (t < 4.1) {
+    const p = eio(prog(t, 3.1, 4.1));
+    fx = lerp(-18, 0, p);
+    fy = lerp(-140, -195, p);
+    ca = lerp(-0.35, -Math.PI / 2, p);
+    walkD = 220 + p * 80;
+  } else {
+    fx = 0;
+    fy = -195 - (t - 4.1) * 165;
+    ca = -Math.PI / 2;
+    walkD = -fy;
+  }
+
+  const C = [W * 0.44, H * 0.72];
+  g.save();
+  g.translate(C[0], C[1]);
+  g.rotate(th);
+  g.translate(-fx, -fy);
+
+  // Red face ground (asphalt #77736d + concrete #8f8a80 + jagged ruined edge + rebar!)
+  g.fillStyle = '#8f8a80'; g.fillRect(-1400, 14, 1220, 320);
+  g.fillStyle = '#77736d'; g.fillRect(-1400, 0, 1220, 16);
+  // Broken protruding concrete ledges & steel rebar at the rim (-180)
+  g.fillStyle = '#847e74'; g.fillRect(-184, 12, 26, 10);
+  g.fillStyle = '#3b3530'; g.fillRect(-165, 16, 22, 4);
+  // Team chevron marks before bridge start
+  g.fillStyle = TEAM.red;
+  for (let k = 0; k < 3; k++) g.fillRect(-205 - k * 14, -2, 8, 5);
+  g.save(); city(21, -1200, -230); g.restore();
+
+  // Blue face wall (vertical, at x=0, above y=-160)
+  g.fillStyle = '#8f8a80'; g.fillRect(14, -1400, 320, 1240);
+  g.fillStyle = '#77736d'; g.fillRect(0, -1400, 16, 1240);
+  g.fillStyle = TEAM.blue; g.fillRect(0, -1400, 5, 1240);
+  g.save(); g.translate(0, -170); g.rotate(-Math.PI / 2); city(33, 60, 1100); g.restore();
+
+  // Abyss label (no neon cube beam!)
+  pill(-92, 54, 'ПРОПАСТЬ 36 м', '#8f8a80', 0.92, 16);
+
+  // Wooden bridge slabs (#b07a46) across gap + stairs up Blue wall
+  for (let j = 0; j < 4; j++) {
+    g.fillStyle = '#b07a46'; g.strokeStyle = '#4a2c10'; g.lineWidth = 3;
+    g.fillRect(-180 + j * 45, 0, 44, 14);
+    g.strokeRect(-180 + j * 45, 0, 44, 14);
+  }
+  g.strokeStyle = '#4a2c10'; g.lineWidth = 18;
+  g.beginPath(); g.moveTo(-10, 0); g.lineTo(-10, -170); g.stroke();
+  g.strokeStyle = '#b07a46'; g.lineWidth = 11; g.stroke();
+
+  // Surprised Blue bot standing on the vertical Blue face
+  const blueHit = t > 4.6;
+  const bx = blueHit ? lerp(0, -80, eo(prog(t, 4.6, 5.2))) : 0;
+  const by = -420;
+  guy(bx, by, { s: 0.95, color: TEAM.blue, ang: -Math.PI / 2, face: -1, mood: blueHit ? 'shock' : 'normal', gun: 'pistol' });
+  if (t > 3.6 && t < 5.5) {
+    g.save(); g.translate(-75, by); g.rotate(-Math.PI / 2);
+    speech(0, -145, blueHit ? 'ЧТО?!' : '?!', '#ff3b3b', 1);
+    g.restore();
+  }
+
+  // Red hero
+  guy(fx, fy, { s: 1.0, color: TEAM.red, ang: ca, walk: walkD * 0.06, gun: 'ak' });
+  g.restore();
+
+  // Gravity direction arrow next to hero
+  const ax = C[0] - 88, ay = C[1] - 115;
+  g.save();
+  g.strokeStyle = HL; g.fillStyle = HL; g.lineWidth = 7; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(ax, ay); g.lineTo(ax, ay + 64); g.stroke();
+  g.beginPath(); g.moveTo(ax - 14, ay + 52); g.lineTo(ax, ay + 78); g.lineTo(ax + 14, ay + 52); g.closePath(); g.fill();
+  text('g', ax - 28, ay + 32, 32, { color: HL });
+  g.restore();
+
+  // Authentic HUD Gravity Gizmo + Top-Left Pill
+  drawGizmo(80, H - 150, th);
+  g.save();
+  g.fillStyle = 'rgba(14, 16, 22, 0.72)';
+  g.strokeStyle = 'rgba(255,255,255,0.16)';
+  g.lineWidth = 2;
+  g.beginPath(); g.roundRect(34, H - 96, 270, 56, 12); g.fill(); g.stroke();
+  g.fillStyle = flipP > 0.5 ? TEAM.blue : TEAM.red;
+  g.beginPath(); g.arc(64, H - 68, 11, 0, 6.28); g.fill();
+  text(flipP > 0.5 ? 'Гравитация: Синие' : 'Гравитация: Красные', 88, H - 68, 20, { align: 'left', stroke: false });
+  g.restore();
+
+  banner('Строй мост через пропасть…', t, 0.1, 2.8, 66, 36);
+  banner('…шагни на чужую грань — и *мир перевернётся!*', t, 2.9, 6.8, 66, 36);
+}
+
+// S3 (13.5..21.0s): Living City Economy & Shop (Authentic Park, Pond, Bum, Bandit, Keeper)
+function s3(t) {
+  // Distant sunlit city buildings
+  g.save();
+  g.globalAlpha = 0.55;
+  g.translate(0, 554);
+  city(77, 40, W - 40, { low: true });
+  g.restore();
+
+  // Pavement & grass
+  g.fillStyle = '#8f8a80'; g.fillRect(0, 566, W, 160);
+  g.fillStyle = '#cfc4ac'; g.fillRect(0, 554, W, 14);
+  g.fillStyle = '#6f9a45'; g.fillRect(0, 550, 560, 8);
+
+  // Leafy tree (left)
+  g.fillStyle = '#5c4028'; g.fillRect(150, 410, 24, 146);
+  g.fillStyle = '#3d6e29'; g.beginPath(); g.arc(162, 386, 62, 0, 6.28); g.fill();
+  g.fillStyle = '#6f9a45'; g.beginPath(); g.arc(154, 376, 42, 0, 6.28); g.fill();
+
+  // Pond with stone rim (#b8ae98) & wooden jetty (#8a6240)
+  g.fillStyle = '#b8ae98'; g.beginPath(); g.roundRect(302, 544, 236, 38, 12); g.fill();
+  g.fillStyle = '#2f8a8a'; g.beginPath(); g.roundRect(310, 548, 220, 30, 10); g.fill();
+  g.fillStyle = '#8a6240'; g.fillRect(290, 546, 48, 8);
+  g.strokeStyle = '#7ad6d9'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(350, 560); g.lineTo(425, 560); g.moveTo(450, 568); g.lineTo(505, 568); g.stroke();
+
+  // Shop Kiosk (right) with vendor + team aura
+  g.fillStyle = '#8a6240'; g.strokeStyle = '#14161c'; g.lineWidth = 4;
+  g.fillRect(940, 492, 220, 68); g.strokeRect(940, 492, 220, 68);
+  g.fillStyle = '#5c4028';
+  g.fillRect(948, 344, 10, 148);
+  g.fillRect(1142, 344, 10, 148);
+  guy(1050, 492, { s: 0.9, role: 'vendor', color: TEAM.red });
+  for (let i = 0; i < 6; i++) {
+    g.fillStyle = i % 2 ? '#f4efe4' : TEAM.red;
+    g.fillRect(930 + i * 40, 314, 40, 30);
+    g.strokeRect(930 + i * 40, 314, 40, 30);
+  }
+  text('МАГАЗИН', 1050, 288, 26, { color: HL });
+
+  // NPCs: Bum + Bandit
+  const bumStun = t > 4.2 && t < 5.6;
+  guy(650, 560, { s: 0.88, role: 'bum', face: -1, mood: bumStun ? 'dizzy' : 'normal' });
+  if (bumStun) text('★ ★ ★', 650, 415, 22, { color: HL });
+
+  const banditAlert = t > 4.6 && t < 5.5;
+  const banditDown = t >= 5.5;
+  if (!banditDown) {
+    guy(810, 560, { s: 0.92, role: 'bandit', face: -1, gun: 'pistol', mood: banditAlert ? 'angry' : 'normal' });
+    if (banditAlert) text('!', 810, 412, 42, { color: '#ff3b3b' });
+  } else {
+    text('+$8', 810, 500 - prog(t, 5.5, 6.2) * 45, 30, { color: HL, alpha: 1 - prog(t, 5.9, 6.4) });
+  }
+
+  // Hero moves across city
+  let hx = 80, hGun = null;
+  if (t < 1.5) hx = lerp(80, 195, eo(prog(t, 0.2, 1.3)));
+  else if (t < 3.4) { hx = lerp(195, 290, eo(prog(t, 1.5, 2.2))); hGun = 'rod'; }
+  else if (t < 5.6) { hx = lerp(290, 740, eo(prog(t, 3.4, 5.2))); hGun = t > 4.8 ? 'pistol' : null; }
+  else { hx = lerp(740, 910, eo(prog(t, 5.6, 6.4))); hGun = 'ak'; }
+
+  guy(hx, 560, { s: 0.95, color: TEAM.red, walk: t * 10, gun: hGun, mood: t > 6.4 ? 'happy' : 'normal' });
+
+  if (t < 1.3) itemIcon('apple', 210, 534, 42);
+  else if (t < 2.2) text('+2 $', 210, 470 - prog(t, 1.3, 2.2) * 35, 28, { color: HL, alpha: 1 - prog(t, 1.8, 2.2) });
+
+  if (t > 2.1 && t < 3.5) {
+    g.strokeStyle = '#fff'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(hx + 52, 475); g.lineTo(415, 558); g.stroke();
+    g.fillStyle = 'rgba(14,16,22,0.88)'; g.fillRect(340, 395, 160, 22);
+    g.fillStyle = '#47be72'; g.fillRect(425, 398, 42, 16);
+    const mark = lerp(345, 490, prog(t, 2.2, 3.2));
+    g.fillStyle = '#fff'; g.fillRect(mark, 392, 6, 28);
+    if (t > 3.1) { itemIcon('fish', 430, 500 - prog(t, 3.1, 3.5) * 50, 44); text('ПОКЛЁВКА! +5$', 420, 368, 24, { color: CYAN }); }
+  }
+
+  if (t > 3.7 && t < 4.3) {
+    const bp = prog(t, 3.7, 4.25);
+    itemIcon('bottle', lerp(560, 650, bp), lerp(480, 460, bp) - Math.sin(bp * Math.PI) * 55, 36);
+  }
+
+  // Wallet counter
+  let cash = 0;
+  if (t > 1.3) cash += 2;
+  if (t > 3.2) cash += 5;
+  if (t > 4.2) cash += 1;
+  if (t > 5.5) cash += 8;
+  if (t > 6.5) cash = 0;
+  g.save();
+  g.fillStyle = 'rgba(14,16,22,0.84)'; g.strokeStyle = HL; g.lineWidth = 3;
+  g.beginPath(); g.roundRect(42, 130, 210, 64, 14); g.fill(); g.stroke();
+  coin(82, 162, 20);
+  text(`${cash} $`, 122, 163, 34, { align: 'left', color: cash > 0 ? HL : '#fff', stroke: false });
+  g.restore();
+
+  if (t > 6.2) {
+    const p = back(prog(t, 6.2, 6.6));
+    g.save();
+    g.translate(1030, 215);
+    g.scale(p, p);
+    pill(0, 0, 'КУПЛЕНО: АК + АРБАЛЕТ + КРЮК!', '#4fff8a', 1, 20);
+    g.restore();
+  }
+
+  banner('Старт с *пустыми карманами* — зарабатывай в городе', t, 0.1, 3.6, 62, 34);
+  banner('Яблоки, рыбалка, бутылки и банды → *в магазин!*', t, 3.6, 7.4, 62, 34);
+}
+
+// S4 (21.0..29.0s): Weapons, Wind, Crossbow, Rocket Jump, Grapple + Build
+function s4(t) {
+  const D = 8.0 / 3;
+  const k = Math.min(2, Math.floor(t / D));
+  const lt = t - k * D;
+
+  if (k === 0) {
+    // Wind streaks + AK + Crossbow
+    g.strokeStyle = 'rgba(80, 120, 140, 0.35)'; g.lineWidth = 4; g.lineCap = 'round';
+    const r = rng(7);
+    for (let i = 0; i < 16; i++) {
+      const x = ((r() * 1280 + lt * 700) % 1280);
+      const y = 160 + r() * 420;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + 65, y + 18); g.stroke();
+    }
+    pill(W - 150, 150, 'ВЕТЕР ↘ 6.5', CYAN, 1, 20);
+
+    // Concrete/glass skyscrapers
+    g.fillStyle = '#9aa3a8'; g.strokeStyle = '#2c2f36'; g.lineWidth = 4;
+    g.fillRect(0, 490, 340, 240); g.strokeRect(0, 490, 340, 240);
+    g.fillRect(920, 450, 360, 280); g.strokeRect(920, 450, 360, 280);
+    g.fillStyle = '#6f9fb4';
+    for (let wy = 515; wy < 700; wy += 42) g.fillRect(28, wy, 280, 22);
+    for (let wy = 475; wy < 700; wy += 42) g.fillRect(948, wy, 300, 22);
+
+    guy(180, 490, { s: 1.0, color: TEAM.red, gun: lt > 1.2 ? 'crossbow' : 'ak' });
+    guy(1070, 450, { s: 1.0, color: TEAM.yellow, face: -1, mood: lt > 2.25 ? 'dizzy' : 'normal' });
+
+    if (lt > 0.3 && lt < 1.2) {
+      const p = (lt * 2.5) % 1;
+      g.strokeStyle = HL; g.lineWidth = 6;
+      g.beginPath();
+      g.moveTo(lerp(240, 900, p), lerp(420, 490, p * p));
+      g.lineTo(lerp(240, 900, Math.min(1, p + 0.16)), lerp(420, 490, Math.pow(Math.min(1, p + 0.16), 2)));
+      g.stroke();
+    }
+    if (lt > 1.3 && lt < 2.2) {
+      const ch = clamp((lt - 1.3) / 0.7);
+      g.fillStyle = 'rgba(14,16,22,0.86)'; g.fillRect(110, 330, 150, 16);
+      g.fillStyle = CYAN; g.fillRect(113, 333, 144 * ch, 10);
+      text(`ЗАРЯД УР. ${Math.min(3, Math.floor(ch * 3.5))}`, 185, 310, 20, { color: CYAN });
+    }
+    if (lt >= 2.0 && lt < 2.35) {
+      const bp = prog(lt, 2.0, 2.25);
+      g.strokeStyle = '#9cf0ff'; g.lineWidth = 8; g.shadowColor = CYAN; g.shadowBlur = 18;
+      g.beginPath(); g.moveTo(lerp(240, 1060, Math.max(0, bp - 0.15)), lerp(410, 345, Math.max(0, bp - 0.15)));
+      g.lineTo(lerp(240, 1060, bp), lerp(410, 345, bp)); g.stroke(); g.shadowBlur = 0;
+    }
+    if (lt >= 2.25) text('В ГОЛОВУ! ×2', 1040, 280, 36, { color: '#ff4848', scale: back(prog(lt, 2.25, 2.5)) });
+    banner('Баллистика с *ветром* и *Арбалет* (заряд 0–3 ур.)', t, 0, D, 66, 36);
+  } else if (k === 1) {
+    // Rocket jump over skyscraper
+    g.fillStyle = '#77736d'; g.fillRect(0, 580, W, 150); g.fillStyle = '#cfc4ac'; g.fillRect(0, 574, W, 10);
+    g.fillStyle = '#9aa3a8'; g.strokeStyle = '#2c2f36'; g.lineWidth = 4;
+    g.fillRect(540, 320, 220, 260); g.strokeRect(540, 320, 220, 260);
+    g.fillStyle = '#6f9fb4';
+    for (let y = 345; y < 550; y += 44) g.fillRect(564, y, 172, 24);
+
+    const p = prog(lt, 0.65, 2.1);
+    const rx = lerp(240, 960, p);
+    const ry = lerp(580, 580, p) - Math.sin(p * Math.PI) * 390;
+    boom(240, 570, prog(lt, 0.55, 1.4), 190);
+    if (lt > 0.6 && lt < 1.2) text('БАБАХ!', 260, 420, 44, { color: HL, rot: -0.15 });
+    guy(rx, ry, { s: 1.0, color: TEAM.red, ang: p > 0 && p < 1 ? p * Math.PI * 2 : 0, gun: 'rocket' });
+    banner('*Ракетница* — урон по площади и *рокет-джамп!*', t, D, 2 * D, 66, 36);
+  } else {
+    // Grapple + Q build menu
+    g.fillStyle = '#77736d'; g.fillRect(0, 590, W, 140); g.fillStyle = '#cfc4ac'; g.fillRect(0, 584, W, 10);
+    g.fillStyle = '#b4aea2'; g.strokeStyle = '#2c2f36'; g.lineWidth = 4;
+    g.fillRect(680, 340, 380, 250); g.strokeRect(680, 340, 380, 250);
+    g.fillStyle = '#6f9fb4';
+    for (let wy = 368; wy < 560; wy += 44) g.fillRect(710, wy, 320, 24);
+
+    const pull = eio(prog(lt, 0.45, 1.3));
+    const gx = lerp(230, 740, pull), gy = lerp(590, 340, pull) - Math.sin(pull * Math.PI) * 55;
+    if (lt > 0.15 && pull < 1) {
+      g.strokeStyle = '#d8c9a3'; g.lineWidth = 4;
+      g.beginPath(); g.moveTo(gx + 20, gy - 65); g.lineTo(685, 342); g.stroke();
+    }
+    guy(gx, gy, { s: 0.95, color: TEAM.red, gun: lt > 1.3 ? 'shovel' : 'hook' });
+
+    const blocks = [
+      [810, 320, '#b07a46'],
+      [870, 320, '#a6a49b'],
+      [930, 320, '#8d989d'],
+      [840, 280, '#a6a49b'],
+      [900, 280, '#8d989d'],
+    ];
+    blocks.forEach(([bx, by, col], i) => {
+      const bp = back(prog(lt, 1.4 + i * 0.16, 1.65 + i * 0.16));
+      if (bp <= 0) return;
+      g.save();
+      g.translate(bx, by); g.scale(bp, bp);
+      g.fillStyle = col; g.strokeStyle = '#2c2f36'; g.lineWidth = 3;
+      g.fillRect(-28, -20, 56, 40); g.strokeRect(-28, -20, 56, 40);
+      g.restore();
+    });
+
+    if (lt > 1.25) {
+      const wa = prog(lt, 1.25, 1.5);
+      g.save();
+      g.globalAlpha = wa;
+      g.translate(220, 320);
+      g.fillStyle = 'rgba(14,16,22,0.88)'; g.strokeStyle = HL; g.lineWidth = 4;
+      g.beginPath(); g.arc(0, 0, 82, 0, 6.28); g.fill(); g.stroke();
+      g.strokeStyle = 'rgba(255,255,255,0.2)'; g.lineWidth = 2;
+      for (const a of [-Math.PI / 6, Math.PI / 2, (7 * Math.PI) / 6]) {
+        g.beginPath(); g.moveTo(0, 0); g.lineTo(Math.cos(a) * 80, Math.sin(a) * 80); g.stroke();
+      }
+      g.fillStyle = 'rgba(14,16,22,0.95)';
+      g.beginPath(); g.arc(0, 0, 26, 0, 6.28); g.fill();
+      text('Q', 0, 0, 30, { color: HL, stroke: false });
+      text('СТЕНА', 0, -52, 15, { stroke: false });
+      text('ПОЛ', -48, 28, 15, { stroke: false });
+      text('ЛЕСТН.', 46, 28, 15, { stroke: false });
+      g.restore();
+    }
+    banner('*Крюк-кошка* (35 м) и стройка форта (меню *Q*)', t, 2 * D, 8.0, 66, 36);
+  }
+}
+
+// S5 (29.0..38.5s): Two-Stage Bedwars Crystal inside Base Hall (#d4d1ca concrete + #51636e ribbon window + #2f3236 portal)
+function s5(t) {
+  // Base hall interior
+  g.fillStyle = '#9a9b9c'; g.fillRect(0, 560, W, 160);
+  g.fillStyle = TEAM.blue; g.fillRect(0, 560, W, 7);
+  // Concrete hall back wall + ribbon glass + portal
+  g.fillStyle = '#d4d1ca'; g.strokeStyle = '#2f3236'; g.lineWidth = 4;
+  g.fillRect(140, 175, 1000, 385); g.strokeRect(140, 175, 1000, 385);
+  g.fillStyle = '#51636e'; g.fillRect(160, 215, 960, 64);
+  g.fillStyle = '#2f3236'; g.fillRect(185, 360, 110, 200);
+  g.fillStyle = TEAM.blue; g.fillRect(175, 360, 10, 200); g.fillRect(295, 360, 10, 200);
+  text('СИНИЕ', 240, 338, 24, { color: TEAM.blue });
+
+  // Top Team HUD Bar
+  const blueDead = t > 6.6;
+  g.save();
+  g.fillStyle = 'rgba(14,16,22,0.88)'; g.beginPath(); g.roundRect(W / 2 - 190, 16, 380, 44, 12); g.fill();
+  [TEAM.red, TEAM.blue, TEAM.green, TEAM.yellow].forEach((col, i) => {
+    const tx = W / 2 - 120 + i * 80;
+    g.fillStyle = i === 1 && blueDead ? '#555' : col;
+    g.beginPath(); g.arc(tx, 38, 12, 0, 6.28); g.fill();
+    if (i === 1 && blueDead) text('✕', tx, 39, 22, { color: '#ff4040', stroke: false });
+  });
+  g.restore();
+
+  const cx = 780, cy = 415;
+  const stage1BreakT = 1.65;
+  const blastT = 4.2;
+  const stage2BreakT = 6.5;
+
+  let hp = 1, shield = 0, broken = -1, stage = 1;
+  if (t < stage1BreakT) hp = 1 - prog(t, 0.7, stage1BreakT);
+  else if (t < blastT) { stage = 2; hp = 1; shield = 1; }
+  else if (t < stage2BreakT) { stage = 2; hp = 1 - prog(t, 5.4, stage2BreakT); }
+  else broken = t - stage2BreakT;
+
+  crystal(cx, cy, 86, TEAM.blue, t, { hp, shield, broken, stage });
+
+  // 2 stone + 1 metal fortification ring blocks breaking at start
+  if (t < 0.8) {
+    const ba = 1 - prog(t, 0.55, 0.8);
+    g.save(); g.globalAlpha = ba;
+    g.fillStyle = '#a6a49b'; g.strokeStyle = '#2c2f36'; g.lineWidth = 3;
+    g.fillRect(cx - 135, 515, 55, 45); g.strokeRect(cx - 135, 515, 55, 45);
+    g.fillStyle = '#8d989d';
+    g.fillRect(cx - 135, 470, 55, 45); g.strokeRect(cx - 135, 470, 55, 45);
+    g.restore();
+  }
+
+  if (t >= blastT && t < blastT + 1.1) {
+    const bp = prog(t, blastT, blastT + 0.9);
+    g.save();
+    g.strokeStyle = '#90e0ff';
+    g.lineWidth = 14 * (1 - bp);
+    g.globalAlpha = 1 - bp;
+    g.beginPath(); g.arc(cx, cy, bp * 480, 0, 6.28); g.stroke();
+    g.restore();
+    boom(cx, cy, bp, 240);
+  }
+
+  const stunned = t > blastT && t < blastT + 1.1;
+  const rx = stunned ? lerp(480, 380, eo(prog(t, blastT, blastT + 0.4))) : lerp(420, 560, prog(t, 0, 1.0));
+  guy(rx, 560, { s: 1.05, color: TEAM.red, gun: 'ak', mood: stunned ? 'dizzy' : 'angry' });
+  if (stunned) text('ОГЛУШЁН!', rx, 395, 28, { color: HL });
+
+  if ((t > 0.7 && t < stage1BreakT) || (t > 5.4 && t < stage2BreakT)) {
+    const k = (t * 11) % 1;
+    g.strokeStyle = '#fff59d'; g.lineWidth = 6;
+    g.beginPath(); g.moveTo(lerp(rx + 60, cx, k), lerp(485, cy, k));
+    g.lineTo(lerp(rx + 60, cx, Math.min(1, k + 0.25)), lerp(485, cy, Math.min(1, k + 0.25))); g.stroke();
+  }
+
+  if (t > blastT + 0.3 && t < 7.8) {
+    const bAlpha = t > 7.4 ? 1 - prog(t, 7.4, 7.8) : prog(t, blastT + 0.3, blastT + 0.7);
+    const bx = t > 7.2 ? 980 + (t - 7.2) * 180 : 980;
+    guy(bx, 560, { s: 1.0, color: TEAM.blue, face: -1, gun: 'shotgun', alpha: bAlpha, mood: t > 7.2 ? 'shock' : 'angry' });
+    if (t < 5.8) pill(980, 405, 'ВОСКРЕС!', CYAN, bAlpha, 18);
+  }
+
+  if (t < 2.0) pill(cx, 250, '≤ 5 м для урона!', HL, 1, 20);
+  if (shield > 0) pill(cx, 250, 'СТАДИЯ I СЛОМАНА → ЩИТ 10 с!', CYAN, 1, 22);
+  if (t > 6.6) text('КРИСТАЛЛ РАЗБИТ!', cx, 360, 48, { color: '#ff4a4a', scale: back(prog(t, 6.6, 6.95)) });
+
+  banner('Кристалл имеет *2 стадии*: I стадия → взрыв и воскрешение', t, 0.1, 4.8, 108, 34);
+  banner('Сломал *II стадию* и добил врагов — *победа!*', t, 4.9, 9.4, 108, 34);
+}
+
+// S6 (38.5..46.5s): Smart Bots, P2P Multiplayer, Retro Pixel Shader
+function s6(t) {
+  const cards = [
+    { x: 225, title: 'УМНЫЕ БОТЫ', col: TEAM.green, sub: 'Защита • Рейды • Экономика' },
+    { x: 640, title: 'P2P МУЛЬТИПЛЕЕР', col: CYAN, sub: 'PeerJS комнаты • Наблюдатель' },
+    { x: 1055, title: 'РЕТРО-ШЕЙДЕР', col: HL, sub: '360p–720p • Байер 4×4' },
+  ];
+
+  cards.forEach((c, i) => {
+    const a = back(prog(t, 0.15 + i * 0.35, 0.65 + i * 0.35));
+    if (a <= 0) return;
+    g.save();
+    g.translate(c.x, 395);
+    g.scale(a, a);
+    g.fillStyle = 'rgba(14, 16, 22, 0.88)';
+    g.strokeStyle = c.col;
+    g.lineWidth = 4;
+    g.beginPath(); g.roundRect(-185, -190, 370, 390, 22); g.fill(); g.stroke();
+
+    if (i === 0) {
+      guy(-70, 95, { s: 0.85, color: TEAM.green, gun: 'rod', walk: t * 6 });
+      speech(-70, -25, 'Рыбачу', '#14161c', 1);
+      guy(75, 95, { s: 0.85, color: TEAM.red, gun: 'ak', walk: t * 9, face: -1 });
+      speech(75, -25, 'В рейд!', '#ff3b3b', 1);
+    } else if (i === 1) {
+      g.strokeStyle = CYAN; g.lineWidth = 4; g.setLineDash([8, 8]);
+      g.beginPath(); g.moveTo(-75, 25); g.lineTo(75, 25); g.stroke(); g.setLineDash([]);
+      guy(-85, 100, { s: 0.8, color: TEAM.red, wave: t });
+      guy(85, 100, { s: 0.8, color: TEAM.blue, face: -1, wave: t + 1 });
+      pill(0, -45, 'КОД: GW-42', CYAN, 1, 22);
+    } else {
+      const wipe = 0.5 + 0.42 * Math.sin(t * 2.4);
+      const sx = lerp(-150, 150, wipe);
+      g.save();
+      g.beginPath(); g.rect(-150, -100, sx + 150, 210); g.clip();
+      g.fillStyle = '#38342a'; g.fillRect(-150, -100, 300, 210);
+      crystal(0, 10, 46, TEAM.yellow, t);
+      g.restore();
+      g.save();
+      g.beginPath(); g.rect(sx, -100, 150 - sx, 210); g.clip();
+      g.fillStyle = '#2d2a22'; g.fillRect(-150, -100, 300, 210);
+      const px = 14;
+      for (let py = -84; py < 90; py += px) {
+        for (let qx = -140; qx < 140; qx += px) {
+          if (Math.abs(qx) + Math.abs(py - 5) * 0.65 < 56) {
+            g.fillStyle = ((qx + py) / px) % 2 ? '#ffd23b' : '#f7a922';
+            g.fillRect(qx, py, px - 1, px - 1);
+          }
+        }
+      }
+      g.restore();
+      g.strokeStyle = '#fff'; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(sx, -100); g.lineTo(sx, 110); g.stroke();
+    }
+
+    text(c.title, 0, -145, 28, { color: c.col, stroke: false });
+    text(c.sub, 0, 160, 18, { color: '#d0d8f0', stroke: false });
+    g.restore();
+  });
+
+  banner('Под капотом — *живая симуляция и технологии*', t, 0.05, 7.9, 76, 38);
+}
+
+// S7 (46.5..55.0s): Victory & Project Outro
+function s7(t) {
+  drawCube3D(W * 0.5, H * 0.69, 290, 0.28, t * 0.55, t);
+
+  const r = rng(99);
+  for (let i = 0; i < 42; i++) {
+    const x = r() * W;
+    const y = (r() * H + t * (90 + r() * 90)) % H;
+    const cols = [TEAM.red, TEAM.blue, TEAM.green, TEAM.yellow, CYAN];
+    g.fillStyle = cols[i % cols.length];
+    g.fillRect(x, y, 8, 8);
+  }
+
+  const pop = back(prog(t, 0.2, 0.7));
+  g.save();
+  g.translate(W * 0.5, H * 0.58);
+  g.scale(pop, pop);
+  guy(0, 0, { s: 1.1, color: TEAM.red, wave: t, mood: 'happy', gun: 'ak' });
+  g.fillStyle = HL; g.strokeStyle = '#14161c'; g.lineWidth = 4;
+  g.beginPath();
+  g.moveTo(-26, -155); g.lineTo(-30, -182); g.lineTo(-12, -168); g.lineTo(0, -190);
+  g.lineTo(12, -168); g.lineTo(30, -182); g.lineTo(26, -155); g.closePath();
+  g.fill(); g.stroke();
+  g.restore();
+
+  const ta = prog(t, 0.1, 0.5);
+  gravwarsLogo(W * 0.5, 84, 90, 1 + Math.sin(t * 5) * 0.02, ta);
+  banner('Готов *перевернуть мир*?', t, 0.6, 8.4, 158, 34);
+  pill(W * 0.5, H - 50, 'Three.js  •  Rapier3D Wasm  •  PeerJS  •  WebAudio', CYAN, prog(t, 1.0, 1.6), 20);
+}
+
+const FNS = [s1, s2, s3, s4, s5, s6, s7];
+
+window.render = (t) => {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1;
+  g.shadowBlur = 0;
+  g.setLineDash([]);
+
+  let i = 0;
+  while (i < FNS.length - 1 && t >= SCENES[i + 1]) i++;
+  const lt = t - SCENES[i];
+
+  const shakes = [2.0, 10.4, 24.5, 30.6, 33.2, 35.5, 46.7];
+  let sh = 0;
+  for (const s of shakes) {
+    const d = t - s;
+    if (d >= 0 && d < 0.35) sh = Math.max(sh, (1 - d / 0.35) * 14);
+  }
+
+  // Rotate Dyson skybox smoothly during S2 gravity flip
+  const skyRot = i === 1 ? eio(prog(lt, 3.1, 4.1)) * (Math.PI / 2) : 0;
+  background(t, skyRot, i === 5 ? 0.25 : 0);
+
+  g.save();
+  g.translate(Math.sin(t * 97) * sh, Math.cos(t * 83) * sh);
+  FNS[i](lt);
+  g.restore();
+
+  if (i > 0 && lt < 0.16) {
+    g.fillStyle = `rgba(255, 250, 235, ${0.42 * (1 - lt / 0.16)})`;
+    g.fillRect(0, 0, W, H);
+  }
+
+  if (t > T - 0.8) {
+    g.fillStyle = `rgba(0, 0, 0, ${prog(t, T - 0.8, T)})`;
+    g.fillRect(0, 0, W, H);
+  }
+
+  // Progress bar
+  g.fillStyle = 'rgba(14, 16, 22, 0.35)';
+  g.fillRect(0, 0, W, 5);
+  g.fillStyle = HL;
+  g.fillRect(0, 0, W * clamp(t / T), 5);
+};
+
+window.DURATION = T;
+window.render(0);
+</script>
+</body>
+</html>

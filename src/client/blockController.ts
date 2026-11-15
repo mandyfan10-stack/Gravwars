@@ -1,6 +1,6 @@
 import { PerspectiveCamera, Scene, Vector3 } from 'three';
 import {
-  BLOCK_ORDER, BlockMaterial, BlockSystem, PIECE_LABEL, PieceKind, PlaceResult,
+  Block, BLOCK_ORDER, BlockMaterial, BlockSystem, PIECE_LABEL, PieceKind, PlaceResult,
 } from '../shared/blocks';
 import { upOf } from '../shared/math';
 import type { PlayerSim } from '../shared/sim';
@@ -45,6 +45,8 @@ export class BlockController {
   tapped = false;
   /** A piece was built (viewmodel swing). */
   onPlace: () => void = () => {};
+  onBlockPlaced?: (block: Block) => void;
+  onBlockReclaimed?: (block: Block) => void;
   private cooldown = 0;
   private readonly view: BlockView;
   private readonly hudEl = document.getElementById('build-hud')!;
@@ -125,8 +127,11 @@ export class BlockController {
       const forward = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
       if (input.take('Mouse2')) {
         const block = blocks.aimedBlock(camera.position, forward);
-        if (block && blocks.reclaim(block.collider.handle, this.team)) this.audio.remove();
-        else {
+        const reclaimed = block ? blocks.reclaim(block.collider.handle, this.team) : null;
+        if (reclaimed) {
+          this.audio.remove();
+          this.onBlockReclaimed?.(reclaimed);
+        } else {
           this.audio.reject();
           this.hud.toast(block ? 'Чужая постройка — ломай оружием' : 'Наведи на свою постройку', '#ffb49e', 1);
         }
@@ -137,6 +142,9 @@ export class BlockController {
         this.cooldown = REPEAT;
         const placed = blocks.place(plan, this.material, this.team);
         if (placed === 'ok') {
+          for (const b of blocks.blocks.values()) {
+            if (b.key === plan.key) { this.onBlockPlaced?.(b); break; }
+          }
           this.audio.place();
           this.onPlace();
           plan = blocks.plan(this.next, sim.state.pos, up, forward);

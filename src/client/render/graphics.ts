@@ -93,9 +93,9 @@ export class Graphics {
   readonly upDir = new Vector3();
   private readonly space: ReturnType<typeof createSpace>;
   private readonly sunView: ReturnType<typeof createSun>;
-  private readonly hemi = new HemisphereLight(0xfff1dc, 0x8a7a62, 0.55);
-  private readonly sun = new DirectionalLight(0xffeccc, 2.6);
-  private readonly fill = new DirectionalLight(0xc8d6ff, 0.7);
+  private readonly hemi = new HemisphereLight(0xfff0d4, 0x9b8665, 0.65);
+  private readonly sun = new DirectionalLight(0xffe6b8, 2.65);
+  private readonly fill = new DirectionalLight(0xebd8b5, 0.75);
 
   constructor(canvas: HTMLCanvasElement) {
     // the 3D frame is drawn off-screen (no MSAA there: crisp pixels); the canvas itself only gets the blow-up + HUD gizmo
@@ -108,9 +108,9 @@ export class Graphics {
     renderer.shadowMap.type = PCFShadowMap;
 
     const scene = this.scene;
-    scene.background = new Color(0x05070d);
-    // warm air inside the cube: the far faces fade a little, space behind the gaps does not
-    scene.fog = new FogExp2(HAZE, 0.0021);
+    scene.background = new Color(HAZE);
+    // warm golden air inside the cube: far faces and skybox blend into the warm haze
+    scene.fog = new FogExp2(HAZE, 0.0024);
 
     // image-based lighting from the (sunless) haze dome: soft warm ambient + reflections for glass/water
     {

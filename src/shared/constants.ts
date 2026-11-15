@@ -46,7 +46,7 @@ export const DEFAULT_MOVEMENT: MovementConfig = {
   // a tap: ~1.3 m; held: ~3.3 m (JUMP_HOLD in movement.ts)
   jumpSpeed: 286 * HU,
   stepHeight: 18 * HU,
-  groundCos: 0.7,
+  groundCos: 0.68,
   nonJumpVelocity: 140 * HU,
   autoBhop: true,
   maxVelocity: 3500 * HU,
@@ -55,11 +55,11 @@ export const DEFAULT_MOVEMENT: MovementConfig = {
 
 export const WORLD = {
   /**
-   * The world is the inside of a cube: six faces, each a 5×5 block city that looks at the centre (the sun). Face
+   * The world is the inside of a cube: six faces, each a city island that looks at the centre (the sun). Face
    * grounds lie at ±cubeHalf on their axis; a city covers ±faceHalf of its face, the rest up to the cube edge is a
-   * 48 m gap (two of them meet at every edge): the way to the next face is a bridge over it and stairs up its wall.
+   * 36 m gap (two of them meet at every edge): the way to the next face is a bridge over it and stairs up its wall.
    */
-  cubeHalf: 138,
+  cubeHalf: 126,
   faceHalf: 90,
   /** Further than this outside the cube (on any axis) = fell into the void. */
   voidMargin: 20,

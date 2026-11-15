@@ -293,8 +293,97 @@ export class GameAudio {
       this.loops.set(name, l);
     }
     const t = c.currentTime, v = Math.max(0, Math.min(1, level));
-    l.g.gain.setTargetAtTime(v * (name === 'wind' ? 0.09 : 0.06) * this.volume, t, 0.08);
+    l.g.gain.setTargetAtTime(v * (name === 'wind' ? 0.09 : 0.015) * this.volume, t, 0.08);
     if (name === 'wind') l.f.frequency.setTargetAtTime(450 + v * 1400, t, 0.1);
   }
-  explosion() { this.noise(.55,.23,1600,100);this.tone('sine',100,34,.4,.20); }
+  explosion() {
+    this.noise(.75, .28, 2200, 80);
+    this.tone('sine', 115, 28, .55, .26);
+    this.noise(.35, .14, 900, 140, .06);
+  }
+  /** Car explosion: metallic crunch + deep fuel-tank detonation + shattering glass + debris rattle. */
+  carExplode(dist = 0) {
+    const near = 1 / (1 + dist / 18);
+    if (near < 0.04) return;
+    // Initial metal crumple & horn cut-off
+    this.tone('sawtooth', 390, 180, .14, .16 * near);
+    this.noise(.15, .24 * near, 2800, 450, 0, 'bandpass', 1.5);
+    // Fuel tank boom
+    this.noise(.95, .36 * near, 2400, 65, .04);
+    this.tone('sine', 105, 24, .75, .34 * near, .04);
+    this.tone('triangle', 165, 38, .48, .22 * near, .06);
+    // Secondary fireball & glass shatter
+    this.noise(.45, .18 * near, 6500, 1800, .08, 'highpass');
+    for (let i = 0; i < 5; i++) {
+      const d = 0.16 + i * 0.08 + Math.random() * 0.05;
+      this.click(.11 * near, 1600 + Math.random() * 1800, d);
+      this.tone('sine', 2800 + Math.random() * 2200, 1900, .08, .03 * near, d);
+    }
+  }
+  /** Car horn / alarm when a car is shot. */
+  carAlarm(dist = 0) {
+    const near = 1 / (1 + dist / 15);
+    if (near < 0.05) return;
+    this.tone('sawtooth', 415, 410, .16, .09 * near);
+    this.tone('sawtooth', 520, 515, .16, .09 * near);
+  }
+  /** Crossbow shot: bowstring snap + energy bolt release scaled by charge level (0..3). */
+  crossbowShot(level = 0, dist = 0) {
+    const near = 1 / (1 + dist / 18);
+    if (near < 0.04) return;
+    const p = 1 + level * 0.35;
+    this.tone('triangle', 680 / p, 160, .14 + level * .05, .18 * near);
+    this.noise(.12 + level * .06, (.16 + level * .05) * near, 3400, 420);
+    this.click(.14 * near, 2200 - level * 250);
+    if (level >= 1) {
+      this.tone('sine', 240 * p, 58, .22 + level * .06, (.14 + level * .04) * near, .02);
+    }
+  }
+  /** Crossbow charge level tick (1..3). */
+  crossbowCharge(level: number) {
+    const f = 520 + level * 220;
+    this.tone('sine', f, f * 1.18, .09, .06);
+    this.click(.06, 1500 + level * 350);
+  }
+  /** Crystal Stage 1 10-second invulnerability blast & mass revival chime. */
+  crystalBlast(dist = 0) {
+    const near = 1 / (1 + dist / 25);
+    this.noise(.85, .32 * near, 2600, 70);
+    this.tone('sine', 120, 26, .7, .3 * near);
+    for (const [i, n] of [523.25, 659.25, 783.99, 1046.5].entries()) {
+      this.tone('triangle', n, n * 1.005, .55, .08 * near, .06 + i * .06);
+    }
+  }
+  /** A wall or crate breaking apart. */
+  blockBreak(material: 'wood' | 'stone' | 'metal', dist = 0) {
+    const near = 1 / (1 + dist / 12);
+    if (near < 0.05) return;
+    if (material === 'wood') {
+      this.noise(.22, .18 * near, 1800, 260);
+      this.tone('triangle', 210, 75, .18, .12 * near);
+      this.click(.1 * near, 1100, .04);
+    } else if (material === 'metal') {
+      this.tone('triangle', 1400, 420, .25, .1 * near);
+      this.noise(.25, .16 * near, 3200, 400);
+      this.click(.14 * near, 2400);
+    } else {
+      this.noise(.28, .2 * near, 1200, 160);
+      this.tone('sine', 130, 45, .22, .14 * near);
+    }
+  }
+  /** Bandit melee spark telegraph. */
+  spark(dist = 0) {
+    const near = 1 / (1 + dist / 12);
+    if (near < 0.05) return;
+    this.tone('sawtooth', 1800, 3200, .14, .06 * near);
+    this.noise(.12, .1 * near, 6000, 2200, 0, 'highpass');
+    this.click(.12 * near, 2800);
+  }
+  /** Bandit melee dash strike. */
+  meleeDash(dist = 0) {
+    const near = 1 / (1 + dist / 12);
+    if (near < 0.05) return;
+    this.noise(.18, .16 * near, 600, 2200, 0, 'bandpass', 1.4);
+    this.tone('sine', 140, 45, .16, .18 * near, .02);
+  }
 }

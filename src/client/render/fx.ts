@@ -1,8 +1,9 @@
 import {
   AdditiveBlending, BoxGeometry, CanvasTexture, BufferAttribute, BufferGeometry, Color, ConeGeometry, CylinderGeometry, DoubleSide,
   Group, IcosahedronGeometry, InstancedMesh, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, NormalBlending, PlaneGeometry,
-  PointLight, Points, PointsMaterial, Quaternion, Scene, SphereGeometry, Sprite, SpriteMaterial, Vector3,
+  PointLight, Points, PointsMaterial, Quaternion, Scene, SphereGeometry, Sprite, SpriteMaterial, TorusGeometry, Vector3,
 } from 'three';
+import type { Block } from '../../shared/blocks';
 import type { Combat, CombatEvent } from '../../shared/combat';
 import { pixelDot, pixelPuff, pixelSplat } from './pixelart';
 import { getTeam, TeamId } from '../../shared/teams';
@@ -21,8 +22,12 @@ const _b = new Vector3();
 const _d = new Vector3();
 const _v = new Vector3();
 const _c = new Color();
+const _shooterUp = new Vector3();
+const _right = new Vector3();
+const _trueUp = new Vector3();
+const _basisM = new Matrix4();
 
-interface Blast { mesh: Mesh; ring: Mesh; t: number; radius: number; alive: boolean }
+interface Blast { mesh: Mesh; core: Mesh; ring: Mesh; wave: Mesh; t: number; radius: number; alive: boolean }
 interface Puff { sprite: Sprite; vel: Vector3; t: number; life: number; size: number; alive: boolean }
 interface Splat { mesh: Mesh; t: number }
 
@@ -34,6 +39,7 @@ const TRACER: Partial<Record<WeaponId, { core: Color; glow: Color; len: number; 
   pistol: { core: new Color(9, 8, 4.5), glow: new Color(2.6, 2.1, 0.6), len: 3.2, width: 0.035 },
   rifle: { core: new Color(9, 6.5, 3), glow: new Color(3.2, 1.5, 0.35), len: 4.2, width: 0.035 },
   shotgun: { core: new Color(8, 5, 2.2), glow: new Color(3, 1.1, 0.25), len: 1.4, width: 0.03 },
+  crossbow: { core: new Color(4.5, 9.2, 11), glow: new Color(0.8, 3.2, 5.2), len: 2.8, width: 0.06 },
 };
 
 /** Particle dot, smoke puff and blood splat: pixel sprites (pixelart.ts). */
@@ -123,13 +129,14 @@ export class Fx {
 
     const dgeo = new BufferGeometry();
     this.dPos = new Float32Array(MAX_DROPS * 3);
+    for (let i = 0; i < MAX_DROPS; i++) this.dPos[i * 3 + 1] = 1e6;
     this.dCol = new Float32Array(MAX_DROPS * 3);
     this.dVel = new Float32Array(MAX_DROPS * 3);
     this.dLife = new Float32Array(MAX_DROPS);
     this.dBase = new Float32Array(MAX_DROPS * 2);
     dgeo.setAttribute('position', new BufferAttribute(this.dPos, 3));
     dgeo.setAttribute('color', new BufferAttribute(this.dCol, 3));
-    this.drops = new Points(dgeo, new PointsMaterial({ size: 0.11, map: dotTexture(), alphaTest: 0.35, vertexColors: true, transparent: true, depthWrite: false }));
+    this.drops = new Points(dgeo, new PointsMaterial({ size: 0.12, map: dotTexture(), alphaTest: 0.35, vertexColors: true, transparent: true, depthWrite: false }));
     this.drops.frustumCulled = false;
     this.group.add(this.drops);
 
@@ -143,7 +150,7 @@ export class Fx {
     const splatTex = splatTexture();
     for (let i = 0; i < MAX_SPLATS; i++) {
       const mesh = new Mesh(splatGeo, new MeshBasicMaterial({
-        map: splatTex, color: new Color(0.32, 0.015, 0.02), transparent: true, depthWrite: false, side: DoubleSide,
+        map: splatTex, color: new Color(0.48, 0.025, 0.03), transparent: true, depthWrite: false, side: DoubleSide,
         polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
       }));
       mesh.visible = false;
@@ -154,16 +161,19 @@ export class Fx {
 
     const blastGeo = new IcosahedronGeometry(1, 2);
     const ringGeo = new SphereGeometry(1, 24, 12);
-    for (let i = 0; i < 6; i++) {
-      const mesh = new Mesh(blastGeo, new MeshBasicMaterial({ color: new Color(3, 1.25, 0.3), transparent: true, blending: AdditiveBlending, depthWrite: false }));
-      const ring = new Mesh(ringGeo, new MeshBasicMaterial({ color: new Color(0.9, 0.75, 0.6), transparent: true, depthWrite: false, opacity: 0.3 }));
-      mesh.visible = ring.visible = false;
-      this.group.add(mesh, ring);
-      this.blasts.push({ mesh, ring, t: 0, radius: 1, alive: false });
+    const waveGeo = new TorusGeometry(1, 0.07, 8, 28);
+    for (let i = 0; i < 8; i++) {
+      const mesh = new Mesh(blastGeo, new MeshBasicMaterial({ color: new Color(4.2, 1.45, 0.32), transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
+      const core = new Mesh(blastGeo, new MeshBasicMaterial({ color: new Color(7.5, 5.8, 3.2), transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
+      const ring = new Mesh(ringGeo, new MeshBasicMaterial({ color: new Color(1.2, 0.85, 0.55), transparent: true, depthWrite: false, opacity: 0.35 }));
+      const wave = new Mesh(waveGeo, new MeshBasicMaterial({ color: new Color(4.5, 2.4, 0.8), transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
+      mesh.visible = core.visible = ring.visible = wave.visible = false;
+      this.group.add(mesh, core, ring, wave);
+      this.blasts.push({ mesh, core, ring, wave, t: 0, radius: 1, alive: false });
     }
     // constant number of lights → no shader recompiles when explosions happen
     for (let i = 0; i < 2; i++) {
-      const light = new PointLight(0xffa040, 0, 18, 1.6);
+      const light = new PointLight(0xff9830, 0, 26, 1.5);
       this.group.add(light);
       this.lights.push({ light, t: 1 });
     }
@@ -202,8 +212,8 @@ export class Fx {
       _d.multiplyScalar(speed * (0.25 + Math.random() * 0.75)).addScaledVector(this.down, -speed * 0.25);
       pos.toArray(this.dPos, i * 3);
       _d.toArray(this.dVel, i * 3);
-      this.dLife[i] = this.dBase[i * 2 + 1] = life * (0.6 + Math.random() * 0.6);
-      this.dBase[i * 2] = 0.22 + Math.random() * 0.26; // red level: dark arterial to brighter
+      this.dLife[i] = this.dBase[i * 2 + 1] = life * (0.55 + Math.random() * 0.55);
+      this.dBase[i * 2] = 0.42 + Math.random() * 0.36; // vivid arterial to dark crimson
     }
   }
 
@@ -223,37 +233,37 @@ export class Fx {
     m.rotation = Math.random() * Math.PI * 2;
   }
 
-  /** A blood stain on the ground under `pos` (if there is ground within a few metres). */
+  /** A blood stain on the ground under `pos` (only on valid ground surfaces aligned with gravity). */
   private splat(pos: Vector3, size: number) {
     const g = this.ground(pos, this.down);
-    if (!g) return;
+    if (!g || g.normal.lengthSq() < 0.5 || g.normal.dot(this.down) > -0.75) return;
     const s = this.splats[this.splatNext];
     this.splatNext = (this.splatNext + 1) % MAX_SPLATS;
     s.t = 0;
     s.mesh.visible = true;
-    s.mesh.position.copy(g.pos).addScaledVector(g.normal, 0.02);
+    s.mesh.position.copy(g.pos).addScaledVector(g.normal, 0.03);
     s.mesh.quaternion.setFromUnitVectors(Z, g.normal);
     s.mesh.rotateZ(Math.random() * Math.PI * 2);
     s.mesh.scale.setScalar(size);
-    (s.mesh.material as MeshBasicMaterial).opacity = 0.92;
+    (s.mesh.material as MeshBasicMaterial).opacity = 0.85;
   }
 
   /**
-   * A body bursting into blood (`k` = how big: 1 for a fighter, less for a city NPC): a red mist, a spray of drops,
-   * a few stains on the ground around.
+   * A body bursting into blood (`k` = how big: 1 for a fighter, less for a city NPC): a fine crimson mist, a spray of
+   * drops, and flat stains on the ground beneath.
    */
   blood(pos: Vector3, k = 1) {
-    this.bleed(pos, null, Math.round(160 * k), 7 * Math.sqrt(k), 1.1);
-    this.bleed(pos, _v.copy(this.down).negate(), Math.round(60 * k), 5, 1.2);
-    for (let i = 0; i < Math.round(7 * k); i++) {
-      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(1.6);
-      this.puff(_b.copy(pos).addScaledVector(_d, 0.25), _d, 1.2 + Math.random() * 0.8 * k, 0.7 + Math.random() * 0.4,
-        _c.setRGB(0.24, 0.008, 0.012), 0.8);
+    this.bleed(pos, null, Math.round(130 * k), 6.5 * Math.sqrt(k), 0.95);
+    this.bleed(pos, _v.copy(this.down).negate(), Math.round(50 * k), 4.5, 1.05);
+    for (let i = 0; i < Math.round(4 * k); i++) {
+      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(1.2);
+      this.puff(_b.copy(pos).addScaledVector(_d, 0.18), _d, 0.45 + Math.random() * 0.35 * k, 0.38 + Math.random() * 0.22,
+        _c.setRGB(0.52, 0.035, 0.04), 0.42);
     }
-    this.splat(pos, 2.6 * k + 0.6);
+    this.splat(pos, 1.35 * k + 0.35);
     for (let i = 0; i < Math.round(3 * k); i++) {
-      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(1.8);
-      this.splat(_b.copy(pos).add(_d), 0.6 + Math.random() * 0.9);
+      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(1.4);
+      this.splat(_b.copy(pos).add(_d), 0.45 + Math.random() * 0.65);
     }
   }
 
@@ -307,23 +317,82 @@ export class Fx {
       b.t = 0;
       b.radius = e.radius;
       b.mesh.position.copy(e.pos);
+      b.core.position.copy(e.pos);
       b.ring.position.copy(e.pos);
-      b.mesh.visible = b.ring.visible = true;
+      b.wave.position.copy(e.pos);
+      b.wave.quaternion.setFromUnitVectors(Z, _v.copy(this.down).negate());
+      b.mesh.visible = b.core.visible = b.ring.visible = b.wave.visible = true;
       const l = this.lights.reduce((x, y) => (x.t > y.t ? x : y));
       l.t = 0;
       l.light.position.copy(e.pos);
-      this.burst(e.pos, null, 80, 14, new Color(5, 2.6, 0.9), 0.7);
-      this.burst(e.pos, null, 30, 5, new Color(0.9, 0.8, 0.7), 1.2);
-      // a smoke cloud that rolls up from the blast (never into the ground)
-      for (let i = 0; i < 9; i++) {
-        _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(e.radius * 0.8);
+      this.burst(e.pos, null, 130, 16, new Color(6, 3.1, 0.95), 0.85);
+      this.burst(e.pos, null, 55, 9, new Color(4.5, 1.3, 0.25), 1.1);
+      this.burst(e.pos, null, 40, 6, new Color(0.95, 0.82, 0.68), 1.35);
+      // fiery flash clouds + dark rolling smoke cloud
+      for (let i = 0; i < 6; i++) {
+        _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(e.radius * 0.55);
+        this.puff(_b.copy(e.pos).addScaledVector(_d, 0.25), _d, e.radius * (0.65 + Math.random() * 0.45), 0.55 + Math.random() * 0.3,
+          _c.setRGB(1.8, 0.72, 0.2), 0.85);
+      }
+      for (let i = 0; i < 12; i++) {
+        _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(e.radius * 0.85);
         const into = _d.dot(this.down);
         if (into > 0) _d.addScaledVector(this.down, -2 * into);
-        _d.addScaledVector(this.down, -0.8);
-        this.puff(_b.copy(e.pos).addScaledVector(_d, 0.35), _d, e.radius * (0.9 + Math.random() * 0.6), 1.6 + Math.random() * 0.9,
-          _c.setRGB(0.34, 0.32, 0.3), 0.75);
+        _d.addScaledVector(this.down, -1.0);
+        this.puff(_b.copy(e.pos).addScaledVector(_d, 0.35), _d, e.radius * (0.95 + Math.random() * 0.65), 1.8 + Math.random() * 1.0,
+          _c.setRGB(0.32, 0.30, 0.28), 0.8);
       }
     }
+  }
+
+  /** Wall / ramp / floor destruction effect: bursts splinters, chunks, sparks and dust across the piece volume. */
+  blockBreak(b: Block) {
+    const mat = b.material;
+    const mainCol = mat === 'wood' ? new Color(0.75, 0.52, 0.28) : mat === 'stone' ? new Color(0.68, 0.66, 0.62) : new Color(3.8, 2.8, 1.4);
+    const subCol = mat === 'wood' ? new Color(0.52, 0.35, 0.18) : mat === 'stone' ? new Color(0.48, 0.46, 0.44) : new Color(0.62, 0.68, 0.75);
+    const dustCol = mat === 'wood' ? new Color(0.65, 0.52, 0.36) : mat === 'stone' ? new Color(0.62, 0.60, 0.56) : new Color(0.52, 0.56, 0.62);
+    for (let i = 0; i < 42; i++) {
+      _b.set(
+        (Math.random() * 2 - 1) * b.half.x * 0.85,
+        (Math.random() * 2 - 1) * b.half.y * 0.85,
+        (Math.random() * 2 - 1) * b.half.z * 0.85,
+      ).applyQuaternion(b.quat).add(b.center);
+      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize()
+        .multiplyScalar(2.5 + Math.random() * 5.5)
+        .addScaledVector(this.down, -1.8);
+      this.spark(_b, _d, i % 3 === 0 ? subCol : mainCol, 0.45 + Math.random() * 0.45);
+    }
+    for (let i = 0; i < 7; i++) {
+      _b.set(
+        (Math.random() * 2 - 1) * b.half.x * 0.6,
+        (Math.random() * 2 - 1) * b.half.y * 0.6,
+        (Math.random() * 2 - 1) * b.half.z * 0.6,
+      ).applyQuaternion(b.quat).add(b.center);
+      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(1.4).addScaledVector(this.down, -0.6);
+      this.puff(_b, _d, 1.1 + Math.random() * 0.7, 0.75 + Math.random() * 0.45, dustCol, 0.55);
+    }
+  }
+
+  /** Crate or barrel destruction effect. */
+  crateBreak(pos: Vector3, kind: 'crate' | 'barrel') {
+    const col = kind === 'crate' ? new Color(0.78, 0.54, 0.28) : new Color(3.6, 2.5, 1.2);
+    this.burst(pos, _v.copy(this.down).negate(), 32, 5.5, col, 0.65);
+    for (let i = 0; i < 4; i++) {
+      _d.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).multiplyScalar(1.2);
+      this.puff(_b.copy(pos).addScaledVector(_d, 0.2), _d, 0.85 + Math.random() * 0.4, 0.65, _c.setRGB(0.62, 0.52, 0.38), 0.5);
+    }
+  }
+
+  /** Bandit melee telegraph spark (0.5 s before the dash strike). */
+  meleeSpark(pos: Vector3) {
+    this.burst(pos, null, 28, 5.5, new Color(6, 4.2, 1.1), 0.38);
+    this.burst(pos, null, 12, 3.2, new Color(5, 1.4, 0.4), 0.45);
+  }
+
+  /** Bandit melee dash frontal strike effect. */
+  meleeStrike(pos: Vector3, dir: Vector3) {
+    this.burst(pos, dir, 34, 8, new Color(5, 2.2, 0.6), 0.35);
+    this.puff(pos, _v.copy(dir).multiplyScalar(2.5), 1.35, 0.45, _c.setRGB(0.85, 0.72, 0.58), 0.5);
   }
 
   /** A rocket: olive body, warhead, fins and a flame at the back (pooled). */
@@ -363,20 +432,42 @@ export class Fx {
           _b.addScaledVector(mo.off, k);
         }
         const sp = p.vel.length();
-        const len = Math.min(look.len, p.age * sp + 0.25);
-        _d.copy(p.vel).divideScalar(sp);
-        _q.setFromUnitVectors(Z, _d);
-        _m.compose(_b, _q, _s.set(look.width, look.width, len));
+        const wX = p.weapon === 'crossbow' && p.radius ? Math.max(look.width, p.radius * 2) : look.width;
+        const wY = p.weapon === 'crossbow' ? Math.max(look.width, wX * 0.24) : look.width;
+        const len = p.weapon === 'crossbow' ? Math.max(0.65, wX * 0.65) : Math.min(look.len, p.age * sp + 0.25);
+        _d.copy(p.vel).divideScalar(sp || 1);
+        if (p.weapon === 'crossbow') {
+          // Align particle orientation horizontally relative to the shooter's frame/up
+          _shooterUp.copy(p.down).negate().normalize();
+          _right.crossVectors(_shooterUp, _d);
+          if (_right.lengthSq() < 1e-4) {
+            _right.crossVectors(Math.abs(_d.x) < 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 0, 1), _d);
+          }
+          _right.normalize();
+          _trueUp.crossVectors(_d, _right).normalize();
+          _basisM.makeBasis(_right, _trueUp, _d);
+          _q.setFromRotationMatrix(_basisM);
+        } else {
+          _q.setFromUnitVectors(Z, _d);
+        }
+        let coreCol = look.core;
+        let glowCol = look.glow;
+        if (p.weapon === 'crossbow' && p.team && (p.team === 'red' || p.team === 'blue' || p.team === 'green' || p.team === 'yellow')) {
+          const tc = new Color(getTeam(p.team as TeamId).color);
+          coreCol = tc.clone().multiplyScalar(5.5).addScalar(1.4);
+          glowCol = tc.clone().multiplyScalar(3.2);
+        }
+        _m.compose(_b, _q, _s.set(wX, wY, len));
         this.cores.setMatrixAt(n, _m);
-        this.cores.setColorAt(n, look.core);
-        _m.compose(_b, _q, _s.set(look.width * 4, look.width * 4, len * 1.15));
+        this.cores.setColorAt(n, coreCol);
+        _m.compose(_b, _q, _s.set(wX * (p.weapon === 'crossbow' ? 1.45 : 4), wY * 3.2, len * 1.15));
         this.glows.setMatrixAt(n, _m);
-        this.glows.setColorAt(n, look.glow);
+        this.glows.setColorAt(n, glowCol);
         _b.toArray(this.headPos, n * 3);
-        look.glow.toArray(this.headCol, n * 3);
-        if (Math.random() < dt * 30) {
-          _v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.2).addScaledVector(_d, sp * 0.03);
-          this.spark(_b.clone().addScaledVector(_d, -Math.random() * len), _v, look.glow, 0.18);
+        glowCol.toArray(this.headCol, n * 3);
+        if (Math.random() < dt * (p.weapon === 'crossbow' ? 55 : 30)) {
+          _v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.2 + wX).addScaledVector(_d, sp * 0.03);
+          this.spark(_b.clone().addScaledVector(_d, -Math.random() * len), _v, glowCol, 0.18);
         }
         n++;
       } else if (p.weapon === 'rocket') {
@@ -405,8 +496,10 @@ export class Fx {
           _v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.5);
           this.puff(last, _v, 0.6 + Math.random() * 0.3, 1.2 + Math.random() * 0.4, _c.setRGB(0.7, 0.68, 0.66), 0.6);
         }
-        this.spark(_b.copy(p.pos).addScaledVector(_d, -0.45), _v.copy(_d).multiplyScalar(-4).add(_s.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5)),
-          new Color(5, 2.4, 0.7), 0.25);
+        for (let k = 0; k < 2; k++) {
+          this.spark(_b.copy(p.pos).addScaledVector(_d, -0.45), _v.copy(_d).multiplyScalar(-5).add(_s.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.6)),
+            new Color(6, 2.8, 0.8), 0.3);
+        }
       } else {
         let g = this.grenades.get(p.id);
         if (!g) {
@@ -446,21 +539,25 @@ export class Fx {
     for (const b of this.blasts) {
       if (!b.alive) continue;
       b.t += dt;
-      const k = b.t / 0.45;
+      const k = b.t / 0.55;
       if (k >= 1) {
         b.alive = false;
-        b.mesh.visible = b.ring.visible = false;
+        b.mesh.visible = b.core.visible = b.ring.visible = b.wave.visible = false;
         continue;
       }
       const e = 1 - (1 - k) ** 3;
-      b.mesh.scale.setScalar(b.radius * (0.25 + 0.55 * e));
-      (b.mesh.material as MeshBasicMaterial).opacity = (1 - k) ** 1.5;
-      b.ring.scale.setScalar(b.radius * (0.4 + 0.8 * e));
-      (b.ring.material as MeshBasicMaterial).opacity = 0.35 * (1 - k);
+      b.mesh.scale.setScalar(b.radius * (0.3 + 0.65 * e));
+      (b.mesh.material as MeshBasicMaterial).opacity = (1 - k) ** 1.4;
+      b.core.scale.setScalar(b.radius * (0.18 + 0.38 * e));
+      (b.core.material as MeshBasicMaterial).opacity = Math.max(0, 1 - k * 1.6);
+      b.ring.scale.setScalar(b.radius * (0.45 + 0.9 * e));
+      (b.ring.material as MeshBasicMaterial).opacity = 0.4 * (1 - k);
+      b.wave.scale.setScalar(b.radius * (0.25 + 1.15 * e));
+      (b.wave.material as MeshBasicMaterial).opacity = 0.75 * (1 - k) ** 1.6;
     }
     for (const l of this.lights) {
       l.t += dt;
-      l.light.intensity = l.t < 0.5 ? 260 * (1 - l.t / 0.5) ** 2 : 0;
+      l.light.intensity = l.t < 0.6 ? 340 * (1 - l.t / 0.6) ** 2 : 0;
     }
 
     // sparks

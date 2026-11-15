@@ -8,7 +8,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { DecorDef, HouseDef, MapData, MatKind } from '../../shared/map';
 import { Rng } from '../../shared/math';
 import {
-  glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture, windowTexture, woodTexture,
+  crateTexture, glassFacadeTexture, groundTextures, houseFacadeTextures, officeFacadeTexture, roofTexture, windowTexture, woodTexture,
 } from './textures';
 import { crystalCluster, CrystalCluster, crystalGeometry, crystalMaterials } from './crystal';
 import { withRooms } from './rooms';
@@ -202,6 +202,8 @@ export interface MapView {
   cull(eye: Vector3, far: number): void;
   /** Show / hide a team's bed crystal. */
   setBedAlive(team: string, alive: boolean): void;
+  /** Update a team crystal's stage (1 or 2) and 10s invulnerability countdown. */
+  setBedStage(team: string, stage: 1 | 2, invulnT: number): void;
   /** Move crate / barrel `i` (map.crates index) to where its physics body is; `shown` false hides it (fell off). */
   setCrate(i: number, pos: Vector3, quat: Quaternion, shown: boolean): void;
 }
@@ -274,13 +276,43 @@ export function buildMapView(map: MapData): MapView {
       if (!byRegion.has(k)) byRegion.set(k, []);
       byRegion.get(k)!.push(c);
     }
-    const barrelGeo = new CylinderGeometry(1, 1, 1, 12);
-    const barrelMat = new MeshStandardMaterial({ roughness: 0.5, metalness: 0.4 });
+    const barrelParts: BufferGeometry[] = [
+      new CylinderGeometry(0.96, 0.96, 1, 14),
+      new CylinderGeometry(1.03, 1.03, 0.08, 14).translate(0, 0.44, 0),
+      new CylinderGeometry(1.03, 1.03, 0.08, 14).translate(0, -0.44, 0),
+      new CylinderGeometry(1.02, 1.02, 0.06, 14).translate(0, 0.16, 0),
+      new CylinderGeometry(1.02, 1.02, 0.06, 14).translate(0, -0.16, 0),
+    ];
+    const barrelGeo = mergeGeometries(barrelParts);
+    const barrelMat = new MeshStandardMaterial({ roughness: 0.45, metalness: 0.45 });
+
+    // Detailed 3D crate geometry: recessed core + 12 perimeter frame bars + 6 diagonal braces + 8 corner blocks
+    const crateParts: BufferGeometry[] = [new BoxGeometry(0.88, 0.88, 0.88)];
+    const barT = 0.12;
+    const edgeOff = 0.5 - barT / 2;
+    for (const s1 of [-1, 1]) {
+      for (const s2 of [-1, 1]) {
+        crateParts.push(new BoxGeometry(1, barT, barT).translate(0, s1 * edgeOff, s2 * edgeOff));
+        crateParts.push(new BoxGeometry(barT, 1, barT).translate(s1 * edgeOff, 0, s2 * edgeOff));
+        crateParts.push(new BoxGeometry(barT, barT, 1).translate(s1 * edgeOff, s2 * edgeOff, 0));
+        for (const s3 of [-1, 1]) {
+          crateParts.push(new BoxGeometry(0.16, 0.16, 0.16).translate(s1 * 0.43, s2 * 0.43, s3 * 0.43));
+        }
+      }
+    }
+    for (const s of [-1, 1]) {
+      crateParts.push(new BoxGeometry(0.95, 0.09, 0.07).rotateZ(Math.PI / 4).translate(0, 0, s * 0.46));
+      crateParts.push(new BoxGeometry(0.07, 0.09, 0.95).rotateX(Math.PI / 4).translate(s * 0.46, 0, 0));
+      crateParts.push(new BoxGeometry(0.95, 0.07, 0.09).rotateY(Math.PI / 4).translate(0, s * 0.46, 0));
+    }
+    const crateGeo = mergeGeometries(crateParts);
+    const crateMat = new MeshStandardMaterial({ map: trackTexture(crateTexture()), roughness: 0.78 });
+
     for (const [k, list] of byRegion) {
       for (const kind of ['crate', 'barrel'] as const) {
         const items = list.filter((c) => c.kind === kind);
         if (!items.length) continue;
-        const im = new InstancedMesh(kind === 'crate' ? unit : barrelGeo, kind === 'crate' ? mats.wood : barrelMat, items.length);
+        const im = new InstancedMesh(kind === 'crate' ? crateGeo : barrelGeo, kind === 'crate' ? crateMat : barrelMat, items.length);
         items.forEach((c, i) => {
           sc.set(c.half[0] * 2, c.half[1] * 2, c.half[2] * 2).multiplyScalar(kind === 'crate' ? 1 : 0.5).setY(c.half[1] * 2);
           m4.compose(p.set(...c.pos), q.set(...c.quat), sc);
@@ -371,63 +403,84 @@ export function buildMapView(map: MapData): MapView {
     region(b.pos, Math.max(hx, hy, hz)).group.add(shadowy(mesh));
   }
 
-  // --- trees and bushes, batched per region: round crowns of blobs, pines of stacked cones, slim poplars
-  const trunkGeo = new CylinderGeometry(0.11, 0.17, 1, 6).translate(0, 0.5, 0);
-  const trunkMat = new MeshStandardMaterial({ color: 0x6b4f37, roughness: 1, flatShading: true });
+  // --- trees and bushes, batched per region: 2.5x larger, with flared trunks, angled branches, and rich multi-layered foliage
+  const trunkGeo = new CylinderGeometry(0.10, 0.20, 1, 8).translate(0, 0.5, 0);
+  const trunkMat = new MeshStandardMaterial({ color: 0x5c4028, roughness: 0.95, flatShading: true });
   const blobGeo = canopyGeometry();
   const coneGeo = pineGeometry();
-  const leafMat = new MeshStandardMaterial({ roughness: 0.95, flatShading: true, vertexColors: true });
+  const leafMat = new MeshStandardMaterial({ roughness: 0.9, flatShading: true, vertexColors: true });
   type Leaf = { pos: Vector3; r: number; sy: number; color: number };
   const forest = new Map<string, { trunks: Matrix4[]; blobs: Leaf[]; cones: Leaf[] }>();
   const trng = new Rng(77);
   const Y = new Vector3(0, 1, 0);
-  const greens = [0x4f7f35, 0x5e8d3b, 0x6d9a41, 0x47722f, 0x7aa34a];
-  const pines = [0x2f5d36, 0x37683c, 0x2b5531];
-  const poplars = [0x5a8a36, 0x66963c];
+  const greens = [0x3d6e29, 0x4f7f35, 0x5e8d3b, 0x6d9a41, 0x47722f, 0x7aa34a, 0x86b050];
+  const pines = [0x244b2a, 0x2f5d36, 0x37683c, 0x2b5531, 0x3f7344];
+  const poplars = [0x518030, 0x5a8a36, 0x66963c, 0x74a444];
   /** Each crown part keeps its tree's up (its frame turns only about it, so the shaded side stays down). */
   const upOf = new Map<Leaf, Quaternion>();
   const addLeaf = (list: Leaf[], leaf: Leaf) => { list.push(leaf); upOf.set(leaf, q.clone()); };
+  const branchQ = new Quaternion();
+  const tiltQ = new Quaternion();
   for (const t of map.trees) {
-    region(t.pos, 5 * t.scale);
+    region(t.pos, 12.5 * t.scale);
     const k = keyOf(t.pos);
     if (!forest.has(k)) forest.set(k, { trunks: [], blobs: [], cones: [] });
     const f = forest.get(k)!;
     const up = new Vector3(...t.up);
     q.setFromUnitVectors(Y, up);
     const base = new Vector3(...t.pos);
-    const S = t.scale;
     if (t.kind === 'bush') {
-      const c = base.clone().addScaledVector(up, 0.38 * S);
-      for (let k2 = 0; k2 < 3; k2++) {
-        const off = new Vector3(trng.range(-0.6, 0.6), 0, trng.range(-0.6, 0.6)).applyQuaternion(q).multiplyScalar(S);
-        addLeaf(f.blobs, { pos: c.clone().add(off), r: trng.range(0.5, 0.75) * S, sy: 0.75, color: trng.pick(greens) });
+      const S = t.scale * 1.6;
+      const c = base.clone().addScaledVector(up, 0.42 * S);
+      for (let k2 = 0; k2 < 5; k2++) {
+        const off = new Vector3(trng.range(-0.65, 0.65), trng.range(-0.1, 0.25), trng.range(-0.65, 0.65)).applyQuaternion(q).multiplyScalar(S);
+        addLeaf(f.blobs, { pos: c.clone().add(off), r: trng.range(0.5, 0.8) * S, sy: 0.78, color: trng.pick(greens) });
       }
       continue;
     }
+    // Trees are 2.5x larger with rich branching and multi-tiered crowns
+    const S = t.scale * 2.5;
     const species = treeSpecies(t.pos);
     if (species === 'pine') {
-      const th = 1.1 * S;
-      f.trunks.push(new Matrix4().compose(base, q, sc.set(S, th + 1, S)));
-      const tiers = [[1.55, 1.7], [1.2, 1.5], [0.8, 1.3]];
-      let y = th;
+      const th = 1.25 * S;
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 0.95, th + 1.4 * S, S * 0.95)));
+      // Flared root collar
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 1.35, 0.35 * S, S * 1.35)));
+      const tiers = [[1.65, 1.55], [1.4, 1.45], [1.15, 1.35], [0.88, 1.2], [0.58, 1.05]];
+      let y = th * 0.78;
       for (const [r, h] of tiers) {
         addLeaf(f.cones, { pos: base.clone().addScaledVector(up, y), r: r * S, sy: h * S, color: trng.pick(pines) });
-        y += h * S * 0.55;
+        y += h * S * 0.48;
       }
     } else if (species === 'poplar') {
-      const th = 1.5 * S;
-      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 0.8, th, S * 0.8)));
-      const c = base.clone().addScaledVector(up, th + 1.5 * S);
-      addLeaf(f.blobs, { pos: c, r: 0.85 * S, sy: 2.1, color: trng.pick(poplars) });
-      addLeaf(f.blobs, { pos: c.clone().addScaledVector(up, 1.1 * S), r: 0.6 * S, sy: 1.8, color: trng.pick(poplars) });
+      const th = 1.55 * S;
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 0.85, th + 0.8 * S, S * 0.85)));
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 1.2, 0.32 * S, S * 1.2)));
+      const c = base.clone().addScaledVector(up, th + 1.15 * S);
+      addLeaf(f.blobs, { pos: c, r: 0.92 * S, sy: 1.85, color: trng.pick(poplars) });
+      addLeaf(f.blobs, { pos: c.clone().addScaledVector(up, 0.95 * S), r: 0.78 * S, sy: 1.75, color: trng.pick(poplars) });
+      addLeaf(f.blobs, { pos: c.clone().addScaledVector(up, 1.8 * S), r: 0.56 * S, sy: 1.55, color: trng.pick(poplars) });
     } else {
-      const th = 1.9 * S;
-      f.trunks.push(new Matrix4().compose(base, q, sc.set(S, th, S)));
-      const c = base.clone().addScaledVector(up, th + 0.9 * S);
-      addLeaf(f.blobs, { pos: c, r: 1.45 * S, sy: 0.9, color: trng.pick(greens) });
-      for (let k2 = 0; k2 < 3; k2++) {
-        const off = new Vector3(trng.range(-1, 1), trng.range(-0.4, 0.6), trng.range(-1, 1)).applyQuaternion(q).multiplyScalar(0.8 * S);
-        addLeaf(f.blobs, { pos: c.clone().add(off), r: trng.range(0.8, 1.1) * S, sy: 0.9, color: trng.pick(greens) });
+      const th = 1.85 * S;
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 1.05, th, S * 1.05)));
+      f.trunks.push(new Matrix4().compose(base, q, sc.set(S * 1.45, 0.38 * S, S * 1.45)));
+      const forkBase = base.clone().addScaledVector(up, th * 0.78);
+      const c = base.clone().addScaledVector(up, th + 0.95 * S);
+      addLeaf(f.blobs, { pos: c, r: 1.45 * S, sy: 0.88, color: trng.pick(greens) });
+      // Three main boughs reaching out into surrounding foliage clusters
+      for (let bIdx = 0; bIdx < 3; bIdx++) {
+        const ang = (bIdx / 3) * Math.PI * 2 + trng.range(-0.35, 0.35);
+        const dirLocal = new Vector3(Math.cos(ang), 0, Math.sin(ang));
+        const axisLocal = new Vector3(-Math.sin(ang), 0, Math.cos(ang));
+        tiltQ.setFromAxisAngle(axisLocal, 0.58);
+        branchQ.copy(q).multiply(tiltQ);
+        f.trunks.push(new Matrix4().compose(forkBase, branchQ, sc.set(S * 0.52, 1.05 * S, S * 0.52)));
+        const boughTip = c.clone().add(dirLocal.clone().applyQuaternion(q).multiplyScalar(0.95 * S)).addScaledVector(up, trng.range(-0.2, 0.25) * S);
+        addLeaf(f.blobs, { pos: boughTip, r: trng.range(0.95, 1.2) * S, sy: 0.85, color: trng.pick(greens) });
+      }
+      for (let k2 = 0; k2 < 4; k2++) {
+        const off = new Vector3(trng.range(-1, 1), trng.range(-0.2, 0.75), trng.range(-1, 1)).applyQuaternion(q).multiplyScalar(0.82 * S);
+        addLeaf(f.blobs, { pos: c.clone().add(off), r: trng.range(0.78, 1.08) * S, sy: 0.86, color: trng.pick(greens) });
       }
     }
   }
@@ -487,6 +540,7 @@ export function buildMapView(map: MapData): MapView {
   // --- bed crystals (no collider; hidden when the bed is broken) + small floating markers above them
   const spinners: { mesh: Object3D; up: Vector3; base: Vector3; phase: number }[] = [];
   const clusters: CrystalCluster[] = [];
+  const clusterByTeam = new Map<string, CrystalCluster>();
   const beds = new Map<string, Object3D[]>();
   map.statues.forEach((s, i) => {
     const up = new Vector3(...s.up);
@@ -495,6 +549,7 @@ export function buildMapView(map: MapData): MapView {
     cluster.group.position.set(...s.bed);
     group.add(cluster.group);
     clusters.push(cluster);
+    clusterByTeam.set(s.team, cluster);
     const mark = new Mesh(crystalGeometry(0.32, 1.1, new Rng(i + 5)), crystalMaterials(s.color).core);
     beds.set(s.team, [cluster.group, mark]);
     mark.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), up);
@@ -509,6 +564,9 @@ export function buildMapView(map: MapData): MapView {
     group,
     setBedAlive(team, alive) {
       for (const o of beds.get(team) ?? []) o.visible = alive;
+    },
+    setBedStage(team, stage, invulnT) {
+      clusterByTeam.get(team)?.setStage(stage, invulnT);
     },
     setCrate(i, pos, quat, shown) {
       const c = crateSlots[i];
