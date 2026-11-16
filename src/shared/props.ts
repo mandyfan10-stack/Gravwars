@@ -1,5 +1,6 @@
 import { Quaternion, Vector3 } from 'three';
 import { DEFAULT_MOVEMENT } from './constants';
+import { MATCH_RULES } from './lobby';
 import type { CrateDef, MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 
@@ -34,8 +35,11 @@ export function createCrateBody(R: Rapier, world: PhysicsWorld, c: CrateDef): Bo
 export class Props {
   readonly bodies: Body[];
   private readonly index = new Map<number, number>();
+  private readonly bodyIndex = new Map<number, number>();
   /** Fallen out of the cube: seconds until it comes back to its spot. */
   private readonly away = new Map<number, number>();
+  /** Indices of crates woken since the last step or currently active in simulation. */
+  private awakeSet = new Set<number>();
   /** Crates that moved since the renderer last looked (it clears the set). */
   readonly moved = new Set<number>();
   /** Crates changed since the last network snapshot broadcast. */
@@ -49,9 +53,13 @@ export class Props {
 
   constructor(private world: PhysicsWorld, private map: MapData) {
     this.bodies = crateBodies.get(world) ?? [];
-    this.bodies.forEach((b, i) => this.index.set(b.collider(0).handle, i));
+    this.bodies.forEach((b, i) => {
+      this.index.set(b.collider(0).handle, i);
+      this.bodyIndex.set(b.handle, i);
+      if (!b.isSleeping()) this.awakeSet.add(i);
+    });
     this.mass = map.crates.map(crateMass);
-    this.maxHp = map.crates.map((c) => (c.kind === 'barrel' ? 80 : 30));
+    this.maxHp = map.crates.map((c) => Math.max(5, Math.round((c.kind === 'barrel' ? 80 : 30) * MATCH_RULES.crateHp)));
     this.hp = [...this.maxHp];
   }
 
@@ -77,6 +85,7 @@ export class Props {
     const j = { x: dv.x * m, y: dv.y * m, z: dv.z * m };
     if (at) b.applyImpulseAtPoint(j, { x: at.x, y: at.y, z: at.z }, true);
     else b.applyImpulse(j, true);
+    this.awakeSet.add(i);
     this.moved.add(i);
     this.netDirty.add(i);
   }
@@ -112,6 +121,7 @@ export class Props {
     b.setTranslation({ x: 0, y: -4000 - i * 3, z: 0 }, true);
     for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(false);
     b.setEnabled(false);
+    this.awakeSet.delete(i);
     this.away.set(i, RETURN_AFTER);
     this.moved.add(i);
     this.netDirty.add(i);
@@ -139,15 +149,13 @@ export class Props {
 
   /** Physics for moving crates; a crate that fell out of the cube waits, then is put back on its spot. */
   tick(dt: number) {
-    let awake = false;
-    const lim = this.map.cube.half + this.map.voidMargin;
-    for (let i = 0; i < this.bodies.length; i++) {
-      const b = this.bodies[i];
-      const left = this.away.get(i);
-      if (left !== undefined) {
+    let forceStep = false;
+    if (this.away.size > 0) {
+      for (const [i, left] of [...this.away]) {
         if (left - dt > 0) { this.away.set(i, left - dt); continue; }
         this.away.delete(i);
         this.hp[i] = this.maxHp[i];
+        const b = this.bodies[i];
         const c = this.map.crates[i];
         b.setTranslation({ x: c.pos[0], y: c.pos[1], z: c.pos[2] }, false);
         b.setRotation({ x: c.quat[0], y: c.quat[1], z: c.quat[2], w: c.quat[3] }, false);
@@ -158,36 +166,54 @@ export class Props {
         b.sleep();
         this.moved.add(i);
         this.netDirty.add(i);
-        awake = true;
-        continue;
+        forceStep = true;
       }
+    }
+
+    if (this.awakeSet.size === 0 && !forceStep) return;
+
+    const limX = this.map.cube.half + this.map.voidMargin;
+    const limY = (this.map.cube.halfY ?? this.map.cube.half) + this.map.voidMargin;
+    for (const i of this.awakeSet) {
+      if (this.away.has(i)) continue;
+      const b = this.bodies[i];
       if (b.isSleeping()) continue;
-      awake = true;
       this.moved.add(i);
       this.netDirty.add(i);
       const t = b.translation();
-      if (Math.max(Math.abs(t.x), Math.abs(t.y), Math.abs(t.z)) > lim) {
+      if (Math.abs(t.x) > limX || Math.abs(t.z) > limX || Math.abs(t.y) > limY) {
         for (let k = 0; k < b.numColliders(); k++) b.collider(k).setEnabled(false);
         b.setEnabled(false);
         this.away.set(i, RETURN_AFTER);
         this.netDirty.add(i);
       }
     }
-    if (awake) {
-      this.world.timestep = dt;
-      this.world.step();
-      for (let i = 0; i < this.bodies.length; i++) {
-        if (this.away.has(i)) continue;
-        const b = this.bodies[i];
-        if (b.isSleeping()) continue;
-        const lv = b.linvel(), av = b.angvel();
-        if (lv.x * lv.x + lv.y * lv.y + lv.z * lv.z < 0.02 && av.x * av.x + av.y * av.y + av.z * av.z < 0.04) {
-          b.setLinvel({ x: 0, y: 0, z: 0 }, false);
-          b.setAngvel({ x: 0, y: 0, z: 0 }, false);
-          b.sleep();
-        }
+
+    this.world.timestep = dt;
+    this.world.step();
+
+    const candidates = new Set<number>(this.awakeSet);
+    this.world.forEachActiveRigidBody((b) => {
+      const i = this.bodyIndex.get(b.handle);
+      if (i !== undefined) candidates.add(i);
+    });
+    const nextAwake = new Set<number>();
+    for (const i of candidates) {
+      if (this.away.has(i)) continue;
+      const b = this.bodies[i];
+      if (b.isSleeping()) continue;
+      this.moved.add(i);
+      this.netDirty.add(i);
+      const lv = b.linvel(), av = b.angvel();
+      if (lv.x * lv.x + lv.y * lv.y + lv.z * lv.z < 0.02 && av.x * av.x + av.y * av.y + av.z * av.z < 0.04) {
+        b.setLinvel({ x: 0, y: 0, z: 0 }, false);
+        b.setAngvel({ x: 0, y: 0, z: 0 }, false);
+        b.sleep();
+      } else {
+        nextAwake.add(i);
       }
     }
+    this.awakeSet = nextAwake;
   }
 
   /** Is this crate in play (not lost in the void)? */
@@ -214,7 +240,7 @@ export class Props {
     };
     for (const i of this.netDirty) addIdx(i);
     this.netDirty.clear();
-    for (let i = 0; i < this.bodies.length; i++) {
+    for (const i of this.awakeSet) {
       if (!this.away.has(i) && !this.bodies[i].isSleeping()) addIdx(i);
     }
     return out;
@@ -226,6 +252,7 @@ export class Props {
       if (s.idx < 0 || s.idx >= this.bodies.length) continue;
       const b = this.bodies[s.idx];
       this.hp[s.idx] = s.hp;
+      this.awakeSet.delete(s.idx);
       if (!s.present) {
         this.away.set(s.idx, RETURN_AFTER);
         b.setLinvel({ x: 0, y: 0, z: 0 }, false);
@@ -248,7 +275,7 @@ export class Props {
 
   /** For the renderer: does any crate still move? */
   get active() {
-    return this.bodies.some((b, i) => !this.away.has(i) && !b.isSleeping());
+    return this.awakeSet.size > 0;
   }
 
   /** Not used by the game: lets tests find a crate near a point. */

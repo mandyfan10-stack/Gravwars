@@ -1,5 +1,5 @@
 import type { Target } from '../shared/combat';
-import { BED_HP, type Match } from '../shared/match';
+import { maxCrystalHp, type Match } from '../shared/match';
 import { TEAMS, TeamId } from '../shared/teams';
 import { teamHex } from './hud';
 
@@ -18,7 +18,7 @@ export class MatchStats {
   deaths = 0;
   crystals = 0;
   earned = 0;
-  readonly teamKills: Record<TeamId, number> = { red: 0, blue: 0, green: 0, yellow: 0 };
+  readonly teamKills: Record<TeamId, number> = { red: 0, blue: 0, green: 0, yellow: 0, purple: 0 };
   private lastCash = 0;
 
   constructor(private match: Match, private playerId = 0) {}
@@ -49,7 +49,7 @@ export class MatchStats {
       const b = m.bed(t.id);
       const bed = !b.alive ? 'разрушен'
         : b.invulnT > 0 ? `неуязвим (${Math.ceil(b.invulnT)} с)`
-        : `ст. ${b.stage === 1 ? 'I' : 'II'}${b.hp < BED_HP ? ` (${Math.ceil((b.hp / BED_HP) * 100)}%)` : ''}`;
+        : `ст. ${b.stage === 1 ? 'I' : 'II'}${b.hp < maxCrystalHp() ? ` (${Math.ceil((b.hp / maxCrystalHp()) * 100)}%)` : ''}`;
       return `<tr class="${mine ? 'mine' : ''}${out ? ' out' : ''}" style="--c:${teamHex(t.color)}">`
         + `<td class="team"><i></i>${t.name}${mine ? '<small>ты</small>' : ''}</td>`
         + `<td>${out ? 'выбыли' : bed}</td><td>${alive}</td><td>${this.teamKills[t.id]}</td></tr>`;

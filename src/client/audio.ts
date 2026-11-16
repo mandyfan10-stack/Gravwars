@@ -93,6 +93,53 @@ export class GameAudio {
       this.click(.12, 1700, .52);
     }
   }
+  /** Heavy magnum revolver shot: punchy blast + cylinder ring. */
+  revolver(dist = 0) {
+    const near = 1 / (1 + dist / 18);
+    const delay = dist / 343;
+    const dull = Math.max(0.15, 1 - dist / 120);
+    if (dist < 60) this.noise(.035, .22 * near, 8200 * dull, 2800 * dull, delay, 'highpass');
+    this.noise(.16, .28 * near, 2600 * dull, 180, delay);
+    this.tone('sine', 120, 32, .2, .26 * near, delay);
+    this.click(.14 * near, 2800, delay + .02);
+    this.noise(.65, .07 * Math.sqrt(near), 1100 * dull, 100, delay + .03);
+  }
+  /** Stylish revolver cylinder spin: quick metallic ratchet clicks. */
+  revolverSpin(dist = 0) {
+    const near = 1 / (1 + dist / 10);
+    if (near < 0.08) return;
+    for (let i = 0; i < 6; i++) this.click(.065 * near, 2400 + i * 180, i * 0.055);
+    this.noise(.28, .045 * near, 1200, 3200, 0, 'bandpass', 1.8);
+  }
+  /** Active reload success click: crisp bolt snap audible to everyone nearby. */
+  activeReloadClick(dist = 0) {
+    const near = 1 / (1 + dist / 16);
+    if (near < 0.05) return;
+    this.click(.18 * near, 2900, 0);
+    this.tone('triangle', 1400, 920, .06, .09 * near, .01);
+    this.click(.15 * near, 2100, .055);
+  }
+  /** Single shotgun shell slid into the magazine tube. */
+  shellInsert() {
+    this.noise(.05, .07, 2500, 950, 0, 'bandpass', 2);
+    this.click(.085, 1650, .03);
+  }
+  /** Armor vest absorbs a fatal blow and shatters. */
+  armorBreak(dist = 0) {
+    const near = 1 / (1 + dist / 14);
+    if (near < 0.05) return;
+    this.noise(.24, .22 * near, 3400, 500, 0, 'bandpass', 1.2);
+    this.tone('sawtooth', 320, 90, .28, .16 * near);
+    this.tone('sine', 880, 1320, .22, .12 * near, .04);
+    this.click(.16 * near, 2400, .02);
+  }
+  /** Door or hatch toggled open/closed. */
+  door(open: boolean, dist = 0) {
+    const near = 1 / (1 + dist / 12);
+    if (near < 0.06) return;
+    this.click(.09 * near, open ? 1800 : 1300, 0);
+    this.tone('triangle', open ? 220 : 320, open ? 360 : 180, .14, .06 * near, .02);
+  }
   /** Rocket launch: a hard pop, then the motor's hiss going away. */
   rocket(dist = 0) {
     const near = 1 / (1 + dist / 18);
@@ -277,7 +324,7 @@ export class GameAudio {
    * A continuous noise layer at `level` 0..1 (0 = silent): 'wind' while running fast / falling, 'scrape' while
    * sliding down a wall. Created on first use, then only its gain and filter move.
    */
-  loop(name: 'wind' | 'scrape', level: number) {
+  loop(name: 'wind' | 'scrape' | 'jetpack', level: number) {
     const c = this.ctx; if (!c || c.state !== 'running') return;
     let l = this.loops.get(name);
     if (!l) {
@@ -285,16 +332,23 @@ export class GameAudio {
       this.ensureNoiseBuf(c);
       const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
       src.buffer = this.noiseBuf; src.loop = true;
-      f.type = name === 'wind' ? 'bandpass' : 'highpass'; f.Q.value = name === 'wind' ? 0.6 : 0.8;
-      f.frequency.value = name === 'wind' ? 600 : 1800;
+      f.type = name === 'scrape' ? 'highpass' : 'bandpass';
+      f.Q.value = name === 'wind' ? 0.6 : name === 'jetpack' ? 0.9 : 0.8;
+      f.frequency.value = name === 'wind' ? 600 : name === 'jetpack' ? 420 : 1800;
       g.gain.value = 0;
       src.connect(f).connect(g).connect(c.destination); src.start();
       l = { g, f };
       this.loops.set(name, l);
     }
     const t = c.currentTime, v = Math.max(0, Math.min(1, level));
-    l.g.gain.setTargetAtTime(v * (name === 'wind' ? 0.09 : 0.015) * this.volume, t, 0.08);
+    const gainMul = name === 'wind' ? 0.09 : name === 'jetpack' ? 0.14 : 0.015;
+    l.g.gain.setTargetAtTime(v * gainMul * this.volume, t, 0.08);
     if (name === 'wind') l.f.frequency.setTargetAtTime(450 + v * 1400, t, 0.1);
+    else if (name === 'jetpack') {
+      l.f.type = 'bandpass';
+      l.f.Q.value = 0.9;
+      l.f.frequency.setTargetAtTime(360 + v * 950, t, 0.06);
+    }
   }
   explosion() {
     this.noise(.75, .28, 2200, 80);

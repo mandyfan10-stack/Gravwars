@@ -18,16 +18,16 @@ const $ = (id: string) => document.getElementById(id)!;
 const _dir = new Vector3();
 
 export const HOLD_ICON: Record<Holdable, IconName> = {
-  pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook', rod: 'rod',
+  pistol: 'pistol', revolver: 'revolver', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook', rod: 'rod',
   apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
 };
 export const HOLD_NAME: Record<Holdable, string> = {
-  pistol: 'Пистолет', shotgun: 'Дробовик', rifle: 'Автомат', crossbow: 'Арбалет', rocket: 'Ракетница', grenade: 'Гранаты', build: 'Строительство',
+  pistol: 'Пистолет', revolver: 'Револьвер', shotgun: 'Дробовик', rifle: 'Автомат', crossbow: 'Арбалет', rocket: 'Ракетница', grenade: 'Гранаты', build: 'Строительство',
   hook: 'Крюк-кошка', rod: 'Удочка', apple: ITEMS.apple.name, bottle: ITEMS.bottle.name, fish: ITEMS.fish.name, medkit: ITEMS.medkit.name,
 };
 /** What the buttons do with it in hand (weapon panel). */
 export const HOLD_USE: Record<Holdable, string> = {
-  pistol: 'ЛКМ — огонь · R — перезарядка', shotgun: 'ЛКМ — выстрел дробью · R — перезарядка', rifle: 'ЛКМ — огонь · R — перезарядка',
+  pistol: 'ЛКМ — огонь · R — перезарядка', revolver: 'Зажать ЛКМ — выстрел · ПКМ — прокрутить · R — перезарядка', shotgun: 'ЛКМ — выстрел дробью · R — перезарядка', rifle: 'ЛКМ — огонь · R — перезарядка',
   crossbow: 'Зажать ЛКМ — заряд (до 3 ур.), отпустить — выстрел · ПКМ — зум',
   rocket: `ЛКМ — ракета: взрыв ${WEAPONS.rocket.radius} м · R — перезарядка`, grenade: 'ЛКМ — бросить гранату',
   hook: `ЛКМ — зацепиться (до ${HOOK.range} м) и подтянуться · ЛКМ или пробел — отпустить`,
@@ -175,9 +175,11 @@ export class Hands {
     if (this.pockets.consume(id)) this.useT = 0.5;
   }
 
+  onToggleInventory?: (open: boolean) => void;
+
   toggleInventory() {
-    // Inventory window removed: only 9 hotbar slots exist.
-    this.invOpen = false;
+    this.invOpen = !this.invOpen;
+    this.onToggleInventory?.(this.invOpen);
   }
 
   assign(_n: number) {}
@@ -235,7 +237,6 @@ export class Hands {
     }
     this.viewModel.setTool(this.tool);
     this.renderHotbar();
-    this.invEl.hidden = true;
   }
 
   /** Count shown on a slot (items, grenades, rounds of a gun). */

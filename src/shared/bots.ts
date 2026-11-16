@@ -1,18 +1,19 @@
 import { Quaternion, Vector3 } from 'three';
 import { BlockMaterial, BlockSystem, PiecePlan } from './blocks';
 import { lootValue, Needs, nextBuy, shop } from './botShop';
-import { Combat, MAX_HP, Target } from './combat';
+import { Combat, MAX_HP, NOISE, Target } from './combat';
 import { DEFAULT_MOVEMENT, EYE_OFFSET, PLAYER_HALF_SEGMENT, PLAYER_HEIGHT, PLAYER_RADIUS } from './constants';
 import { Currency, EAT_COOLDOWN, Economy, ITEMS, MAX_MEDKITS, Pickup, Pickups, PICKUPS } from './economy';
 import { FISHING } from './fishing';
+import { MATCH_RULES } from './lobby';
 import { FaceId, FaceNav, HALL_H, LaneDef, MapData, navPath, nearestNode } from './map';
-import { BED_HP, KILL_REWARD, Match } from './match';
+import { BED_HP, killRewardFor, Match, RESPAWN_DELAY, SKIRMISH_WOOD_PER_SEC } from './match';
 import { Rng, upOf } from './math';
 import { emptyInput, MoveInput, moveBasis } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
-import { PlayerSim } from './sim';
+import { JETPACK, PlayerSim } from './sim';
 import { TeamId } from './teams';
-import { crossbowSpec, createWeaponState, hasAmmo, isGun, KICK, kicked, kickReady, refillAmmo, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
+import { consumeJetpackFuel, crossbowSpec, createWeaponState, hasAmmo, isGun, KICK, kicked, kickReady, refillAmmo, reloadAllOwnedWeapons, reloadProgressOf, totalFuelAmmo, WeaponId, WeaponState, weaponTick, WEAPONS } from './weapons';
 
 /** Tuning. Times in seconds, distances in metres. */
 export const BOT = {
@@ -28,7 +29,7 @@ export const BOT = {
   lead: 0.8,
   burst: 5,
   burstPause: 0.6,
-  respawnDelay: 4,
+  respawnDelay: RESPAWN_DELAY,
   /** The first raider may set off this long after the start (once it has its gear); the others follow one by one. */
   firstAttack: 60,
   attackStagger: 25,
@@ -70,7 +71,7 @@ const DIFFICULTY: Record<Difficulty, Partial<typeof BOT>> = {
   normal: {},
   hard: {
     sightRange: 36, reaction: 0.3, spread: 0.02, lead: 1, burst: 6, burstPause: 0.45,
-    firstAttack: 40, attackStagger: 18, reattack: 15, targetPlayerChance: 0.7, respawnDelay: 3,
+    firstAttack: 40, attackStagger: 18, reattack: 15, targetPlayerChance: 0.7, respawnDelay: 7,
     fishSkill: 0.92, mistakes: 0.05, patience: 60, answer: 0.85, healAt: 50, rally: 14, join: 0.45,
   },
 };
@@ -161,8 +162,8 @@ export interface Bot {
   kit: Record<BlockMaterial, number>;
   /** Pockets, tools and the shop: the same rules as the player's. */
   eco: Economy;
-  /** Character: prefers the shotgun, earns with a rod, makes crystal runs. */
-  likes: { shotgun: boolean; fish: boolean; crystals: boolean };
+  /** Character: prefers the shotgun, revolver, earns with a rod, makes crystal runs. */
+  likes: { shotgun: boolean; revolver?: boolean; fish: boolean; crystals: boolean };
   task: Task;
   /** Seconds in the current task; time to the next re-plan; the task is over (plan the next one now). */
   taskT: number;
@@ -249,6 +250,8 @@ export interface Bot {
   lootT: number;
   nadeT: number;
   rocketT: number;
+  /** Skirmish timer for base hall wood regeneration (1 block / s). */
+  woodRegenT: number;
   /** A weapon it means to use for a moment (a grenade throw, rockets at a fort) and for how long. */
   pick: WeaponId | null;
   pickT: number;
@@ -260,6 +263,10 @@ export interface Bot {
   searchT: number;
   /** Spots it gave up on (pickups, ponds, generators): key → until match time. */
   avoid: Map<string, number>;
+  /** Learned failure count per lane / face so the bot avoids dangerous routes it failed on before. */
+  laneFailures: Map<string, number>;
+  /** Whether this bot will hit the active reload green zone on its current reload. */
+  tryActiveReload: boolean;
   /** Totals (tests, debug): money earned (sales, drops, kills) / spent, pieces built, pickups taken, purchases. */
   earned: number;
   spent: number;
@@ -288,7 +295,7 @@ const _v = new Vector3();
 const _l = new Vector3();
 const _fwd = new Vector3();
 const _right = new Vector3();
-const GUNS = ['rifle', 'crossbow', 'shotgun', 'pistol'] as const;
+const GUNS = ['rifle', 'crossbow', 'revolver', 'shotgun', 'pistol', 'rocket'] as const;
 /**
  * Where a raider with a gun stands, m from the crystal axis: the line from its eye to the top of the crystal clears
  * the 3-block fort (top 3 m up, ring out to 2.5 m), and the eye is still within CRYSTAL.range of the axis.
@@ -348,7 +355,7 @@ export class BotManager {
     const prevRevive = match.onReviveAll;
     match.onReviveAll = (crystalTeam) => {
       prevRevive?.(crystalTeam);
-      this.reviveAll();
+      this.reviveAll(crystalTeam);
     };
     match.attach(combat);
     this.survey();
@@ -358,8 +365,9 @@ export class BotManager {
       prevKill(victim, owner);
       const b = this.byId.get(owner);
       if (b && !victim.npc && victim.team !== b.team) {
-        b.wallet.cash += KILL_REWARD;
-        b.earned += KILL_REWARD;
+        const reward = Math.max(1, Math.round(killRewardFor(map.mode) * MATCH_RULES.reward));
+        b.wallet.cash += reward;
+        b.earned += reward;
       }
     };
     let id = 100;
@@ -373,11 +381,13 @@ export class BotManager {
         // the first bot of every team (allies too) stays home, the rest go on the attack
         const role: BotRole = slot === 0 ? 'defend' : 'attack';
         const sim = new PlayerSim(R, world, map, tid);
+        sim.spawnSlot = slot + 1;
         sim.gravity.blocks = () => blocks.blocks.values();
         blocks.characters.push(sim.mover.collider); // building must not trap it (nor measure the ground on it)
         combat.addCharacter(sim.mover.collider);
+        const maxHp = Math.max(10, Math.round(MAX_HP * MATCH_RULES.playerHp));
         const target: Target = {
-          id: id++, team: tid, center: sim.state.pos, up: upOf(sim.state.frame), vel: sim.state.vel, hp: MAX_HP, alive: true, respawnIn: -1, regen: true,
+          id: id++, team: tid, center: sim.state.pos, up: upOf(sim.state.frame), vel: sim.state.vel, hp: maxHp, maxHp, alive: true, respawnIn: -1, regen: true,
           airborne: () => !sim.state.onGround,
           onImpulse: (v) => sim.applyImpulse(v),
         };
@@ -385,16 +395,21 @@ export class BotManager {
         const weapons = createWeaponState();
         const wallet = { cash: 0, crystal: 0 };
         const kit: Record<BlockMaterial, number> = { wood: 0, stone: 0, metal: 0 };
+        const eco = new Economy(wallet, { inventory: kit }, weapons);
+        eco.freeWeapons = map.mode === 'skirmish';
+        eco.onArmorChange = (has) => { target.armor = has; };
+        target.onArmorBreak = () => { eco.breakArmor(); };
         const bot: Bot = {
-          id: target.id, team: tid, role, slot, tune, sim, target, weapons, wallet, kit, eco: new Economy(wallet, { inventory: kit }, weapons),
-          likes: { shotgun: this.rng.chance(0.35), fish: role === 'defend' || this.rng.chance(0.65), crystals: this.rng.chance(0.5) },
+          id: target.id, team: tid, role, slot, tune, sim, target, weapons, wallet, kit, eco,
+          likes: { shotgun: this.rng.chance(0.35), revolver: this.rng.chance(0.45), fish: role === 'defend' || this.rng.chance(0.65), crystals: this.rng.chance(0.55) },
           task: { kind: 'patrol' }, taskT: 0, planT: this.rng.range(0, 0.5), done: true, joined: false, rash: false, impulse: false, answered: 0,
           goal: null, trip: slot, departAt: role === 'attack' ? tune.firstAttack + tune.attackStagger * wave++ : Infinity,
           respawnT: 0, out: false, enemy: null, seenT: 0, scanT: this.rng.range(0, 0.15), calmT: 0, shots: 0, shotsTotal: 0, kicksTotal: 0, pauseT: 0,
           route: null, routeKey: '', routePts: [], strictAt: undefined, wp: 0, detour: null, checkT: 0, progressT: 0, bestDist: Infinity, stuckT: 0,
           jumpT: 0, breach: null, breachT: 0, wedgeT: 0, frozenT: 0, anchor: new Vector3(), nudgeT: 0, nudge: new Vector3(), buildT: 0, blocked: false, strandT: 0, strands: 0, stand: slot, standT: 0, patrol: slot, patrolT: 0,
           rocketFort: false, farT: 0, hesitateT: 0, mistakeT: this.rng.range(8, 20), fishT: 0, fishAt: 0, caught: 0, fishing: false, genWait: 0, eatT: 0, lootT: 0,
-          nadeT: 0, rocketT: 0, pick: null, pickT: 0, hurtBy: -1, hurtT: -99, searchPos: null, searchT: 0, avoid: new Map(), earned: 0, spent: 0, built: 0, builtAt: -99, taken: 0, bought: [],
+          nadeT: 0, rocketT: 0, woodRegenT: 0, pick: null, pickT: 0, hurtBy: -1, hurtT: -99, searchPos: null, searchT: 0, avoid: new Map(), laneFailures: new Map(), tryActiveReload: false,
+          earned: 0, spent: 0, built: 0, builtAt: -99, taken: 0, bought: [],
           prevPos: new Vector3(), status: '',
         };
         target.onHit = (owner) => {
@@ -440,9 +455,10 @@ export class BotManager {
     });
   }
 
-  /** Resurrect all dead or eliminated bots immediately (triggered by Crystal Stage 1 blast). */
-  reviveAll() {
+  /** Resurrect dead or eliminated bots of `crystalTeam` immediately (triggered by Crystal Stage 1 blast). */
+  reviveAll(crystalTeam?: TeamId) {
     for (const bot of this.bots) {
+      if (crystalTeam && bot.team !== crystalTeam) continue;
       if (!bot.target.alive || bot.out) {
         bot.out = false;
         bot.respawnT = 0;
@@ -503,20 +519,28 @@ export class BotManager {
   /** (Re)spawn: gear, money and tools stay with the bot (the pockets were spilled where it died). */
   private placeAtSpawn(bot: Bot) {
     const sim = bot.sim;
+    if (bot.route?.lane) {
+      bot.laneFailures.set(bot.route.lane.id, (bot.laneFailures.get(bot.route.lane.id) ?? 0) + 1);
+    }
     sim.respawn('spawn');
     sim.events.length = 0;
-    // spread team-mates so their capsules do not overlap
-    sim.state.pos.add(_v.set(1.4 * ((bot.slot % 3) + 1), 0, -1.5 * Math.floor(bot.slot / 3)).applyQuaternion(sim.state.frame));
     sim.mover.place(sim.state);
     bot.prevPos.copy(sim.state.pos);
-    bot.target.hp = MAX_HP;
+    const maxHp = Math.max(10, Math.round(MAX_HP * MATCH_RULES.playerHp));
+    bot.target.maxHp = maxHp;
+    bot.target.hp = maxHp;
     bot.target.alive = true;
+    bot.target.armor = bot.eco.has('armor');
     this.combat.guard(bot.target);
-    bot.weapons.reloadT = 0;
+    reloadAllOwnedWeapons(bot.weapons);
     bot.routeKey = '';
     bot.route = null;
     bot.enemy = null;
     bot.trip++;
+    // Dynamic role switching: occasionally swap role after a death to adapt to match flow
+    if (this.match.time > 90 && this.rng.chance(0.22)) {
+      bot.role = bot.role === 'defend' ? 'attack' : 'defend';
+    }
     bot.task = { kind: 'patrol' };
     bot.done = true;
     bot.joined = false;
@@ -572,10 +596,16 @@ export class BotManager {
     return !!h && Math.max(Math.abs(p[0] - h.c[0]), Math.abs(p[1] - h.c[1])) < h.half - 0.3;
   }
 
-  /** The pond whose sunken basin (+ `margin`) contains this face-local point, if any. */
+  /** The pond (or collapsed road pit) whose basin (+ `margin`) contains this face-local point, if any. */
   private wet(face: FaceId, x: number, z: number, margin = 0.5): PondSpot | null {
     for (const p of this.ponds)
       if (p.face === face && Math.abs(x - p.c[0]) < p.h[0] + margin && Math.abs(z - p.c[1]) < p.h[1] + margin) return p;
+    if (this.map.roadHoles) {
+      for (const h of this.map.roadHoles)
+        if (h.face === face && Math.abs(x - h.xz[0]) < h.half[0] + margin && Math.abs(z - h.xz[1]) < h.half[1] + margin) {
+          return { face, c: h.xz, h: h.half, water: _v, stands: [] };
+        }
+    }
     return null;
   }
 
@@ -658,13 +688,9 @@ export class BotManager {
     return this.lanePlans.get(L.id)!.reduce((n, p) => n + (keys.has(p.key) ? 0 : 1), 0);
   }
 
-  /** Holes in the fort around a team's crystal (cached for a moment). */
-  private fortGap(team: TeamId): FortCell[] {
-    const g = this.gaps.get(team);
-    if (g && this.match.time - g.t < 2) return g.cells;
-    const cells = (this.forts.get(team) ?? []).filter((c) => this.blocks.isFree(c.pos));
-    this.gaps.set(team, { t: this.match.time, cells });
-    return cells;
+  /** Bots no longer place fortification blocks near crystals (returns empty list). */
+  private fortGap(_team: TeamId): FortCell[] {
+    return [];
   }
 
   /** Material for a fort block: the one the cell had, else whatever it carries (null = nothing). */
@@ -691,7 +717,8 @@ export class BotManager {
     let at = from;
     for (let k = 0; k < 3 && at !== goal; k++) {
       const next = this.nextFace(bot, at, goal);
-      miss += this.missing(this.laneBetween(at, next));
+      const lane = this.laneBetween(at, next, bot.id);
+      if (lane) miss += this.missing(lane);
       at = next;
     }
     return miss ? miss + 2 : 0;
@@ -706,8 +733,8 @@ export class BotManager {
   private needs(bot: Bot): Needs {
     const raider = this.raider(bot);
     return {
-      raider, wood: raider ? this.woodNeed(bot) : 0, fort: raider ? 0 : this.fortGap(bot.team).length,
-      shotgun: bot.likes.shotgun, fisher: bot.likes.fish, impulse: bot.impulse,
+      raider, wood: raider ? this.woodNeed(bot) : 0, fort: 0,
+      shotgun: bot.likes.shotgun, revolver: bot.likes.revolver, fisher: bot.likes.fish, impulse: bot.impulse,
     };
   }
 
@@ -1075,7 +1102,10 @@ export class BotManager {
       }
       case 'shop': {
         const s = this.shops[task.shop];
-        return { kind: 'point', face: s.face, pt: s.xz, hall: s.hall, key: `shop${task.shop}`, end: 'act', arrive: 0.8 };
+        const fan = ((bot.id % 5) - 2) * 0.65;
+        const depth = (bot.id % 2) * 0.55;
+        const pt: XZ = [s.xz[0] + fan, s.xz[1] + (s.hall ? depth : -depth)];
+        return { kind: 'point', face: s.face, pt, hall: s.hall, key: `shop${task.shop}:${bot.id % 5}`, end: 'act', arrive: 0.9 };
       }
       case 'gather': {
         const f = this.faceOfUp(task.item.up);
@@ -1203,25 +1233,42 @@ export class BotManager {
     bot.taken++;
   }
 
-  /** Every tick, whatever the task: heal (medkit when badly hurt, apples), pick up what lies within reach, refill ammo near own crystal. */
+  /** Every tick, whatever the task: heal (medkit when badly hurt, apples), pick up what lies within reach, refill ammo near own crystal, sync jetpack/armor. */
   private upkeep(bot: Bot, dt: number) {
     bot.eatT -= dt;
     bot.lootT -= dt;
     bot.nadeT -= dt;
     bot.rocketT -= dt;
     const tg = bot.target;
+    const maxHp = tg.maxHp ?? Math.round(MAX_HP * MATCH_RULES.playerHp);
+    bot.sim.hasJetpack = bot.eco.has('jetpack');
+    bot.sim.hasJetpackFuel = totalFuelAmmo(bot.weapons) > 0;
+    tg.armor = bot.eco.has('armor');
     if (bot.eatT <= 0) {
       if (tg.hp < bot.tune.healAt && bot.eco.take('medkit')) {
-        tg.hp = MAX_HP;
+        tg.hp = maxHp;
         bot.eatT = 1.5;
         bot.pauseT = Math.max(bot.pauseT, 0.5);
-      } else if (tg.hp < MAX_HP - ITEMS.apple.heal && bot.eco.take('apple')) {
-        tg.hp = Math.min(MAX_HP, tg.hp + ITEMS.apple.heal);
+      } else if (tg.hp < maxHp - ITEMS.apple.heal && bot.eco.take('apple')) {
+        tg.hp = Math.min(maxHp, tg.hp + ITEMS.apple.heal);
+        bot.eatT = EAT_COOLDOWN + 0.4;
+      } else if (tg.hp < maxHp * 0.55 && bot.eco.take('fish')) {
+        tg.hp = Math.min(maxHp, tg.hp + ITEMS.fish.heal);
         bot.eatT = EAT_COOLDOWN + 0.4;
       }
     }
+    if (this.map.mode === 'skirmish' && this.match.isInsideBaseHall(bot.sim.state.pos, bot.team)) {
+      bot.woodRegenT += dt;
+      if (bot.woodRegenT >= 1) {
+        const gain = Math.floor(bot.woodRegenT);
+        bot.woodRegenT -= gain;
+        bot.kit.wood += gain * SKIRMISH_WOOD_PER_SEC;
+      }
+    } else {
+      bot.woodRegenT = 0;
+    }
     if (bot.lootT <= 0) {
-      bot.lootT = 0.3;
+      bot.lootT = 0.25;
       const bed = this.match.bed(bot.team);
       if (bed.alive && bot.sim.state.pos.distanceTo(bed.pos) < 8.5) {
         refillAmmo(bot.weapons, 0.25);
@@ -1236,6 +1283,9 @@ export class BotManager {
   /** Out of wood at the end of a bridge: home to buy more, or (away from home) another way / another goal. */
   private stranded(bot: Bot, loc: Ground) {
     bot.strandT = 0;
+    if (bot.route?.lane) {
+      bot.laneFailures.set(bot.route.lane.id, (bot.laneFailures.get(bot.route.lane.id) ?? 0) + 1);
+    }
     if (loc.face === this.teamFace(bot.team).id) {
       bot.rash = false;
       bot.departAt = Math.max(bot.departAt, this.match.time + 30);
@@ -1252,16 +1302,28 @@ export class BotManager {
 
   // --- brain: getting there ------------------------------------------------------------------------
 
-  /** Face to cross to next on the way from `from` to `to`: the goal itself if adjacent, else one of the four between. */
+  /** Face to cross to next on the way from `from` to `to`: learns from past failures and picks the safest / most complete lane. */
   private nextFace(bot: Bot, from: FaceId, to: FaceId): FaceId {
+    if (this.map.mode === 'skirmish' && from !== to) return to;
     const a = this.face(from), b = this.face(to);
     if (Math.abs(a.up.dot(b.up)) < 0.5) return to;
-    const between = this.faces.filter((f) => Math.abs(f.up.dot(a.up)) < 0.5).map((f) => f.id).sort();
-    return between[(bot.id + bot.trip) % between.length];
+    const between = this.faces.filter((f) => Math.abs(f.up.dot(a.up)) < 0.5).map((f) => f.id);
+    if (!between.length) return to;
+    // Sort candidate intermediate faces by learned failures + missing bridge pieces
+    between.sort((f1, f2) => {
+      const l1 = this.laneBetween(from, f1, bot.id), l2 = this.laneBetween(from, f2, bot.id);
+      const fail1 = (l1 ? (bot.laneFailures.get(l1.id) ?? 0) * 8 + this.missing(l1) * 0.25 : 99);
+      const fail2 = (l2 ? (bot.laneFailures.get(l2.id) ?? 0) * 8 + this.missing(l2) * 0.25 : 99);
+      if (Math.abs(fail1 - fail2) > 0.5) return fail1 - fail2;
+      return f1.localeCompare(f2);
+    });
+    return between[(bot.id + bot.trip) % Math.min(2, between.length)] ?? between[0];
   }
 
-  private laneBetween(a: FaceId, b: FaceId): LaneDef {
-    return this.map.lanes.find((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a))!;
+  private laneBetween(a: FaceId, b: FaceId, botId = 0): LaneDef {
+    const all = this.map.lanes.filter((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a));
+    if (!all.length) return this.map.lanes[0];
+    return all[Math.abs(botId) % all.length];
   }
 
   /**
@@ -1311,10 +1373,13 @@ export class BotManager {
         if (loc.roof) return memo(`roof:${here}`, () => ({ pts: [[hx + 10, hz + 10], [hx + 10, hz], [hx + 10, hz - 10]], end: 'go' }));
         if (wantHall && !loc.hall) {
           const k = Math.hypot(loc.x - doors[0].out[0], loc.z - doors[0].out[1]) <= Math.hypot(loc.x - doors[1].out[0], loc.z - doors[1].out[1]) ? 0 : 1;
-          return memo(`enter:${here}:${k}`, () => ({ pts: [...this.roads(loc, nearestNode(N, doors[k].out)).pts, doors[k].out, doors[k].in], end: 'go' }));
+          const laneOff = ((bot.id % 5) - 2) * 0.55;
+          const dOut: XZ = [doors[k].out[0] + laneOff, doors[k].out[1]];
+          const dIn: XZ = [doors[k].in[0] + laneOff, doors[k].in[1]];
+          return memo(`enter:${here}:${k}:${bot.id % 5}`, () => ({ pts: [...this.roads(loc, nearestNode(N, doors[k].out)).pts, dOut, dIn], end: 'go' }));
         }
         if (wantHall) return this.inside(bot, loc, d, memo);
-        if (loc.hall && d.kind === 'point') return this.exitHall(loc, d.pt, memo);
+        if (loc.hall && d.kind === 'point') return this.exitHall(bot, loc, d.pt, memo);
       }
       if (d.kind === 'point') {
         const pt = d.pt;
@@ -1329,10 +1394,10 @@ export class BotManager {
       return memo(`hub:${here}`, () => ({ pts: [N.hub], end: 'hold' }));
     }
     const next = this.nextFace(bot, here, goal);
-    const L = this.laneBetween(here, next);
+    const L = this.laneBetween(here, next, bot.id);
     const exit = L.a === here ? L.nodeA : L.nodeB;
     // leave the hall by the door on the side of the exit (around the crystal's fort)
-    if (loc.hall && N.hall) return this.exitHall(loc, N.nodes[exit], memo);
+    if (loc.hall && N.hall) return this.exitHall(bot, loc, N.nodes[exit], memo);
     const key = L.a === here ? `lane:${L.id}` : `land:${L.id}`;
     return memo(key, () => {
       const r = this.roads(loc, exit);
@@ -1340,14 +1405,17 @@ export class BotManager {
     });
   }
 
-  /** Out of the hall by the door nearer to `e` (around the crystal's fort). */
-  private exitHall(loc: Ground, e: XZ, memo: (key: string, make: () => Omit<Route, 'key'>) => Route): Route {
+  /** Out of the hall by the door nearer to `e` (spread across doorway lanes to prevent queueing). */
+  private exitHall(bot: Bot, loc: Ground, e: XZ, memo: (key: string, make: () => Omit<Route, 'key'>) => Route): Route {
     const N = this.map.nav[loc.face];
     const [hx, hz] = N.hall!.c;
     const doors = N.doors!;
     const k = Math.hypot(e[0] - doors[0].out[0], e[1] - doors[0].out[1]) <= Math.hypot(e[0] - doors[1].out[0], e[1] - doors[1].out[1]) ? 0 : 1;
     const sz = k === 0 ? -1 : 1;
-    return memo(`exit:${loc.face}:${k}`, () => ({ pts: [[hx + Math.sign(loc.x - hx || 1) * 4.5, hz + sz * 7], doors[k].in, doors[k].out], end: 'go' }));
+    const laneOff = ((bot.id % 5) - 2) * 0.55;
+    const dIn: XZ = [doors[k].in[0] + laneOff, doors[k].in[1]];
+    const dOut: XZ = [doors[k].out[0] + laneOff, doors[k].out[1]];
+    return memo(`exit:${loc.face}:${k}:${bot.id % 5}`, () => ({ pts: [[hx + Math.sign(loc.x - hx || 1) * 4.5 + laneOff * 0.5, hz + sz * 7], dIn, dOut], end: 'go' }));
   }
 
   /** Inside a hall: the crystal stand (raid), the guard posts / patrol (home), a point (the shop). */
@@ -1384,31 +1452,57 @@ export class BotManager {
     return memo(`pt:${d.key}`, () => ({ pts: [d.pt], end: d.end, arrive: d.arrive }));
   }
 
-  /** On the way along a lane: lay its missing pieces near the bot, paying with its own wood; `ahead`: where it walks. */
+  /** On the way along a lane: lay its missing pieces near the bot, paying with its own wood/stone/metal; also opens team doors. */
   private bridge(bot: Bot, lane: LaneDef | undefined, dt: number, ahead: Vector3) {
-    if (!lane) { bot.blocked = false; return; }
     bot.buildT -= dt;
     if (bot.buildT > 0) return;
-    bot.buildT = 0.15;
+    bot.buildT = 0.14;
     const pos = bot.sim.state.pos;
+    const eye = pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
+    _v.copy(ahead).sub(pos);
+    if (_v.lengthSq() > 1e-4) {
+      const door = this.blocks.aimedDoor(eye, _v.clone().normalize(), 3.2);
+      if (door && !door.block.open && (!door.block.team || door.block.team === bot.team)) {
+        this.blocks.setDoorState(door.block, true);
+      }
+    }
+    if (!lane) {
+      bot.blocked = false;
+      // Under fire in the open: occasionally place a cover wall (with shooting hole or team door) if carrying blocks
+      if (bot.enemy && bot.hurtT > this.match.time - 1.5 && !this.blocks.nearCrystal(pos, 7)) {
+        const mat = this.material(bot, 'stone') ?? this.material(bot, 'wood');
+        if (mat && this.rng.chance(0.08)) {
+          const toEnemy = bot.enemy.center.clone().sub(pos);
+          const variant = this.rng.chance(0.5) ? 'hole' : this.rng.chance(0.5) ? 'door' : 'plain';
+          const plan = this.blocks.plan('wall', pos, bot.target.up, toEnemy, eye, toEnemy, variant);
+          if (plan && this.blocks.place(plan, mat, bot.team, true) === 'ok') {
+            bot.kit[mat]--;
+            bot.built++;
+            bot.builtAt = this.match.time;
+          }
+        }
+      }
+      return;
+    }
     const keys = this.builtKeys();
     const can = bot.eco.has('builder');
     let blocked = false;
-    _v.copy(ahead).sub(pos);
     for (const p of this.lanePlans.get(lane.id)!) {
       const d2 = p.center.distanceToSquared(pos);
       if (d2 > 10 * 10 || keys.has(p.key)) continue;
       const front = d2 < 8.5 * 8.5 && _l.copy(p.center).sub(pos).dot(_v) > 0;
-      if (!can || bot.kit.wood < 1) { if (front) blocked = true; continue; }
-      const r = this.blocks.place(p, 'wood', bot.team, true);
-      if (r === 'ok') { bot.kit.wood--; bot.built++; bot.builtAt = this.match.time; }
+      const mat = this.material(bot, 'wood');
+      if (!can || !mat) { if (front) blocked = true; continue; }
+      const r = this.blocks.place(p, mat, bot.team, true);
+      if (r === 'ok') { bot.kit[mat]--; bot.built++; bot.builtAt = this.match.time; }
     }
     bot.blocked = blocked;
   }
 
   private findEnemy(bot: Bot, eye: Vector3, raiding: boolean): Target | null {
     let best: Target | null = null;
-    let bestD = bot.tune.sightRange;
+    const baseRange = this.map.mode === 'skirmish' ? Math.max(bot.tune.sightRange, 62) : bot.tune.sightRange;
+    let bestD = baseRange;
     const up = bot.target.up;
     const prey = bot.task.kind === 'hunt' ? bot.task.target : null;
     for (const t of this.combat.targets) {
@@ -1416,8 +1510,8 @@ export class BotManager {
       const d = eye.distanceTo(t.center);
       // city NPCs: the hunted bandit and those who go for this bot (a bum walking past is left alone)
       if (t.npc) { if (t !== prey && t.aggro !== bot.id) continue; }
-      // not on a raid: enemies on this face (no sniping at the walls of other faces) or close
-      else if (!raiding && d > bot.tune.defendRadius && t.up.dot(up) < 0.9) continue;
+      // not on a raid: enemies on this face (no sniping at other faces' walls), except in compact Skirmish where islands face each other 45m apart
+      else if (this.map.mode !== 'skirmish' && !raiding && d > bot.tune.defendRadius && t.up.dot(up) < 0.9) continue;
       if (d > bestD || !this.combat.lineOfSight(eye, t.center)) continue;
       best = t;
       bestD = d;
@@ -1425,7 +1519,7 @@ export class BotManager {
     // shot at by someone it does not see in its sector: turn to them
     if (!best && this.match.time - bot.hurtT < 2) {
       const a = this.combat.target(bot.hurtBy);
-      if (a && a.alive && !a.guard && a.team !== bot.team && eye.distanceTo(a.center) < bot.tune.sightRange * 1.3
+      if (a && a.alive && !a.guard && a.team !== bot.team && eye.distanceTo(a.center) < baseRange * 1.3
         && this.combat.lineOfSight(eye, a.center)) best = a;
     }
     if (best && !best.npc) {
@@ -1476,6 +1570,14 @@ export class BotManager {
       bot.sim.tick(th.input, dt);
       for (const e of bot.sim.events.splice(0)) {
         if (e.type === 'land') this.combat.fall(bot.target, e.speed);
+        if (e.type === 'jetpackFuel') consumeJetpackFuel(bot.weapons, 1);
+        if (e.type === 'jetpackExplode') {
+          const maxHp = bot.target.maxHp ?? Math.round(MAX_HP * MATCH_RULES.playerHp);
+          this.combat.triggerExplosion(
+            e.pos, bot.id, bot.team, JETPACK.explodeRadius, JETPACK.explodeDamageOther,
+            14, 90, (maxHp * JETPACK.explodeSelfFrac) / JETPACK.explodeDamageOther, true, 'jetpack', e.pos,
+          );
+        }
         if (e.type === 'respawn' && e.reason === 'void') {
           this.spill(bot, false); // the void keeps what it carried
           bot.prevPos.copy(bot.sim.state.pos);
@@ -1494,12 +1596,22 @@ export class BotManager {
         bot.kicksTotal++;
         this.onKick?.(bot.id, eye, th.kick);
       }
+      const wasReloading = bot.weapons.reloadT > 0;
       // semi-automatic guns fire on the press: release the trigger every other tick; crossbow charges to level 1+ then releases
       const isXbow = bot.weapons.current === 'crossbow';
       const pull = isXbow
         ? (th.fire && bot.weapons.chargeT < 1.05)
+        : bot.weapons.current === 'revolver'
+        ? th.fire
         : (th.fire && (WEAPONS[bot.weapons.current].auto || !bot.weapons.held));
       const fired = weaponTick(bot.weapons, { fire: pull, reload: th.reload && !th.fire, select: th.select }, dt);
+      if (!wasReloading && bot.weapons.reloadT > 0) {
+        // Rarely attempt active reload (~22% chance on normal, higher on hard)
+        bot.tryActiveReload = this.rng.chance(Math.max(0.1, 0.32 - bot.tune.mistakes));
+      }
+      if (bot.weapons.activeReloadClick) {
+        this.combat.noises.push({ pos: bot.sim.state.pos.clone(), radius: NOISE.click, owner: bot.id });
+      }
       if (fired && th.aim) {
         const eye = bot.sim.state.pos.clone().addScaledVector(bot.target.up, EYE_OFFSET);
         if (fired === 'crossbow') {
@@ -1509,7 +1621,7 @@ export class BotManager {
         } else if (!bot.sim.state.onGround && WEAPONS[fired].airPush) {
           bot.sim.applyImpulse(th.aim.clone().normalize().multiplyScalar(-WEAPONS[fired].airPush));
         }
-        this.combat.use(fired, bot.id, eye, th.aim, bot.sim.state.vel, bot.target.up.clone().negate(), bot.weapons.lastChargeT);
+        this.combat.use(fired, bot.id, eye, th.aim, bot.sim.state.vel, bot.target.up.clone().negate(), bot.weapons.lastChargeT, bot.team);
         this.onShot?.(bot.id, fired, eye, th.aim, bot.weapons.lastChargeT);
         bot.shotsTotal++;
         if (fired === 'grenade') { bot.pick = null; bot.nadeT = 14; }
@@ -1530,7 +1642,9 @@ export class BotManager {
     if (bot.enemy?.npc === 'bum') return 'fists';
     if (ok('shotgun') && (d < 8 || (ws.current === 'shotgun' && d < 11))) return 'shotgun';
     if (ok('crossbow') && (d > 22 || !ok('rifle'))) return 'crossbow';
+    if (ok('revolver') && (bot.likes.revolver || !ok('rifle')) && d >= 7 && d <= 24) return 'revolver';
     if (ok('rifle')) return 'rifle';
+    if (ok('revolver')) return 'revolver';
     if (ok('shotgun') && d < 16) return 'shotgun';
     if (ok('pistol')) return 'pistol';
     if (ok('shotgun')) return 'shotgun';
@@ -1748,10 +1862,21 @@ export class BotManager {
               // shoot it from the stand (within the 5 m of the rule); wait while Stage 1 shield is invulnerable
               aimAt = top;
               if (bed.invulnT > 0) {
-                wantFire = false;
-                refillAmmo(ws, 0.5);
-                if (isGun(ws.current) && ws.ammo[ws.current] < WEAPONS[ws.current].mag && ws.reserve[ws.current] > 0) reload = true;
-                label = 'ждёт уязвимости кристалла';
+                const nearbyFoeBlock = this.enemyStructureTarget(bot, eye, bed.pos);
+                if (nearbyFoeBlock) {
+                  const blk = this.blocks.byCollider(nearbyFoeBlock);
+                  if (blk) {
+                    aimAt = blk.center.clone();
+                    wantFire = true;
+                    if (hasAmmo(ws, 'rocket') && blk.center.distanceTo(eye) > 4.2) { bot.pick = 'rocket'; bot.pickT = 0.3; }
+                    label = 'сносит вражеские постройки';
+                  }
+                } else {
+                  wantFire = false;
+                  refillAmmo(ws, 0.5);
+                  if (isGun(ws.current) && ws.ammo[ws.current] < WEAPONS[ws.current].mag && ws.reserve[ws.current] > 0) reload = true;
+                  label = 'ждёт уязвимости кристалла';
+                }
               } else {
                 wantFire = true;
               }
@@ -1792,26 +1917,50 @@ export class BotManager {
         this.finish(bot);
       }
       if (bot.stuckT > bot.tune.giveUp) { bot.stuckT = 0; this.placeAtSpawn(bot); }
-      // stuck behind blocks (someone's wall, a fort): shoot through them (fists only get through wood)
-      if (!arrived && bot.stuckT > 3 && bot.breach === null) {
-        bot.breach = this.blockInTheWay(sim, steerTo);
-        bot.breachT = 0;
+      // Demolish enemy structures: immediately break enemy walls/doors blocking the path, covering hidden foes, or guarding enemy bases
+      if (bot.breach === null && !bot.enemy) {
+        const foeOnWay = this.blockInTheWay(sim, steerTo, bot.team, true);
+        if (foeOnWay !== null && (bot.stuckT > 0.35 || arrived === false)) {
+          bot.breach = foeOnWay;
+          bot.breachT = 0;
+        } else if (!arrived && bot.stuckT > 2.2) {
+          bot.breach = this.blockInTheWay(sim, steerTo, bot.team, false);
+          bot.breachT = 0;
+        } else if (raiding || (bot.searchT > 0 && bot.searchPos)) {
+          const raidBed = raiding && bot.goal ? this.match.bed(bot.goal).pos : undefined;
+          const enemyStruct = this.enemyStructureTarget(bot, eye, raidBed);
+          if (enemyStruct !== null) {
+            bot.breach = enemyStruct;
+            bot.breachT = 0;
+          }
+        }
         const b = bot.breach !== null ? this.blocks.byCollider(bot.breach) : null;
-        if (b && b.material !== 'wood' && !this.armed(bot, 1) && !hasAmmo(ws, 'rocket')) bot.breach = null;
+        if (b && b.material !== 'wood' && !this.armed(bot, 1) && !hasAmmo(ws, 'rocket') && b.center.distanceTo(eye) > 3.2) {
+          bot.breach = null;
+        }
       }
       if (bot.breach !== null) {
         const block = this.blocks.byCollider(bot.breach);
         bot.breachT += dt;
-        if (!block) { bot.breach = null; bot.stuckT = 0; }
-        else if (arrived || bot.breachT > 25) {
-          // there after all, or the wall will not give: drop it (the stuck rules take over)
+        const armed = this.armed(bot, 1) || hasAmmo(ws, 'rocket');
+        const reachOk = armed ? block && block.center.distanceTo(eye) <= 18 : block && block.center.distanceTo(eye) <= 3.5;
+        if (!block || block.team === bot.team) {
+          bot.breach = null;
+          bot.stuckT = 0;
+        } else if (bot.breachT > 16 || (!armed && block.material !== 'wood' && bot.breachT > 4)) {
           bot.breach = null;
           if (!arrived) bot.stuckT = bot.tune.giveUp;
         } else {
-          aimAt = block.center.clone();
-          wantFire = true;
-          if (hasAmmo(ws, 'rocket') && block.center.distanceTo(eye) > 4) { bot.pick = 'rocket'; bot.pickT = 0.3; }
-          label = 'пробивает стену';
+          if (reachOk && block.center.distanceTo(eye) > 2.2) {
+            aimAt = block.center.clone();
+            wantFire = true;
+            if (hasAmmo(ws, 'rocket') && block.center.distanceTo(eye) > 4.2) { bot.pick = 'rocket'; bot.pickT = 0.3; }
+            if (block.team && block.team !== bot.team && !bot.enemy) {
+              // Hold steady while finishing off an enemy structure so bots reliably demolish builds instead of glancing off
+              wish.multiplyScalar(0.35);
+            }
+            label = 'сносит вражеские постройки';
+          }
         }
       }
 
@@ -1847,12 +1996,12 @@ export class BotManager {
       bot.anchor.copy(s.pos);
       bot.frozenT = 0;
     } else if (!escape) bot.frozenT += dt;
-    if (bot.frozenT > 2 && bot.nudgeT <= -0.6) {
+    if (bot.frozenT > 0.75 && bot.nudgeT <= -0.45) {
       const a = this.rng.range(0, Math.PI * 2);
       moveBasis(s.frame, a, _fwd, _right);
       bot.nudge.copy(_fwd);
-      bot.nudgeT = 0.7;
-      bot.jumpT = 0.12;
+      bot.nudgeT = 0.65;
+      bot.jumpT = 0.14;
     }
     if (bot.frozenT > 7) { bot.frozenT = 0; this.placeAtSpawn(bot); }
     bot.nudgeT -= dt;
@@ -1914,6 +2063,49 @@ export class BotManager {
       if (fresh && isGun(ws.current) && ws.ammo[ws.current] < WEAPONS[ws.current].mag && this.rng.chance(bot.tune.mistakes * 0.5)) reload = true;
     } else if (bot.calmT > 2 && isGun(ws.current) && ws.ammo[ws.current] < WEAPONS[ws.current].mag * 0.6 && ws.reserve[ws.current] > 0) reload = true;
 
+    // Active reload: if reloading and bot rolled tryActiveReload, press R inside the green zone
+    if (ws.reloadT > 0 && bot.tryActiveReload && ws.reloadStatus === 'ready' && ws.reloadZoneWidth > 0) {
+      const prog = reloadProgressOf(ws);
+      if (prog >= ws.reloadZoneStart + ws.reloadZoneWidth * 0.25 && prog <= ws.reloadZoneStart + ws.reloadZoneWidth * 0.85) {
+        reload = true;
+        wantFire = false;
+        bot.tryActiveReload = false;
+      }
+    }
+
+    // Use grappling hook occasionally on long flat stretches when not on a bridge lane
+    if (far && !onLane && !bot.enemy && bot.eco.has('hook') && !sim.hook && sim.hookCd <= 0 && wish.lengthSq() > 0.5 && this.rng.chance(0.015)) {
+      const hookDir = wish.clone().addScaledVector(up, 0.18).normalize();
+      sim.throwHook(eye, hookDir, this.combat.notCharacter);
+    }
+
+    // Personal separation: gently fan bots apart on the same floor so groups stream through doors & shops cleanly
+    if (!onLane && loc.kind === 'face') {
+      const sep = new Vector3();
+      const diff = new Vector3();
+      for (const other of this.combat.targets) {
+        if (!other.alive || other.id === bot.id || other.npc || other.up.dot(up) < 0.9) continue;
+        diff.copy(s.pos).sub(other.center);
+        const vert = diff.dot(up);
+        if (Math.abs(vert) > 1.8) continue;
+        diff.addScaledVector(up, -vert);
+        const d2 = diff.lengthSq();
+        if (d2 > 1e-6 && d2 < 1.45 * 1.45) {
+          const d = Math.sqrt(d2);
+          sep.addScaledVector(diff, (1.45 - d) / (1.45 * d));
+        } else if (d2 <= 1e-6) {
+          sep.x += (bot.id % 2 ? 1 : -1) * 0.5;
+        }
+      }
+      if (sep.lengthSq() > 0.002) {
+        if (wish.lengthSq() > 0.01) {
+          wish.addScaledVector(sep, 0.95).normalize();
+        } else if (sep.lengthSq() > 0.05) {
+          wish.copy(sep).normalize();
+        }
+      }
+    }
+
     let aim: Vector3 | null = null;
     if (aimAt) {
       const dir = aimDir ?? aimAt.sub(eye).normalize();
@@ -1962,19 +2154,63 @@ export class BotManager {
     return best ?? greedy;
   }
 
-  /** First block on the straight path towards `to` (knee / chest height), if any. */
-  private blockInTheWay(sim: PlayerSim, to: Vector3): number | null {
+  /** First block (prioritizing hostile builds) on the straight/angled path towards `to`. */
+  private blockInTheWay(sim: PlayerSim, to: Vector3, team?: TeamId, enemyOnly = false): number | null {
     const up = upOf(sim.state.frame, _up).clone();
     const dir = to.clone().sub(sim.state.pos);
     dir.addScaledVector(up, -dir.dot(up));
     if (dir.lengthSq() < 1e-4) return null;
     dir.normalize();
-    for (const h of [-0.45, 0.4, 1.2]) {
+    let neutralHandle: number | null = null;
+    for (const h of [-0.45, 0.4, 1.15]) {
       const from = sim.state.pos.clone().addScaledVector(up, h);
-      const hit = this.world.castRay(new this.R.Ray(from, dir), 3, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
-      if (hit && this.blocks.byCollider(hit.collider.handle)) return hit.collider.handle;
+      const hit = this.world.castRay(new this.R.Ray(from, dir), 4.6, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
+      const blk = hit ? this.blocks.byCollider(hit.collider.handle) : undefined;
+      if (!blk) continue;
+      if (team && blk.team === team) continue; // never shoot own team builds when looking for obstacle
+      if (blk.team && team && blk.team !== team) return hit!.collider.handle;
+      if (!enemyOnly && neutralHandle === null) neutralHandle = hit!.collider.handle;
     }
-    return null;
+    return enemyOnly ? null : neutralHandle;
+  }
+
+  /** Find a visible enemy-built block worth demolishing (enemy cover hiding a target, or blocks near an enemy base/crystal). */
+  private enemyStructureTarget(bot: Bot, eye: Vector3, goalBed?: Vector3): number | null {
+    const up = bot.target.up;
+    // 1. Enemy block sheltering the last-seen enemy target
+    if (bot.searchT > 0 && bot.searchPos && eye.distanceTo(bot.searchPos) < 22) {
+      const dir = bot.searchPos.clone().sub(eye);
+      const dist = dir.length();
+      if (dist > 0.5) {
+        const hit = this.world.castRay(new this.R.Ray(eye, dir.divideScalar(dist)), Math.min(dist, 16), true, undefined, undefined, bot.sim.mover.collider, undefined, this.combat.notCharacter);
+        const blk = hit ? this.blocks.byCollider(hit.collider.handle) : undefined;
+        if (blk && blk.team && blk.team !== bot.team && (blk.kind !== 'floor' || blk.variant !== 'plain')) {
+          return hit!.collider.handle;
+        }
+      }
+    }
+    // 2. Hostile structures near the enemy crystal / base hall during a raid (walls, doors, 1x1 forts, ramps)
+    if (!this.armed(bot, 1) && !hasAmmo(bot.weapons, 'rocket')) return null;
+    const focus = goalBed ?? eye;
+    const inRaidRadius = eye.distanceTo(focus) < 16;
+    if (!inRaidRadius) return null;
+    let best: number | null = null;
+    let bestD = Infinity;
+    for (const blk of this.blocks.blocks.values()) {
+      if (!blk.team || blk.team === bot.team) continue;
+      // Don't break flat floor bridges the bot itself might walk on unless very close to crystal
+      if (blk.kind === 'floor' && Math.abs(blk.center.clone().sub(eye).dot(up)) < 0.8 && blk.center.distanceTo(focus) > 5.5) continue;
+      if (blk.center.distanceTo(focus) > 13.5) continue;
+      const d = blk.center.distanceTo(eye);
+      if (d > 16 || d >= bestD) continue;
+      const dir = blk.center.clone().sub(eye).normalize();
+      const hit = this.world.castRay(new this.R.Ray(eye, dir), d + 0.5, true, undefined, undefined, bot.sim.mover.collider, undefined, this.combat.notCharacter);
+      if (hit && hit.collider.handle === blk.collider.handle) {
+        bestD = d;
+        best = blk.collider.handle;
+      }
+    }
+    return best;
   }
 
   /** Is there ground under this point (do not detour into the void)? */

@@ -3,7 +3,7 @@ import { HU } from '../shared/constants';
 import { STAMINA } from '../shared/movement';
 import { HOOK, PlayerSim } from '../shared/sim';
 import { ITEMS } from '../shared/economy';
-import { isGun, WEAPONS, WeaponState } from '../shared/weapons';
+import { hasActiveReloadZone, isGun, reloadProgressOf, WEAPONS, WeaponState } from '../shared/weapons';
 import { faceByUp } from '../shared/map';
 import { getTeam, TeamId } from '../shared/teams';
 import { icon, IconName } from './icons';
@@ -31,6 +31,18 @@ export class Hud {
 
   private hpVal = $('hp-val');
   private hpBar = $('hp-bar');
+  private armorBadge = $('armor-badge');
+  private jpRow = $('jp-row');
+  private jpLabel = $('jp-label');
+  private jpBar = $('jp-bar');
+  private jpCenter = document.getElementById('jetpack-center');
+  private jpCenterState = document.getElementById('jp-center-state');
+  private jpCenterFuel = document.getElementById('jp-center-fuel');
+  private jpCenterBar = document.getElementById('jp-center-bar');
+  private zoneBadge = document.getElementById('zone-badge');
+  private reloadSvg = document.getElementById('reload-ring') as unknown as SVGSVGElement;
+  private reloadZoneCircle = document.querySelector('#reload-ring .zone') as SVGCircleElement;
+  private reloadProgCircle = document.querySelector('#reload-ring .prog') as SVGCircleElement;
   private stEl = $('st');
   private stBar = $('st-bar');
   private guardEl = $('guard');
@@ -50,10 +62,68 @@ export class Hud {
     if (t !== null) this.guardEl.textContent = `Защита после спавна · ${Math.ceil(t)}`;
   }
 
-  setHp(hp: number) {
+  setHp(hp: number, maxHp = 100) {
     this.hpVal.textContent = String(Math.ceil(hp));
-    this.hpBar.style.width = `${Math.max(0, hp)}%`;
-    this.hpBar.style.background = hp > 50 ? 'var(--hp)' : hp > 25 ? '#ffc94a' : '#ff5a5a';
+    const pct = Math.max(0, Math.min(100, (hp / Math.max(1, maxHp)) * 100));
+    this.hpBar.style.width = `${pct.toFixed(1)}%`;
+    this.hpBar.style.background = pct > 50 ? 'var(--hp)' : pct > 25 ? '#ffc94a' : '#ff5a5a';
+  }
+
+  /** Armor vest badge near HP bar. */
+  setArmor(hasArmor: boolean) {
+    this.armorBadge.hidden = !hasArmor;
+    if (hasArmor && !this.armorBadge.innerHTML) {
+      this.armorBadge.innerHTML = `${icon('armor')}<span>Бронежилет</span>`;
+    }
+  }
+
+  /** Jetpack heat/fuel HUD bar (shown strictly while flying with the jetpack). */
+  setJetpack(owned: boolean, active: boolean, heatRatio: number, fuel: number, overheatCd = 0) {
+    const show = owned && active;
+    this.jpRow.hidden = !show;
+    if (this.jpCenter) this.jpCenter.hidden = !show;
+    if (!show) return;
+    const hot = heatRatio > 0.72 || overheatCd > 0;
+    const pct = `${Math.max(0, Math.min(100, (overheatCd > 0 ? 1 : heatRatio) * 100)).toFixed(1)}%`;
+    this.jpRow.classList.toggle('hot', hot);
+    this.jpRow.classList.toggle('flying', active);
+    this.jpLabel.textContent = active ? `Ранец · ${fuel}` : `Ранец (${fuel})`;
+    this.jpBar.style.width = pct;
+    if (this.jpCenter) {
+      this.jpCenter.classList.toggle('flying', active);
+      this.jpCenter.classList.toggle('hot', hot);
+      this.jpCenter.classList.toggle('overheat', overheatCd > 0);
+      if (this.jpCenterBar) this.jpCenterBar.style.width = pct;
+      if (this.jpCenterFuel) this.jpCenterFuel.textContent = `${fuel} пат.`;
+      if (this.jpCenterState) {
+        this.jpCenterState.textContent = overheatCd > 0
+          ? `ПЕРЕГРЕВ · ${Math.ceil(overheatCd)}с`
+          : active ? 'ПОЛЁТ' : 'РАНЕЦ';
+      }
+    }
+  }
+
+  /** Shows badge when standing inside own team's crystal regen & ammo zone. */
+  setCrystalZone(active: boolean) {
+    if (this.zoneBadge) this.zoneBadge.hidden = !active;
+  }
+
+  /** Active reload progress ring around crosshair (green sweet spot 60..90%, green/red feedback). */
+  setReload(ws: WeaponState) {
+    const show = ws.reloadT > 0 || ws.reloadFlashT > 0;
+    this.reloadSvg.toggleAttribute('hidden', !show);
+    if (!show) return;
+    const C = 2 * Math.PI * 24;
+    const p = ws.reloadT > 0 ? reloadProgressOf(ws) : 1;
+    this.reloadProgCircle.style.strokeDasharray = `${(p * C).toFixed(2)} ${C.toFixed(2)}`;
+    const showZone = ws.reloadT > 0 && ws.reloadStatus === 'ready' && ws.reloadZoneWidth > 0 && hasActiveReloadZone(ws.current);
+    this.reloadZoneCircle.style.display = showZone ? '' : 'none';
+    if (showZone) {
+      this.reloadZoneCircle.style.strokeDasharray = `${(ws.reloadZoneWidth * C).toFixed(2)} ${C.toFixed(2)}`;
+      this.reloadZoneCircle.style.strokeDashoffset = `${(-ws.reloadZoneStart * C).toFixed(2)}`;
+    }
+    this.reloadSvg.classList.toggle('ok', ws.reloadStatus === 'success');
+    this.reloadSvg.classList.toggle('fail', ws.reloadStatus === 'fail');
   }
 
   private readonly weaponIc = document.getElementById('weapon-ic')!;
@@ -61,11 +131,12 @@ export class Hud {
 
   /** Weapon / ammo panel: what is in the hands. `items`: pocket counts (for an item in hand). */
   setWeapon(ws: WeaponState, tool: ViewTool, items: Record<string, number>) {
+    this.setReload(ws);
     const active = tool ?? ws.current;
     if (active !== this.iconKey) {
       this.iconKey = active;
       const ic: Record<string, IconName> = {
-        fists: 'fist', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook',
+        fists: 'fist', pistol: 'pistol', revolver: 'revolver', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade', build: 'shovel', hook: 'hook',
         rod: 'rod', apple: 'apple', bottle: 'bottle', fish: 'fish', medkit: 'heart',
       };
       this.weaponIc.innerHTML = icon(ic[active]);
@@ -107,8 +178,15 @@ export class Hud {
         this.ammo.innerHTML = `<span class="${total === 0 ? 'empty' : ''}">${total}</span><small> · ПКМ зум</small>`;
       }
     } else if (isGun(w)) {
-      this.ammo.innerHTML = ws.reloadT > 0 ? '<span class="reload">перезарядка…</span>'
-        : `<span class="${ws.ammo[w] === 0 ? 'empty' : ''}">${ws.ammo[w]}</span><small>/${ws.reserve[w]}</small>`;
+      if (ws.reloadT > 0) {
+        const hint = ws.reloadStatus === 'ready' ? ' · [R] в зелёной зоне!'
+          : ws.reloadStatus === 'fail' ? ' · замедлено!' : '';
+        this.ammo.innerHTML = `<span class="reload">перезарядка${hint}</span>`;
+      } else {
+        const extra = w === 'revolver' ? ' <small>· ПКМ крутить</small>'
+          : ws.reloadLockout > 0 ? ` <small style="color:#ff8080">КД быстр. ${Math.ceil(ws.reloadLockout)}с</small>` : '';
+        this.ammo.innerHTML = `<span class="${ws.ammo[w] === 0 ? 'empty' : ''}">${ws.ammo[w]}</span><small>/${ws.reserve[w]}</small>${extra}`;
+      }
     } else {
       this.ammo.innerHTML = `<div class="pips">${'<i></i>'.repeat(ws.ammo.grenade)}${'<i class="empty"></i>'.repeat(def.mag - ws.ammo.grenade)}</div>`;
     }

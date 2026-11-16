@@ -154,6 +154,8 @@ export class Mover {
 
   constructor(R: Rapier, readonly world: PhysicsWorld, public cfg: MovementConfig) {
     this.collider = world.createCollider(R.ColliderDesc.capsule(PLAYER_HALF_SEGMENT, PLAYER_RADIUS));
+    // Bit 0x0002 membership, filter excludes 0x0002 so characters never climb/stack on each other's heads
+    this.collider.setCollisionGroups(0x0002_fffd);
     this.kcc = world.createCharacterController(0.02);
     this.kcc.setSlideEnabled(true);
     this.kcc.setApplyImpulsesToDynamicBodies(false);
@@ -283,7 +285,7 @@ export class Mover {
     // on the ground even a zero move runs: it snaps the capsule down onto the ground
     if (!onGround && delta.lengthSq() < 1e-12) return;
     this.sync(s);
-    this.kcc.computeColliderMovement(this.collider, delta);
+    this.kcc.computeColliderMovement(this.collider, delta, undefined, 0x0001_fffd);
     const mv = this.kcc.computedMovement();
     _step.set(mv.x, mv.y, mv.z);
     s.pos.add(_step);
@@ -313,7 +315,7 @@ export class Mover {
     this.kcc.disableSnapToGround();
     this.kcc.setUp(up);
     _delta.copy(up).multiplyScalar(-0.08);
-    this.kcc.computeColliderMovement(this.collider, _delta);
+    this.kcc.computeColliderMovement(this.collider, _delta, undefined, 0x0001_fffd);
     const n = this.kcc.numComputedCollisions();
     for (let i = 0; i < n; i++) {
       const c = this.kcc.computedCollision(i);

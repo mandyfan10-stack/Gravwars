@@ -1,7 +1,7 @@
 import { pixelDot } from './pixelart';
 import {
   AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Group, IcosahedronGeometry, Mesh, MeshBasicMaterial,
-  MeshPhysicalMaterial, PointLight, Points, PointsMaterial, TorusGeometry, Vector3,
+  MeshPhysicalMaterial, PointLight, Points, PointsMaterial, RingGeometry, ShaderMaterial, TorusGeometry, Vector3,
 } from 'three';
 import { Rng } from '../../shared/math';
 
@@ -39,6 +39,52 @@ export function crystalGeometry(radius: number, height: number, rng: Rng, sides 
 let sparkTex: CanvasTexture | null = null;
 const sparkTexture = () => (sparkTex ??= pixelDot(8));
 
+/** Animated plasma & Fresnel energy shader material for crystals. */
+function makePlasmaMat(color: number) {
+  return new ShaderMaterial({
+    uniforms: {
+      uColor: { value: new Color(color) },
+      uTime: { value: 0 },
+      uStage: { value: 0 },
+    },
+    vertexShader: `
+      varying vec3 vLocal;
+      varying vec3 vNormalView;
+      varying vec3 vViewPos;
+      void main() {
+        vLocal = position;
+        vNormalView = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vViewPos = -mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uTime;
+      uniform float uStage;
+      varying vec3 vLocal;
+      varying vec3 vNormalView;
+      varying vec3 vViewPos;
+      void main() {
+        vec3 N = normalize(vNormalView);
+        vec3 V = normalize(vViewPos);
+        float fresnel = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 2.1);
+        float waveA = sin(vLocal.y * 5.2 - uTime * (2.6 + uStage * 1.6) + sin(vLocal.x * 7.0 + vLocal.z * 7.0));
+        float waveB = cos((vLocal.x - vLocal.z) * 8.0 + uTime * 3.1);
+        float veins = smoothstep(0.35, 0.92, waveA * 0.65 + waveB * 0.35);
+        float intensity = 0.25 + fresnel * 1.45 + veins * (0.8 + uStage * 0.55);
+        vec3 tint = mix(uColor, vec3(1.0), fresnel * 0.45 + veins * 0.35 + uStage * 0.2);
+        gl_FragColor = vec4(tint * (1.2 + intensity), clamp(0.18 + fresnel * 0.55 + veins * 0.38, 0.0, 0.92));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: AdditiveBlending,
+    side: DoubleSide,
+  });
+}
+
 /** Glassy shell over a glowing core: the shell reflects the sky with a rainbow sheen, the core feeds the bloom. */
 export function crystalMaterials(color: number) {
   const c = new Color(color);
@@ -48,18 +94,22 @@ export function crystalMaterials(color: number) {
     transparent: true, opacity: 0.38, depthWrite: false, flatShading: true,
   });
   const core = new MeshBasicMaterial({ color: c.clone().multiplyScalar(2.2) });
-  return { shell, core };
+  const plasma = makePlasmaMat(color);
+  return { shell, core, plasma };
 }
 
-/** One crystal: shell + core sharing a geometry. */
+/** One crystal: core + animated plasma shell + outer glass shell sharing geometry. */
 function crystalMesh(geo: BufferGeometry, mats: ReturnType<typeof crystalMaterials>) {
   const g = new Group();
   const core = new Mesh(geo, mats.core);
   core.scale.setScalar(0.55);
+  const aura = new Mesh(geo, mats.plasma);
+  aura.scale.setScalar(0.84);
+  aura.renderOrder = 1;
   const shell = new Mesh(geo, mats.shell);
-  shell.renderOrder = 1;
+  shell.renderOrder = 2;
   shell.castShadow = true;
-  g.add(core, shell);
+  g.add(core, aura, shell);
   return g;
 }
 
@@ -96,6 +146,21 @@ export function crystalCluster(color: number, seed: number): CrystalCluster {
   light.position.set(0, 0.3, 0);
   group.add(light);
 
+  // Ambient floating energy halo rings around the crystal
+  const orbitMat = new MeshBasicMaterial({
+    color: new Color(color).lerp(new Color(0xffffff), 0.35).multiplyScalar(1.8),
+    transparent: true,
+    opacity: 0.42,
+    blending: AdditiveBlending,
+    depthWrite: false,
+  });
+  const orbit1 = new Mesh(new TorusGeometry(1.45, 0.025, 6, 36), orbitMat);
+  orbit1.rotation.x = Math.PI * 0.36;
+  const orbit2 = new Mesh(new TorusGeometry(1.75, 0.02, 6, 36), orbitMat);
+  orbit2.rotation.x = -Math.PI * 0.42;
+  orbit2.rotation.z = Math.PI * 0.25;
+  group.add(orbit1, orbit2);
+
   // Invulnerability barrier (shown during the 10s countdown between Stage 1 and Stage 2)
   const shieldGroup = new Group();
   shieldGroup.visible = false;
@@ -122,6 +187,33 @@ export function crystalCluster(color: number, seed: number): CrystalCluster {
   shieldGroup.add(shieldDome, ring1, ring2);
   group.add(shieldGroup);
 
+  // Visual healing (+2 HP/s) & ammo refill zone (radius = 8.5 m, flush on base hall floor at y = -2.73 relative to crystal center)
+  const zoneGroup = new Group();
+  zoneGroup.position.y = -2.73;
+  const zoneColor = new Color(color).lerp(new Color(0x7dffa8), 0.32);
+  const zoneFillMat = new MeshBasicMaterial({
+    color: zoneColor,
+    transparent: true,
+    opacity: 0.09,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    side: DoubleSide,
+  });
+  const zoneBorderMat = new MeshBasicMaterial({
+    color: zoneColor.clone().multiplyScalar(1.9),
+    transparent: true,
+    opacity: 0.65,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    side: DoubleSide,
+  });
+  const zoneDisc = new Mesh(new RingGeometry(2.2, 8.5, 48).rotateX(-Math.PI / 2), zoneFillMat);
+  const zoneOuter = new Mesh(new RingGeometry(8.34, 8.52, 64).rotateX(-Math.PI / 2), zoneBorderMat);
+  const zoneInner = new Mesh(new RingGeometry(5.25, 5.34, 48).rotateX(-Math.PI / 2), zoneBorderMat.clone());
+  (zoneInner.material as MeshBasicMaterial).opacity = 0.28;
+  zoneGroup.add(zoneDisc, zoneOuter, zoneInner);
+  group.add(zoneGroup);
+
   let stage: 1 | 2 = 1;
   let invulnT = 0;
 
@@ -147,8 +239,19 @@ export function crystalCluster(color: number, seed: number): CrystalCluster {
     },
     update(time, dt) {
       const spinMult = invulnT > 0 ? 4.5 + (10 - invulnT) * 0.6 : stage === 2 ? 1.85 : 1;
+      mats.plasma.uniforms.uTime.value = time;
+      mats.plasma.uniforms.uStage.value = stage === 2 || invulnT > 0 ? 1 : 0;
       float.position.y = Math.sin(time * (stage === 2 ? 1.8 : 1.1) + seed) * (stage === 2 ? 0.18 : 0.12);
       float.rotation.y += dt * 0.25 * spinMult;
+      orbit1.rotation.z += dt * 0.75 * spinMult;
+      orbit1.rotation.y += dt * 0.35;
+      orbit2.rotation.z -= dt * 0.55 * spinMult;
+      orbitMat.opacity = invulnT > 0 ? 0.8 : stage === 2 ? 0.65 : 0.38;
+      const zonePulse = 0.72 + 0.28 * Math.sin(time * 2.2 + seed);
+      zoneFillMat.opacity = (invulnT > 0 ? 0.14 : 0.085) * zonePulse;
+      zoneBorderMat.opacity = (invulnT > 0 ? 0.85 : 0.58) * zonePulse;
+      zoneOuter.rotation.y += dt * 0.18;
+      zoneInner.rotation.y -= dt * 0.28;
       if (invulnT > 0) {
         const urgency = 1 + (10 - invulnT) * 0.9;
         const pulse = 0.5 + 0.5 * Math.sin(time * 6 * urgency);

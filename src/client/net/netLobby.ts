@@ -25,6 +25,7 @@ export interface NetLobbyCallbacks {
   ) => void;
   onPlayersChange?: (players: NetworkPlayerInfo[]) => void;
   onStatusMessage?: (text: string, isError?: boolean) => void;
+  onChat?: (sender: string, text: string, team?: TeamId) => void;
   onRejected?: (reason: string) => void;
   onHostLeave?: (reason: string) => void;
 }
@@ -63,7 +64,10 @@ export class NetLobbyController {
 
     this.net.events.onPeerRtt = (peerId, rttMs) => {
       const p = this.players.find((pl) => pl.id === peerId);
-      if (p) p.pingMs = rttMs;
+      if (p) {
+        p.pingMs = rttMs;
+        this.callbacks.onPlayersChange?.(this.players);
+      }
     };
 
     if (this.isHost) {
@@ -198,6 +202,14 @@ export class NetLobbyController {
         this.lobby.render();
         this.broadcastLobbyUpdate();
         this.callbacks.onPlayersChange?.(this.players);
+      } else if (msg.type === 'lobby:chat') {
+        const cleanText = msg.text.replace(/\s+/g, ' ').trim().slice(0, 140);
+        if (!cleanText) return;
+        const sender = this.players.find((pl) => pl.id === peerId);
+        const safeSender = sender?.name ?? cleanPlayerName(msg.sender, `Игрок ${peerId.slice(-4)}`);
+        const out: LobbyMessage = { type: 'lobby:chat', senderId: peerId, sender: safeSender, team: sender?.team, text: cleanText };
+        this.net.broadcast({ kind: 'lobby', data: out }, peerId);
+        this.callbacks.onChat?.(safeSender, cleanText, sender?.team);
       }
       return;
     }
@@ -217,6 +229,8 @@ export class NetLobbyController {
       Object.assign(this.lobby.config, msg.config);
       this.lobby.render();
       this.callbacks.onPlayersChange?.(this.players);
+    } else if (msg.type === 'lobby:chat') {
+      this.callbacks.onChat?.(msg.sender, msg.text, msg.team);
     } else if (msg.type === 'lobby:start') {
       this.matchStarted = true;
       const mapTeam = msg.mapTeam ?? msg.activeTeams[0] ?? 'red';
@@ -270,6 +284,30 @@ export class NetLobbyController {
     }
   }
 
+  /** Send a chat message in the pre-match lobby room. */
+  sendChat(text: string) {
+    const clean = text.replace(/\s+/g, ' ').trim().slice(0, 140);
+    if (!clean || this.matchStarted) return;
+    if (this.isHost) {
+      const me = this.players.find((p) => p.id === this.myPlayerId);
+      const label = me?.name ?? `${this.myName} (Хост)`;
+      this.net.broadcast({
+        kind: 'lobby',
+        data: { type: 'lobby:chat', senderId: this.myPlayerId, sender: label, team: me?.team, text: clean },
+      });
+      this.callbacks.onChat?.(label, clean, me?.team);
+    } else {
+      const me = this.players.find((p) => p.id === this.myPlayerId);
+      const label = me?.name ?? this.myName;
+      this.net.sendToHost({
+        kind: 'lobby',
+        data: { type: 'lobby:chat', senderId: this.myPlayerId, sender: label, team: me?.team, text: clean },
+      });
+      this.callbacks.onChat?.(label, clean, me?.team);
+    }
+  }
+
+  /** Broadcasts updated lobby config & players. */
   broadcastLobbyUpdate() {
     if (!this.isHost || this.matchStarted) return;
     this.net.broadcast({

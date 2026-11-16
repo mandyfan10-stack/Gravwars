@@ -2,11 +2,22 @@
  * Screenshots of the running dev server (npm run dev) for visual checks: `npx tsx scripts/shots.ts [outDir]`.
  * Headless Chrome renders through the real GPU (ANGLE on Vulkan); SwiftShader is far too slow for this scene.
  */
+import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const out = process.argv[2] ?? 'shots';
 const url = process.env.URL ?? 'http://localhost:5173/';
-const browser = await chromium.launch({ args: ['--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const chromeCandidates = [
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  chromium.executablePath(),
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+].filter((p): p is string => !!p && existsSync(p));
+const browser = await chromium.launch({
+  executablePath: chromeCandidates[0],
+  args: ['--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist'],
+});
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 const errors: string[] = [];
 page.on('pageerror', (e) => errors.push(String(e)));

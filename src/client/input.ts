@@ -6,20 +6,34 @@ export class Input {
   sensitivity = 0.0022;
   locked = false;
   private wheelJump = 0;
+  private wantMenuInSpec = false;
   /** Mouse-move hooks, in order: the first that returns true takes the move (the view does not turn). */
   readonly mouseHooks: ((dx: number, dy: number) => boolean)[] = [];
   onWheel: (delta: number) => boolean = () => false;
 
   /** A match exists: the menu button and a click on the canvas take the mouse (before that the menu is the lobby). */
   armed = false;
+  /** True while typing into an active in-match chat input (suppresses movement & Escape pause). */
+  typing = false;
 
   constructor(private canvas: HTMLCanvasElement, private overlay: HTMLElement) {
     document.getElementById('start-game')!.addEventListener('click', () => this.lock());
     canvas.addEventListener('click', () => !this.locked && this.armed && canvas.requestPointerLock());
     document.addEventListener('pointerlockchange', () => this.setLocked(document.pointerLockElement === canvas));
     window.addEventListener('keydown', (e) => {
+      if (this.typing) return;
       if (e.code === 'Tab') e.preventDefault();
-      if (e.code === 'Escape' && this.locked) { document.exitPointerLock(); return; }
+      if (e.code === 'Escape') {
+        if (this.locked) {
+          this.wantMenuInSpec = true;
+          document.exitPointerLock();
+          return;
+        }
+        if (document.body.classList.contains('spectating') && this.armed) {
+          this.overlay.classList.toggle('hidden');
+          return;
+        }
+      }
       if (!this.keys.has(e.code)) this.pressed.add(e.code);
       this.keys.add(e.code);
     });
@@ -55,7 +69,12 @@ export class Input {
   /** Pointer lock state (also used by the screenshot script, where headless Chrome has no pointer lock). */
   setLocked(on: boolean) {
     this.locked = on;
-    this.overlay.classList.toggle('hidden', on);
+    const spectating = document.body.classList.contains('spectating');
+    // Do NOT pop up the pause menu when alt-tabbing / losing window focus in Spectator mode
+    if (on || !spectating || this.wantMenuInSpec) {
+      this.overlay.classList.toggle('hidden', on);
+    }
+    this.wantMenuInSpec = false;
     document.body.classList.toggle('playing', on);
     if (!on) { this.keys.clear(); this.pressed.clear(); }
     document.dispatchEvent(new Event('game-lock'));

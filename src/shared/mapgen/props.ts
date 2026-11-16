@@ -129,6 +129,56 @@ export function hydrant(b: Builder, f: Frame, x: number, z: number) {
   b.block(f, x, SW, z, 0.14, 0.38, 0.14, 0xc8352a, 'paint');
 }
 
+/**
+ * Raised stone curbs (~0.14 m high) bordering the 4 sidewalk edges of a city tile at (cx, cz).
+ * `drivewaySide` (optional: 0 = +z, 1 = +x, 2 = -z, 3 = -x) leaves a dropped-curb driveway gap in the middle.
+ */
+export function tileCurbs(b: Builder, f: Frame, cx: number, cz: number, drivewaySide = -1) {
+  const segLen = 3.0;
+  const kerbH = 0.14;
+  const kerbY0 = 0.05; // top at 0.19 m (0.04 m proud of 0.15 m sidewalk, 0.19 m above 0 m road; stepHeight is 0.45 m)
+  const kerbW = 0.15;
+  const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+  for (let side = 0; side < 4; side++) {
+    const [di, dj] = dirs[side];
+    const s = f.sub(cx + di * BLOCK, 0, cz + dj * BLOCK, Math.atan2(di, dj));
+    for (let k = -4; k < 4; k++) {
+      const a = (k + 0.5) * segLen;
+      if (side === drivewaySide && Math.abs(a) < 3.2) {
+        // Dropped curb at driveway entrance
+        b.block(s, a, 0, 0, segLen / 2 - 0.03, 0.03, kerbW, 0xa8a090, 'stone');
+        continue;
+      }
+      const shade = (k + side) % 2 === 0 ? 0xc4bcab : 0xb2aa99;
+      b.block(s, a, kerbY0, 0, segLen / 2 - 0.03, kerbH / 2, kerbW, shade, 'stone');
+    }
+    // Cornerstone block
+    b.block(s, BLOCK, kerbY0, 0, kerbW + 0.02, kerbH / 2 + 0.005, kerbW + 0.02, 0xaba393, 'stone');
+  }
+}
+
+/**
+ * Octagonal stone fountain with tiered center spout and a fishable PondDef basin (`half >= [2.2, 2.2]`).
+ */
+export function fountain(b: Builder, f: Frame, fx: number, fz: number, team: string, radius = 3.6) {
+  const ring: number[][] = [];
+  const water: number[][] = [];
+  const innerR = radius - 0.4;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    ring.push([fx + Math.cos(a) * radius, SW, fz + Math.sin(a) * radius], [fx + Math.cos(a) * radius, SW + 0.55, fz + Math.sin(a) * radius]);
+    water.push([fx + Math.cos(a) * innerR, SW + 0.5, fz + Math.sin(a) * innerR], [fx + Math.cos(a) * innerR, SW + 0.58, fz + Math.sin(a) * innerR]);
+  }
+  b.hull(f, ring, 0xd8cfbb, 'stone');
+  b.hull(f, water, 0x3fb6c4, 'water', false);
+  b.block(f, fx, SW + 0.5, fz, 0.42, 1.1, 0.42, 0xd8cfbb, 'stone');
+  b.block(f, fx, SW + 1.65, fz, 1.15, 0.12, 1.15, 0xe2dac8, 'stone', false);
+  b.block(f, fx, SW + 2.7, fz, 0.85, 0.12, 0.85, 0xd8cfbb, 'stone', false);
+  b.box(f, fx, SW + 3.05, fz, 0.18, 0.25, 0.18, 0x8be8ff, 'glow', false);
+  const pondHalf = Math.max(2.2, Number((innerR - 0.4).toFixed(2)));
+  b.data.ponds.push({ team, pos: f.p(fx, SW + 0.58, fz), up: f.up(), quat: f.rot(0), half: [pondHalf, pondHalf] });
+}
+
 /** A small heap of crates (and sometimes a barrel) around (x, z) on height y0. */
 export function crates(b: Builder, f: Frame, rng: Rng, x: number, y0: number, z: number) {
   const h0 = rng.pick([0.5, 0.6]);

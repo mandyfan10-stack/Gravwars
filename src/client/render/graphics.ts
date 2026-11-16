@@ -20,6 +20,24 @@ const FILL_LOCAL = new Vector3(-0.55, 0.35, -0.6).normalize();
  */
 export interface RetroLook { lines: number; levels: number }
 
+/** Renders through-wall X-Ray silhouettes against the main scene depth buffer (BEFORE clearDepth of OverlayPass). */
+class XRayPass extends Pass {
+  scene: Scene | null = null;
+  camera: Camera | null = null;
+  constructor() {
+    super();
+    this.needsSwap = false;
+  }
+  render(renderer: WebGLRenderer, _write: WebGLRenderTarget, read: WebGLRenderTarget) {
+    if (!this.scene || !this.camera) return;
+    const auto = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.setRenderTarget(read);
+    renderer.render(this.scene, this.camera);
+    renderer.autoClear = auto;
+  }
+}
+
 /** Draws an extra scene (the first-person hands) into the frame after bloom, at the same pixel size. */
 class OverlayPass extends Pass {
   scene: Scene | null = null;
@@ -84,6 +102,8 @@ export class Graphics {
   readonly camera = new PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 1500);
   readonly composer: EffectComposer;
   readonly bloom: UnrealBloomPass;
+  /** Through-wall X-Ray contour overlay (renders against world depth before 1P hands). */
+  readonly xray = new XRayPass();
   /** The first-person hands: drawn into the small frame too (same pixels, same palette). */
   readonly overlay = new OverlayPass();
   private readonly retro = new RetroPass();
@@ -93,6 +113,7 @@ export class Graphics {
   readonly upDir = new Vector3();
   private readonly space: ReturnType<typeof createSpace>;
   private readonly sunView: ReturnType<typeof createSun>;
+  private sunVisible = true;
   private readonly hemi = new HemisphereLight(0xfff0d4, 0x9b8665, 0.65);
   private readonly sun = new DirectionalLight(0xffe6b8, 2.65);
   private readonly fill = new DirectionalLight(0xebd8b5, 0.75);
@@ -143,14 +164,23 @@ export class Graphics {
 
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, this.camera));
-    this.bloom = new UnrealBloomPass(new Vector2(window.innerWidth, window.innerHeight), 0.22, 0.4, 0.92);
+    // Glow (UnrealBloomPass) reduced by 75% across the whole game (0.22 -> 0.055)
+    this.bloom = new UnrealBloomPass(new Vector2(window.innerWidth, window.innerHeight), 0.055, 0.4, 0.92);
     this.composer.addPass(this.bloom);
+    this.composer.addPass(this.xray);
     this.composer.addPass(this.overlay);
     this.composer.addPass(new OutputPass());
     this.composer.addPass(this.retro);
     for (const t of [this.composer.renderTarget1, this.composer.renderTarget2]) t.texture.minFilter = t.texture.magFilter = NearestFilter;
     this.composer.setPixelRatio(1);
     this.resize();
+  }
+
+  /** Show or hide the central 3D sun sphere/corona and skybox solar cores (disabled in Skirmish). */
+  setSunVisible(visible: boolean) {
+    this.sunVisible = visible;
+    this.sunView.group.visible = visible;
+    this.space.uniforms.hasSun.value = visible ? 1 : 0;
   }
 
   /** Pixel size and colour depth (see RetroLook). */
@@ -199,11 +229,15 @@ export class Graphics {
     const { camera, sunDir, upDir, sun } = this;
     this.space.space.position.copy(camera.position);
     this.space.uniforms.time.value = time;
-    this.sunView.update(time, camera);
     upDir.set(0, 1, 0).applyQuaternion(renderFrame);
-    sunDir.copy(camera.position).negate();
-    if (sunDir.lengthSq() < 1) sunDir.copy(upDir);
-    sunDir.normalize();
+    if (this.sunVisible) {
+      this.sunView.update(time, camera);
+      sunDir.copy(camera.position).negate();
+      if (sunDir.lengthSq() < 1) sunDir.copy(upDir);
+      sunDir.normalize();
+    } else {
+      sunDir.set(0.24, 0.92, 0.31).normalize().applyQuaternion(renderFrame);
+    }
     this.hemi.position.copy(upDir);
     sun.target.position.copy(camera.position).addScaledVector(upDir, -10);
     sun.position.copy(sun.target.position).addScaledVector(sunDir, 200);

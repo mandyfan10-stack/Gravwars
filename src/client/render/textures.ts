@@ -86,17 +86,21 @@ export function groundTextures() {
     }
   }
 
-  // asphalt (3 m): fine grit in three shades over soft blotches, a few cracks
+  // asphalt (3 m): fine dark/mineral aggregate grit, subtle tire-worn tracks, tar-sealed cracks
   const SA = 3 * T;
   const [ca, a] = canvas(SA);
   {
     const n = tileNoise(SA, 6, rng);
-    shade(a, SA, (x, y) => 200 + (n(x, y) - 0.5) * 26 + rng.pick([-10, 0, 0, 0, 8]));
-    for (let i = 0; i < 3; i++) {
+    shade(a, SA, (x, y) => {
+      const track = Math.sin((x / SA) * Math.PI * 2) * 5;
+      const speck = rng.chance(0.22) ? rng.pick([-16, -9, 9, 15]) : rng.pick([-4, 0, 0, 5]);
+      return 194 + (n(x, y) - 0.5) * 30 - track + speck;
+    });
+    for (let i = 0; i < 6; i++) {
       let x = rng.int(0, SA - 1), y = rng.int(0, SA - 1);
-      for (let k = 0; k < rng.int(8, 16); k++) {
-        px(a, ((x % SA) + SA) % SA, ((y % SA) + SA) % SA, 150);
-        if (rng.chance(0.5)) x += rng.pick([-1, 1]); else y += rng.pick([-1, 1]);
+      for (let k = 0; k < rng.int(10, 22); k++) {
+        px(a, ((x % SA) + SA) % SA, ((y % SA) + SA) % SA, 134);
+        if (rng.chance(0.55)) x += rng.pick([-1, 1]); else y += rng.pick([-1, 1]);
       }
     }
   }

@@ -26,6 +26,8 @@ export interface BuildingSpec {
   w: number;
   d: number;
   floors: number;
+  /** Optional storey ceiling-to-ceiling height (defaults to STOREY = 3 m). */
+  storeyH?: number;
   /** Ground level (sidewalk top). */
   y0: number;
   /** Turn of the layout (multiples of π/2): the stair core sits at the building's +x / -z corner, doors on ±z. */
@@ -52,15 +54,38 @@ type Rect = [number, number, number, number];
 
 /**
  * Stair core: lanes [lx0, lx0 + 3] and [lx0 + 3, lx0 + 6] (`lanes` = 1: only the first), runs along z over
- * [r0, r0 + 6]. Storey L climbs in lane L % lanes, rising +z on even storeys, -z on odd ones. Returns, per level
- * 1..storeys, the hole that level's slab needs (over the ramp arriving at it).
+ * [r0, r0 + span]. When `storeyH <= 4.2`, a single flight climbs per storey; for tall 2.5x storeys (`storeyH > 4.2`)
+ * and `lanes === 2`, two walkable switchback half-flights + mid-landing keep slope gentle (≤ 33°). Returns, per
+ * level 1..storeys, the slab cutout rectangle arriving at that floor.
  */
-function stairs(b: Builder, f: Frame, lx0: number, r0: number, storeys: number, lanes: 1 | 2, base: number, color: number): Rect[] {
+function stairs(b: Builder, f: Frame, lx0: number, r0: number, storeys: number, lanes: 1 | 2, base: number, color: number, storeyH = STOREY): Rect[] {
   const holes: Rect[] = [];
+  if (storeyH > 4.2 && lanes === 2) {
+    const run = 6.0;
+    const landD = 2.0;
+    const midZ = r0 + run;
+    for (let L = 0; L < storeys; L++) {
+      const y0 = base + L * storeyH;
+      const yMid = y0 + storeyH * 0.5;
+      const y1 = y0 + storeyH;
+      const upA = L % 2 === 0;
+      const zStart = upA ? r0 : midZ;
+      const zMid = upA ? midZ : r0;
+      // First half-flight in lane 0
+      b.hull(f, [[lx0, y0, zStart], [lx0 + 3, y0, zStart], [lx0, y0, zMid], [lx0 + 3, y0, zMid], [lx0, yMid, zMid], [lx0 + 3, yMid, zMid]], color, 'concrete');
+      // Intermediate landing across both lanes
+      if (upA) b.span(f, lx0, yMid - 0.28, midZ, lx0 + 6, yMid, midZ + landD, color, 'concrete');
+      else b.span(f, lx0, yMid - 0.28, r0 - landD, lx0 + 6, yMid, r0, color, 'concrete');
+      // Second half-flight in lane 1 back to entry side
+      b.hull(f, [[lx0 + 3, yMid, zMid], [lx0 + 6, yMid, zMid], [lx0 + 3, yMid, zStart], [lx0 + 6, yMid, zStart], [lx0 + 3, y1, zStart], [lx0 + 6, y1, zStart]], color, 'concrete');
+      holes.push([lx0, lx0 + 6, r0 - (upA ? 0 : landD), midZ + (upA ? landD : 0)]);
+    }
+    return holes;
+  }
   for (let L = 0; L < storeys; L++) {
     const lane = L % lanes;
     const x0 = lx0 + lane * 3, x1 = x0 + 3;
-    const y0 = base + L * STOREY, y1 = y0 + STOREY;
+    const y0 = base + L * storeyH, y1 = y0 + storeyH;
     const up = lanes === 1 || L % 2 === 0;
     const lo = up ? r0 : r0 + 6, hi = up ? r0 + 6 : r0;
     b.hull(f, [[x0, y0, lo], [x1, y0, lo], [x0, y0, hi], [x1, y0, hi], [x0, y1, hi], [x1, y1, hi]], color, 'concrete');
@@ -120,20 +145,22 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
   const inset = glazed ? GLASS_T : 0;
   const XI = X - inset, ZI = Z - inset;
   const N = s.floors;
-  const top = GF + N * STOREY;
+  const sh = s.storeyH ?? STOREY;
+  const top = GF + N * sh;
   const roofless = s.style === 'skeleton';
   // stair core in the +x / -z corner, inset cleanly inside perimeter columns and parapets
   const margin = glazed ? 0.45 : 0.6;
   const lx0 = X - margin - 6;
-  const core = Math.min(12, 2 * ZI);
-  const r0 = -ZI + (core - 6) / 2;
-  const lanes: 1 | 2 = N > 1 ? 2 : 1;
+  const stairLen = sh > 4.2 ? 8.2 : 6;
+  const core = Math.min(12, Math.max(stairLen + 2, 2 * ZI));
+  const r0 = sh > 4.2 ? -ZI + 2.2 : -ZI + (core - 6) / 2;
+  const lanes: 1 | 2 = N > 1 || sh > 4.2 ? 2 : 1;
   const climbs = roofless ? N - 1 : N; // a skeleton has no roof to climb onto
-  const holes = stairs(b, f, lx0, r0, climbs, lanes, GF, s.style === 'skeleton' ? 0xb9b4a8 : 0xc9c4b8);
+  const holes = stairs(b, f, lx0, r0, climbs, lanes, GF, s.style === 'skeleton' ? 0xb9b4a8 : 0xc9c4b8, sh);
   const doorX = -3;
-  const partZ = -ZI + core + 0.1;
+  const partZ = -ZI + Math.min(core, r0 + ZI + stairLen + 0.6) + 0.1;
   const keepClear = (x: number, z: number) =>
-    (x > lx0 - 1.5 && z < -ZI + core + 1.5) // stair core
+    (x > lx0 - 1.5 && z < r0 + stairLen + 1.5) // stair core
     || (glazed && s.d >= 18 && Math.abs(z - partZ) < 1.2) // interior plaster partition
     || (Math.abs(x - doorX) < DOOR_W / 2 + 1 && Math.abs(z) > ZI - 3.5) // door corridors
     || Math.abs(x - doorX) < 1.6; // the way between the doors
@@ -145,12 +172,12 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
   const edge = glazed ? 0.1 : 0;
   for (let L = 1; L <= N; L++) {
     if (roofless && L === N) break;
-    const y = GF + L * STOREY;
+    const y = GF + L * sh;
     holed(b, f, -X - edge, X + edge, -Z - edge, Z + edge, y - SLAB, y, holes[L - 1] ?? null, s.frame, 'concrete');
   }
 
   // columns: corners (+ mid points on long sides of the open styles)
-  const colTop = roofless ? top - STOREY : top;
+  const colTop = roofless ? top - sh : top;
   const cols: [number, number, number][] = [
     [-X, -Z, s.style === 'garage' ? top + 1 : colTop],
     [X, -Z, s.style === 'garage' ? top + 1 : colTop],
@@ -187,7 +214,7 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
       // open decks: a parapet on every level above the street (none on the ground floor: you walk in anywhere)
       for (let L = 1; L <= N; L++) {
         if (roofless) break;
-        const y = GF + L * STOREY;
+        const y = GF + L * sh;
         b.span(side, -len + 0.5, y, depth - 0.24, len - 0.5, y + 1, depth - 0.02, s.frame, 'concrete');
       }
     }
@@ -229,13 +256,12 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
 
   // inside: a ceiling light, a partition with a doorway, furniture and crates on every storey
   for (let L = 0; L < N; L++) {
-    const y = GF + L * STOREY;
-    const ceil = y + STOREY - SLAB;
+    const y = GF + L * sh;
+    const ceil = y + sh - SLAB;
     if (s.style !== 'skeleton')
       b.span(f, doorX - 0.15, ceil - 0.05, -ZI + 1.5, doorX + 0.15, ceil - 0.03, ZI - 1.5, 0xfff4dc, 'glow', false);
     if (glazed && s.d >= 18 && L > 0) {
-      const zp = -ZI + core;
-      wallWithHoles(b, f, -XI, lx0, y, y + STOREY - SLAB, zp + 0.1, 0.2, [{ x0: doorX - 1, x1: doorX + 1, y0: y, y1: y + 2.3 }], 0xe4dfd4, 'plaster');
+      wallWithHoles(b, f, -XI, lx0, y, y + sh - SLAB, partZ, 0.2, [{ x0: doorX - 1, x1: doorX + 1, y0: y, y1: y + Math.min(2.6, sh - SLAB) }], 0xe4dfd4, 'plaster');
     }
     if (s.style === 'garage') {
       if (L > 0) for (let k = 0, n = rng.int(1, 3); k < n; k++) {
@@ -249,8 +275,8 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
   if (s.style === 'skeleton') {
     // scaffolding along the -x side and rebar sticking out of the unfinished top
     const sx = -X - 1.2;
-    for (let z = -Z; z <= Z; z += 3) pipe(b, f, [sx, 0, z], [sx, top - STOREY + 1, z], 0.06, 0x8a8f96, false);
-    for (let L = 1; L < N; L++) b.span(f, sx - 0.6, GF + L * STOREY - 0.1, -Z, sx + 0.6, GF + L * STOREY, Z, 0x8f6a42, 'wood');
+    for (let z = -Z; z <= Z; z += 3) pipe(b, f, [sx, 0, z], [sx, top - sh + 1, z], 0.06, 0x8a8f96, false);
+    for (let L = 1; L < N; L++) b.span(f, sx - 0.6, GF + L * sh - 0.1, -Z, sx + 0.6, GF + L * sh, Z, 0x8f6a42, 'wood');
     for (const [x, z] of cols) for (let k = 0; k < 3; k++)
       b.box(f, x - Math.sign(x) * (0.15 + k * 0.1), colTop + 0.6, z - Math.sign(z || 1) * 0.15, 0.02, 0.6, 0.02, 0x5a4a3c, 'metal', false);
   }

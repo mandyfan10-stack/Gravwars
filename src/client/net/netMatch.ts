@@ -1,19 +1,20 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
 import {
-  Block, BlockKind, BlockMaterial, BlockSystem, START_BLOCKS,
+  Block, BlockKind, BlockMaterial, BlockSystem, PieceVariant, START_BLOCKS,
 } from '../../shared/blocks';
 import { BotManager } from '../../shared/bots';
 import { Combat, CombatEvent, Faction, MAX_HP, SPAWN_GUARD, Target } from '../../shared/combat';
-import { EYE_OFFSET } from '../../shared/constants';
+import { EYE_OFFSET, TICK_DT } from '../../shared/constants';
 import {
   Economy, ItemId, Pickups, PickupKind, SHOP, Step,
 } from '../../shared/economy';
 import { escapeHtml } from '../../shared/escape';
-import { Holdable } from '../../shared/inventory';
+import { Holdable, holdables } from '../../shared/inventory';
 import { LobbyConfig } from '../../shared/lobby';
 import { MapData } from '../../shared/map';
-import { BED_HP, CRYSTAL_INVULN_TIME, KILL_REWARD, Match, MatchEvent } from '../../shared/match';
+import { CRYSTAL_INVULN_TIME, killRewardFor, Match, MatchEvent, maxCrystalHp, SKIRMISH_WOOD_PER_SEC } from '../../shared/match';
 import { upOf } from '../../shared/math';
+import { commandToMoveInput, emptyUserCommand, IN_DUCK, IN_JUMP, IN_SPEED, type PMoveServerState, sanitizeUserCommand, SimulateMovement, type UserCommand, cloneUserCommand } from '../../shared/net/pmove';
 import { MoveInput, emptyInput } from '../../shared/movement';
 import { PhysicsWorld, Rapier } from '../../shared/physics';
 import { Props } from '../../shared/props';
@@ -32,6 +33,7 @@ import { GameAudio } from '../audio';
 import { BlockController } from '../blockController';
 import { Hands } from '../hands';
 import { Hud, teamHex } from '../hud';
+import type { InventoryUi } from '../inventoryUi';
 import { LocalPlayer } from '../localPlayer';
 import { MatchUi } from '../matchUi';
 import { DEATH_TIME, PlayerCombat, killIcon } from '../playerCombat';
@@ -40,23 +42,16 @@ import { Fx } from '../render/fx';
 import { MapView } from '../render/mapView';
 import { MatchStats } from '../stats';
 import { P2PTransport } from './p2p';
+import { PMoveClient } from './pmoveClient';
 import { RemotePlayerManager } from './remotePlayerManager';
 
 const SNAPSHOT_INTERVAL = 0.04; // 25 Hz authoritative snapshots
-const HISTORY_LIMIT = 128;
 const PICKUP_RESYNC_TICKS = 25;
 
 interface HumanLobbySeat {
   id: string;
   name: string;
   team: TeamId;
-}
-
-interface PredictedFrame {
-  seq: number;
-  pos: Vector3;
-  vel: Vector3;
-  frame: Quaternion;
 }
 
 interface RemoteClientSim {
@@ -70,14 +65,17 @@ interface RemoteClientSim {
   blocksInv: Record<BlockMaterial, number>;
   eco: Economy;
   input: MoveInput;
+  cmd: UserCommand;
   yaw: number;
   pitch: number;
   heldItem?: Holdable;
   lastSeq: number;
+  lastTick: number;
   firing: boolean;
   reloadT: number;
   reloadW: WeaponId | null;
   respawnT: number;
+  woodRegenT: number;
   out: boolean;
   disconnected: boolean;
   dirtySync: boolean;
@@ -110,6 +108,7 @@ export interface NetMatchDeps {
   hands: Hands;
   build: BlockController;
   ui: MatchUi;
+  invUi?: InventoryUi;
   stats: MatchStats;
   hud: Hud;
   fx: Fx;
@@ -118,6 +117,7 @@ export interface NetMatchDeps {
   remotePlayers: RemotePlayerManager;
   camera: PerspectiveCamera;
   onHostDisconnect?: () => void;
+  onChat?: (sender: string, text: string, team?: TeamId) => void;
 }
 
 const _tmpV = new Vector3();
@@ -173,14 +173,14 @@ export class NetMatchController {
 
   // Client state
   private readonly remoteProxyTargets = new Map<string, Target>();
-  private readonly predictedHistory: PredictedFrame[] = [];
-  private localSeq = 0;
+  private readonly pmoveClient = new PMoveClient();
   private clientOut = false;
   private latestSnapshot: WorldSnapshot | null = null;
   private readonly botTargets = new Map<number, RemoteBotSnapshot>();
   private readonly npcTargets = new Map<number, RemoteNpcSnapshot>();
   private readonly carTargets = new Map<number, RemoteCarSnapshot>();
   private clientHostDisconnected = false;
+  private suppressBlockNet = false;
 
   constructor(private readonly deps: NetMatchDeps) {
     this.isHost = deps.isHost;
@@ -314,7 +314,7 @@ export class NetMatchController {
     match.onReviveAll = (crystalTeam) => {
       prevReviveAll?.(crystalTeam);
       for (const rc of this.remoteClients.values()) {
-        if (!rc.disconnected && !rc.out && !rc.target.alive) this.reviveRemoteClient(rc);
+        if (!rc.disconnected && !rc.out && !rc.target.alive && rc.team === crystalTeam) this.reviveRemoteClient(rc);
       }
     };
 
@@ -323,7 +323,12 @@ export class NetMatchController {
       prevOnKill(victim, owner);
       const rc = this.targetToClient.get(owner);
       if (rc && !victim.npc && victim.team !== rc.team) {
-        rc.wallet.cash += KILL_REWARD;
+        const reward = killRewardFor(this.deps.map.mode);
+        rc.wallet.cash += reward;
+        if (this.deps.map.mode === 'skirmish') {
+          rc.pendingNotice = { text: `+${reward}$`, color: '#ffd966' };
+          rc.pendingSound = 'coins';
+        }
         rc.dirtySync = true;
       }
     };
@@ -334,6 +339,7 @@ export class NetMatchController {
         data: {
           type: 'combat:bullet',
           ownerId: this.myId,
+          attackerTeam: match.team,
           origin: [origin.x, origin.y, origin.z],
           dir: [dir.x, dir.y, dir.z],
           weapon,
@@ -360,6 +366,7 @@ export class NetMatchController {
         data: {
           type: 'combat:bullet',
           ownerId: `bot:${botId}`,
+          attackerTeam: bots.bots.find((b) => b.id === botId)?.team,
           origin: [origin.x, origin.y, origin.z],
           dir: [dir.x, dir.y, dir.z],
           weapon,
@@ -393,6 +400,7 @@ export class NetMatchController {
         data: {
           type: 'block:place',
           kind: b.kind,
+          variant: b.variant,
           center: [b.center.x, b.center.y, b.center.z],
           half: [b.half.x, b.half.y, b.half.z],
           quat: [b.quat.x, b.quat.y, b.quat.z, b.quat.w],
@@ -404,6 +412,11 @@ export class NetMatchController {
       });
     };
     blocks.onPlace = broadcastPlace;
+    const prevDoor = blocks.onDoorToggle;
+    blocks.onDoorToggle = (b) => {
+      prevDoor?.(b);
+      transport.broadcast({ kind: 'event', data: { type: 'block:door', pos: [b.center.x, b.center.y, b.center.z], open: b.open } });
+    };
     build.onBlockReclaimed = (b) => {
       transport.broadcast({ kind: 'event', data: { type: 'block:break', pos: [b.center.x, b.center.y, b.center.z] } });
     };
@@ -498,6 +511,7 @@ export class NetMatchController {
     const wallet = { cash: 0, crystal: 0 };
     const blocksInv: Record<BlockMaterial, number> = { ...START_BLOCKS, wood: 16 };
     const eco = new Economy(wallet, { inventory: blocksInv }, weapons);
+    eco.freeWeapons = map.mode === 'skirmish';
 
     const rc: RemoteClientSim = {
       peerId: seat.id,
@@ -510,13 +524,16 @@ export class NetMatchController {
       blocksInv,
       eco,
       input: emptyInput(),
+      cmd: emptyUserCommand(),
       yaw: sim.state.yaw,
       pitch: 0,
       lastSeq: 0,
+      lastTick: 0,
       firing: false,
       reloadT: 0,
       reloadW: null,
       respawnT: 0,
+      woodRegenT: 0,
       out: false,
       disconnected: false,
       dirtySync: true,
@@ -529,16 +546,28 @@ export class NetMatchController {
     const seq = inp.seq ?? rc.lastSeq + 1;
     if (seq <= rc.lastSeq) return;
     rc.lastSeq = seq;
-    rc.input.forward = Math.max(-1, Math.min(1, inp.forward));
-    rc.input.right = Math.max(-1, Math.min(1, inp.right));
-    rc.input.up = Math.max(-1, Math.min(1, inp.up));
-    rc.input.jump = !!inp.jump;
-    rc.input.sprint = !!inp.sprint;
-    rc.input.crouch = !!inp.crouch;
-    rc.input.yaw = inp.yaw;
-    rc.input.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, inp.pitch));
-    rc.yaw = rc.input.yaw;
-    rc.pitch = rc.input.pitch;
+    let rawCmd: UserCommand;
+    if (inp.cmd) {
+      rawCmd = inp.cmd;
+    } else {
+      let buttons = 0;
+      if (inp.jump) buttons |= IN_JUMP;
+      if (inp.crouch) buttons |= IN_DUCK;
+      if (inp.sprint) buttons |= IN_SPEED;
+      rawCmd = {
+        tick: inp.tick,
+        forwardmove: inp.forward,
+        sidemove: inp.right,
+        upmove: inp.up,
+        viewangles: [inp.yaw, inp.pitch],
+        buttons,
+      };
+    }
+    rc.cmd = sanitizeUserCommand(rawCmd);
+    rc.lastTick = rc.cmd.tick;
+    commandToMoveInput(rc.cmd, rc.input);
+    rc.yaw = rc.cmd.viewangles[0];
+    rc.pitch = rc.cmd.viewangles[1];
     if (inp.weapon && (inp.weapon === 'fists' || rc.weapons.owned[inp.weapon as WeaponId])) {
       rc.weapons.current = inp.weapon as WeaponId;
     }
@@ -568,11 +597,11 @@ export class NetMatchController {
       rc.firing = true;
       const o = new Vector3(...act.origin);
       const d = new Vector3(...act.dir).normalize();
-      combat.use(w, rc.target.id, o, d, rc.sim.state.vel, rc.sim.gravityDown(), act.chargeT ?? 0);
+      combat.use(w, rc.target.id, o, d, rc.sim.state.vel, rc.sim.gravityDown(), act.chargeT ?? 0, rc.team);
       this.deps.remotePlayers.triggerFire(rc.peerId);
       transport.broadcast({
         kind: 'event',
-        data: { type: 'combat:bullet', ownerId: rc.peerId, origin: act.origin, dir: [d.x, d.y, d.z], weapon: w, chargeT: act.chargeT },
+        data: { type: 'combat:bullet', ownerId: rc.peerId, attackerTeam: rc.team, origin: act.origin, dir: [d.x, d.y, d.z], weapon: w, chargeT: act.chargeT },
       }, rc.peerId);
     } else if (act.type === 'reload') {
       const w = rc.weapons.current;
@@ -619,22 +648,60 @@ export class NetMatchController {
         return;
       }
       rc.blocksInv[mat] -= cost;
-      blocks.insertPiece(kind, c, h, q, mat, rc.team, act.key, act.level);
+      const variant = (act.variant as PieceVariant | undefined) ?? 'plain';
+      blocks.insertPiece(kind, c, h, q, mat, rc.team, act.key, act.level, variant);
       rc.dirtySync = true;
       transport.broadcast({
         kind: 'event',
         data: {
-          type: 'block:place', kind: act.kind, center: act.center, half: act.half, quat: act.quat,
+          type: 'block:place', kind: act.kind, variant, center: act.center, half: act.half, quat: act.quat,
           material: mat, team: rc.team, key: act.key, level: act.level,
         },
       }, rc.peerId);
     } else if (act.type === 'build_remove') {
       const p = new Vector3(...act.pos);
       const found = blocks.findByPos(p, 0.35);
-      if (!found || found.team !== rc.team || !blocks.removeByPos(p, 0.35)) return;
+      if (!found || found.team !== rc.team || !blocks.removeByPos(p, 0.35)) {
+        if (found) {
+          transport.sendTo(rc.peerId, {
+            kind: 'event',
+            data: {
+              type: 'block:place',
+              kind: found.kind,
+              variant: found.variant,
+              center: [found.center.x, found.center.y, found.center.z],
+              half: [found.half.x, found.half.y, found.half.z],
+              quat: [found.quat.x, found.quat.y, found.quat.z, found.quat.w],
+              material: found.material,
+              team: found.team,
+              key: found.key ?? undefined,
+              level: found.level,
+            },
+          });
+        }
+        rc.dirtySync = true;
+        return;
+      }
       rc.blocksInv[found.material] += found.cost;
       rc.dirtySync = true;
       transport.broadcast({ kind: 'event', data: { type: 'block:break', pos: act.pos } }, rc.peerId);
+    } else if (act.type === 'block_door') {
+      const found = blocks.findByPos(new Vector3(...act.pos), 0.35);
+      if (found && found.variant === 'door' && (!found.team || found.team === rc.team) && found.center.distanceTo(rc.sim.state.pos) < 8) {
+        blocks.setDoorState(found, act.open);
+      }
+    } else if (act.type === 'drop_item') {
+      const dropRes = rc.eco.dropFromSlot(act.holdable);
+      if (dropRes) {
+        const up = upOf(rc.sim.state.frame).clone();
+        const dir = _tmpV2.set(...act.dir);
+        if (dir.lengthSq() > 1e-4) dir.normalize();
+        else dir.set(-Math.sin(rc.yaw), 0, -Math.cos(rc.yaw)).applyQuaternion(rc.sim.state.frame);
+        const dropPos = rc.sim.state.pos.clone().addScaledVector(dir, 1.5);
+        pickups.drop(dropRes.kind, dropPos, up, dropRes.amount);
+        rc.pendingSound = 'pickup';
+      }
+      rc.dirtySync = true;
     } else if (act.type === 'buy') {
       if (!match.nearShop(rc.sim.state.pos)) { rc.dirtySync = true; return; }
       const item = SHOP.find((s) => s.id === act.itemId);
@@ -658,6 +725,11 @@ export class NetMatchController {
       rc.dirtySync = true;
     } else if (act.type === 'interact') {
       this.handleClientInteract(rc, act, pickups);
+    } else if (act.type === 'chat') {
+      const text = act.text.replace(/\s+/g, ' ').trim().slice(0, 140);
+      if (!text) return;
+      transport.broadcast({ kind: 'event', data: { type: 'chat', sender: rc.name, team: rc.team, text } });
+      this.deps.onChat?.(rc.name, text, rc.team);
     }
   }
 
@@ -902,7 +974,7 @@ export class NetMatchController {
         }
       }
       if (rc.target.alive) {
-        rc.sim.tick(rc.input, dt);
+        SimulateMovement(rc.sim, rc.cmd, dt);
         for (const ev of rc.sim.events.splice(0)) {
           if (ev.type === 'land') combat.fall(rc.target, ev.speed);
           else if (ev.type === 'respawn' && ev.reason === 'void') {
@@ -944,6 +1016,17 @@ export class NetMatchController {
         const ownBed = match.bed(rc.team);
         if (ownBed.alive && rc.sim.state.pos.distanceToSquared(ownBed.pos) < 64 && refillAmmo(rc.weapons, 2)) {
           rc.dirtySync = true;
+        }
+        if (this.deps.map.mode === 'skirmish' && match.isInsideBaseHall(rc.sim.state.pos, rc.team)) {
+          rc.woodRegenT += dt;
+          if (rc.woodRegenT >= 1) {
+            const gain = Math.floor(rc.woodRegenT);
+            rc.woodRegenT -= gain;
+            rc.blocksInv.wood += gain * SKIRMISH_WOOD_PER_SEC;
+            rc.dirtySync = true;
+          }
+        } else {
+          rc.woodRegenT = 0;
         }
       }
       if (rc.dirtySync) {
@@ -1038,6 +1121,15 @@ export class NetMatchController {
         stun: rc.target.stun ?? 0,
         out: rc.out,
         ackSeq: rc.lastSeq,
+        ackTick: rc.lastTick,
+        stamina: rc.sim.state.stamina,
+        exhausted: rc.sim.state.exhausted,
+        restT: rc.sim.state.restT,
+        airT: rc.sim.state.airT,
+        jumpHold: rc.sim.state.jumpHold,
+        jumpReleased: rc.sim.state.jumpReleased,
+        jetpackHeat: rc.sim.jetpackHeat,
+        jetpackOverheatCd: rc.sim.jetpackOverheatCd,
         hookPos: rc.sim.hook ? [rc.sim.hook.anchor.x, rc.sim.hook.anchor.y, rc.sim.hook.anchor.z] : null,
         hookPhase: rc.sim.hook?.phase,
       });
@@ -1050,7 +1142,7 @@ export class NetMatchController {
         team: b.team,
         stage: b.stage,
         hp: b.hp,
-        maxHp: BED_HP,
+        maxHp: maxCrystalHp(),
         invulnerable: b.invulnT > 0,
         invulnT: b.invulnT,
         broken: !b.alive,
@@ -1130,7 +1222,7 @@ export class NetMatchController {
         : undefined,
     };
 
-    remotePlayers.applySnapshot(players.filter((p) => p.id !== this.myId), this.myId);
+    remotePlayers.applySnapshot(players.filter((p) => p.id !== this.myId), this.myId, snap.serverTime);
     transport.broadcast({ kind: 'snapshot', data: snap });
   }
 
@@ -1138,9 +1230,10 @@ export class NetMatchController {
 
   private setupClient() {
     const {
-      transport, lobby, combat, match, player, hands, pockets, build, ui,
+      transport, lobby, combat, blocks, match, player, hands, pockets, build, ui, invUi, local,
     } = this.deps;
 
+    local.pmove = this.pmoveClient;
     combat.visualOnly = true;
     match.remoteClientMode = true;
     player.remoteAuthoritative = true;
@@ -1177,6 +1270,7 @@ export class NetMatchController {
       sendAct({
         type: 'build_place',
         kind: b.kind,
+        variant: b.variant,
         center: [b.center.x, b.center.y, b.center.z],
         half: [b.half.x, b.half.y, b.half.z],
         quat: [b.quat.x, b.quat.y, b.quat.z, b.quat.w],
@@ -1189,6 +1283,16 @@ export class NetMatchController {
     build.onBlockReclaimed = (b) => {
       sendAct({ type: 'build_remove', pos: [b.center.x, b.center.y, b.center.z] });
     };
+    const prevDoor = blocks.onDoorToggle;
+    blocks.onDoorToggle = (b) => {
+      prevDoor?.(b);
+      if (!this.suppressBlockNet) {
+        sendAct({ type: 'block_door', pos: [b.center.x, b.center.y, b.center.z], open: b.open });
+      }
+    };
+    if (invUi) {
+      invUi.onDropRemote = (holdable, dir) => sendAct({ type: 'drop_item', holdable, dir: [dir.x, dir.y, dir.z] });
+    }
 
     ui.onRemoteBuy = (itemId) => sendAct({ type: 'buy', itemId });
     ui.onRemoteSell = (kind) => sendAct({ type: 'sell', kind });
@@ -1218,32 +1322,26 @@ export class NetMatchController {
     };
   }
 
-  /** Capture predicted local movement state & stream input packets at 64Hz on non-host client. */
+  /** Stream predicted `UserCommand` (`usercmd_t`) to host at 64Hz on non-host client. */
   onLocalTick() {
     if (this.isHost) return;
-    const { sim, local, player, hands, transport } = this.deps;
-    const seq = ++this.localSeq;
-    this.predictedHistory.push({
-      seq,
-      pos: sim.state.pos.clone(),
-      vel: sim.state.vel.clone(),
-      frame: sim.state.frame.clone(),
-    });
-    if (this.predictedHistory.length > HISTORY_LIMIT) this.predictedHistory.shift();
+    const { local, player, hands, transport } = this.deps;
+    const cmd = cloneUserCommand(local.lastCmd);
 
     transport.sendToHost({
       kind: 'input',
       data: {
-        seq,
-        tick: seq,
-        forward: local.input.forward,
-        right: local.input.right,
-        up: local.input.up,
+        cmd,
+        seq: cmd.tick,
+        tick: cmd.tick,
+        forward: cmd.forwardmove,
+        right: cmd.sidemove,
+        up: cmd.upmove,
         jump: local.input.jump,
         sprint: local.input.sprint,
         crouch: local.input.crouch,
-        yaw: local.input.yaw,
-        pitch: local.input.pitch,
+        yaw: cmd.viewangles[0],
+        pitch: cmd.viewangles[1],
         slot: hands.tool ? -1 : WEAPON_ORDER.indexOf(player.weapons.current),
         weapon: hands.tool ? undefined : player.weapons.current,
       },
@@ -1364,7 +1462,7 @@ export class NetMatchController {
         this.ensureClientProxyTarget(ps);
       }
     }
-    remotePlayers.applySnapshot(others, this.myId);
+    remotePlayers.applySnapshot(others, this.myId, snap.serverTime);
   }
 
   private reconcileLocalPlayer(ps: RemotePlayerSnapshot) {
@@ -1391,36 +1489,36 @@ export class NetMatchController {
       sim.state.frame.set(...ps.frame);
       sim.mover.place(sim.state);
       local.snap();
-      this.predictedHistory.length = 0;
+      this.pmoveClient.clear();
       return;
     }
     if (!ps.alive) return;
 
-    let refPos = sim.state.pos;
-    if (ps.ackSeq) {
-      while (this.predictedHistory.length && this.predictedHistory[0].seq < ps.ackSeq) {
-        this.predictedHistory.shift();
-      }
-      if (this.predictedHistory.length && this.predictedHistory[0].seq === ps.ackSeq) {
-        refPos = this.predictedHistory[0].pos;
-      }
-    }
+    const ackTick = ps.ackTick ?? ps.ackSeq ?? 0;
+    if (ackTick <= 0) return;
 
-    const serverPos = _tmpV.set(...ps.pos);
-    const delta = _tmpV2.copy(serverPos).sub(refPos);
-    const err = delta.length();
-    if (err > 3.5) {
-      sim.state.pos.copy(serverPos);
-      sim.state.vel.set(...ps.vel);
-      sim.state.frame.set(...ps.frame);
-      sim.mover.place(sim.state);
-      local.snap();
-      this.predictedHistory.length = 0;
-    } else if (err > 0.12) {
-      const k = 0.25;
-      sim.state.pos.addScaledVector(delta, k);
-      local.prevPos.addScaledVector(delta, k);
-      sim.mover.place(sim.state);
+    const serverState: PMoveServerState = {
+      ackTick,
+      pos: ps.pos,
+      vel: ps.vel,
+      frame: ps.frame,
+      yaw: ps.yaw,
+      pitch: ps.pitch,
+      onGround: ps.onGround,
+      crouched: ps.crouching,
+      stamina: ps.stamina ?? sim.state.stamina,
+      exhausted: ps.exhausted ?? sim.state.exhausted,
+      restT: ps.restT ?? sim.state.restT,
+      airT: ps.airT ?? sim.state.airT,
+      jumpHold: ps.jumpHold ?? sim.state.jumpHold,
+      jumpReleased: ps.jumpReleased ?? sim.state.jumpReleased,
+      jetpackHeat: ps.jetpackHeat ?? sim.jetpackHeat,
+      jetpackOverheatCd: ps.jetpackOverheatCd ?? sim.jetpackOverheatCd,
+    };
+    const res = this.pmoveClient.reconcile(sim, serverState, TICK_DT);
+    if (res.corrected) {
+      // Snap local prevPos on large teleports (> 3.5 m) so interpolation doesn't smear across map
+      if (res.errorDist > 3.5) local.snap();
     }
   }
 
@@ -1475,11 +1573,28 @@ export class NetMatchController {
       case 'block:place': {
         const c = new Vector3(...e.center);
         if (!blocks.findByPos(c, 0.2)) {
-          blocks.insertPiece(
-            e.kind as BlockKind, c, new Vector3(...e.half), new Quaternion(...e.quat),
-            e.material as BlockMaterial, e.team, e.key, e.level,
-          );
+          this.suppressBlockNet = true;
+          try {
+            blocks.insertPiece(
+              e.kind as BlockKind, c, new Vector3(...e.half), new Quaternion(...e.quat),
+              e.material as BlockMaterial, e.team, e.key, e.level, (e.variant as PieceVariant | undefined) ?? 'plain',
+            );
+          } finally {
+            this.suppressBlockNet = false;
+          }
           if (c.distanceTo(this.deps.camera.position) < 28) audio.place();
+        }
+        break;
+      }
+      case 'block:door': {
+        const found = blocks.findByPos(new Vector3(...e.pos), 0.35);
+        if (found) {
+          this.suppressBlockNet = true;
+          try {
+            blocks.setDoorState(found, e.open);
+          } finally {
+            this.suppressBlockNet = false;
+          }
         }
         break;
       }
@@ -1548,6 +1663,9 @@ export class NetMatchController {
             player.weapons.ammo[w] = serverAmmo;
           }
         }
+        this.deps.hands.bar.sync(holdables(eco));
+        player.me.armor = eco.has('armor');
+        hud.setArmor(player.me.armor);
         if (e.notice) hud.toast(e.notice, e.noticeColor ?? '#9dff9e', 1.4);
         if (e.soundKind === 'pickup') audio.pickup();
         else if (e.soundKind === 'coins') audio.coins();
@@ -1561,6 +1679,25 @@ export class NetMatchController {
         }
         break;
       }
+      case 'chat': {
+        this.deps.onChat?.(e.sender, e.text, e.team);
+        break;
+      }
+    }
+  }
+
+  /** Send a chat message from local player (host relays to everyone; client sends to host). */
+  sendChat(text: string) {
+    const clean = text.replace(/\s+/g, ' ').trim().slice(0, 140);
+    if (!clean) return;
+    if (this.isHost) {
+      const team = this.deps.match.team;
+      const meSeat = this.deps.lobby.seats[team]?.find((s) => s?.kind === 'player' && (!s.id || s.id === this.myId));
+      const meName = meSeat?.kind === 'player' ? (meSeat.name ?? 'Хост') : 'Хост';
+      this.deps.transport.broadcast({ kind: 'event', data: { type: 'chat', sender: meName, team, text: clean } });
+      this.deps.onChat?.(meName, clean, team);
+    } else {
+      this.deps.transport.sendToHost({ kind: 'action', data: { type: 'chat', text: clean } });
     }
   }
 
@@ -1627,6 +1764,8 @@ export class NetMatchController {
       s.vel.set(...target.vel);
       s.frame.set(...target.frame);
       s.yaw = target.yaw;
+      s.pitch = target.pitch;
+      upOf(s.frame, b.target.up);
       b.sim.mover.place(s);
     }
 

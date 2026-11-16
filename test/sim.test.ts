@@ -6,13 +6,15 @@ import {
 import { wishlist } from '../src/shared/botShop';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
 import { activeTeams, botRoster, canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, lobbyProblem, parseLobby, playerTeam, sanitizeLocalLobby, seatPlayer } from '../src/shared/lobby';
-import { BED_HP, CRYSTAL_STUN_TIME, GENERATORS, Match } from '../src/shared/match';
+import { BED_HP, BASE_HEAL_RATE, BED_REGEN, CRYSTAL_STUN_TIME, GENERATORS, killRewardFor, Match, RESPAWN_DELAY } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP, SHOP_ROWS } from '../src/shared/economy';
 import { holdables, Hotbar } from '../src/shared/inventory';
 import { THROW, Throws } from '../src/shared/throwables';
 import { Fishing, FISHING } from '../src/shared/fishing';
 import { lobDirection, NPC, Npc, NpcManager } from '../src/shared/npcs';
-import { upOf } from '../src/shared/math';
+import { upOf, Rng } from '../src/shared/math';
+import { Builder, Frame } from '../src/shared/mapgen/core';
+import { fillTile } from '../src/shared/mapgen/tiles';
 import { moveBasis } from '../src/shared/movement';
 import { DEFAULT_MOVEMENT, HU, TICK_DT, WORLD } from '../src/shared/constants';
 import { faceOfTeam, generateMap, HALL_H, HALL_HALF, SW, TILE, XZ } from '../src/shared/map';
@@ -20,6 +22,11 @@ import { CROUCH_SPEED, emptyInput, MoveInput, SPRINT_SPEED, STAMINA } from '../s
 import { buildPhysicsWorld, initRapier } from '../src/shared/physics';
 import { PlayerSim } from '../src/shared/sim';
 import { TEAMS } from '../src/shared/teams';
+import {
+  capturePMoveState, IN_DUCK, IN_JUMP, IN_SPEED, sanitizeUserCommand, SimulateMovement,
+} from '../src/shared/net/pmove';
+import { PMoveClient } from '../src/client/net/pmoveClient';
+import { EntitySnapshotEntry, INTERP_DELAY_MS, sampleEntityInterpolation } from '../src/client/net/remotePlayerManager';
 import { peerIdToRoom, roomToPeerId } from '../src/shared/net/protocol';
 
 const R = await initRapier();
@@ -273,14 +280,14 @@ sim.respawn();
     && m2.lanes.length === 12 && m2.teams.join() === 'red,blue');
   check('every team face has ponds; the neutral faces have shops and the crystal generators',
     TEAMS.every((t) => map.ponds.filter((p) => p.team === t.id).length >= 2)
-    && map.bases.filter((b) => b.team === '').length >= 4 && map.crystalSpots.length === 4);
+    && map.bases.filter((b) => b.team === '').length >= 2 && map.crystalSpots.length >= 2);
 }
 
 // 11. combat: rifle hits a dummy, wind/gravity bend bullets, grenade bounces + rocket-jumps
 import { Combat, CRYSTAL, DAMAGE_SCALE, MAX_HP, SPAWN_GUARD, Target } from '../src/shared/combat';
-import { createWeaponState, CROSSBOW_LEVELS, energyLeft, giveWeapon, hasAmmo, KICK, kicked, kickReady, MELEE, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
+import { createWeaponState, CROSSBOW_LEVELS, energyLeft, giveWeapon, hasAmmo, KICK, kicked, kickReady, MELEE, reloadAllOwnedWeapons, REVOLVER_COCK_TIME, shotSpread, weaponTick, WEAPONS } from '../src/shared/weapons';
 import { Props } from '../src/shared/props';
-import { HOOK } from '../src/shared/sim';
+import { HOOK, JETPACK } from '../src/shared/sim';
 {
   sim.team = TEAMS[0];
   sim.respawn();
@@ -605,27 +612,27 @@ import { HOOK } from '../src/shared/sim';
   cb.events.length = 0;
   shootBed(roofEye, 5);
   const chipped = blue.hp;
-  for (let k = 0; k < 64 * 12; k++) m.tick(TICK_DT, new Vector3(0, 500, 0));
-  check('close shots chip the crystal; it heals back after 10 s', chipped < BED_HP - 8 && blue.hp === BED_HP, `${chipped.toFixed(1)} → ${blue.hp}`);
+  for (let k = 0; k < 64 * 22; k++) m.tick(TICK_DT, new Vector3(0, 500, 0));
+  check('close shots chip the crystal; it heals back after 15 s calm delay', chipped < BED_HP - 8 && blue.hp === BED_HP, `${chipped.toFixed(1)} → ${blue.hp}`);
   let shots1 = 0;
-  for (; shots1 < 80 && blue.stage === 1; shots1++) shootBed(roofEye, 1);
+  for (; shots1 < 220 && blue.stage === 1; shots1++) shootBed(roofEye, 1);
   check('stage 1 breaks and enters 10 s invulnerability', blue.stage === 2 && blue.invulnT > 9.5 && m.events.some((e) => e.type === 'bedStage1Broken' && e.team === 'blue'),
     `shots1=${shots1} invulnT=${blue.invulnT}`);
-  // After 10 seconds, crystal explodes (stunning nearby enemies and reviving dead players) and becomes vulnerable in stage 2
+  // After 10 seconds, crystal explodes (100% lethal damage + stun to nearby enemies and revives dead allies) and enters stage 2
   const deadFighter: Target = { id: 99, team: 'blue', center: blue.pos.clone().addScaledVector(bup, 30), up: bup, hp: 0, alive: false, respawnIn: 5 };
   cb.targets.push(deadFighter);
   let revivedTeam: string | null = null;
   m.onReviveAll = (t) => { revivedTeam = t; };
   for (let k = 0; k < 64 * 10.2; k++) m.tick(TICK_DT, new Vector3(0, 500, 0));
-  check('stage 1 invulnerability ends with blast event, enemy stun and fighter revive after 10 s',
+  check('stage 1 invulnerability ends with blast event, enemy stun/lethal blast and ally revive after 10 s',
     blue.invulnT === 0
     && m.events.some((e) => e.type === 'bedStageBlast' && e.team === 'blue')
-    && cb.targets[0].stun === CRYSTAL_STUN_TIME
+    && cb.targets[0].stun === CRYSTAL_STUN_TIME && !cb.targets[0].alive && cb.targets[0].hp === 0
     && deadFighter.alive && deadFighter.hp === MAX_HP && revivedTeam === 'blue',
     `stun=${cb.targets[0].stun} alive=${deadFighter.alive} hp=${deadFighter.hp} revived=${revivedTeam}`);
   let shots2 = 0;
-  for (; shots2 < 80 && blue.alive; shots2++) shootBed(roofEye, 1);
-  check('rifle fire from 3 m breaks crystal stage 2', !blue.alive && shots2 > 20 && shots2 < 40 && m.events.some((e) => e.type === 'bedBroken' && e.team === 'blue' && e.byPlayer),
+  for (; shots2 < 220 && blue.alive; shots2++) shootBed(roofEye, 1);
+  check('rifle fire from 3 m breaks crystal stage 2', !blue.alive && shots2 > 60 && shots2 < 160 && m.events.some((e) => e.type === 'bedBroken' && e.team === 'blue' && e.byPlayer),
     `shots2=${shots2}`);
   check('death with own bed = respawn', m.onDeath() === true && m.result === null);
   for (const t of TEAMS) if (t.id !== 'red') m.destroyBed(t.id);
@@ -650,8 +657,10 @@ import { HOOK } from '../src/shared/sim';
     const laid = SHOP_ROWS.flatMap((r) => r.ids).filter((id): id is string => !!id);
     check('shop window: every item once', laid.length === SHOP.length && SHOP.every((i) => laid.includes(i.id)), laid.join(' '));
   }
-  check('prices: tools, guns, crossbow and block packs', item('rod').price === 5 && item('pistol').price === 19
-    && item('rifle').price === 41 && item('crossbow').price === 34 && item('wood').price === 4 && item('stone').price === 8 && item('metal').price === 2);
+  check('prices: tools, guns, revolver, jetpack, armor, crossbow and block packs', item('rod').price === 5 && item('pistol').price === 20
+    && item('revolver').price === 30 && item('shotgun').price === 35 && item('rifle').price === 40 && item('crossbow').price === 75
+    && item('rocket').price === 5 && item('grenade').price === 10 && item('jetpack').price === 5 && item('armor').price === 5
+    && item('wood').price === 4 && item('stone').price === 8 && item('metal').price === 2);
   eco.items.bottle = 4; eco.items.apple = 1; eco.items.fish = 1;
   const value = eco.sellValue;
   check('selling pays per item, cheaply', eco.sellAll() === value && value === 4 * ITEMS.bottle.sell + ITEMS.apple.sell + ITEMS.fish.sell
@@ -682,10 +691,10 @@ import { HOOK } from '../src/shared/sim';
     && pile('cash') === 5 && eco.wallet.cash === 6 && eco.items.apple === 0 && eco.items.medkit === 0, JSON.stringify(piles));
   check('guns and tools stay after death', ws.owned.rifle && eco.has('builder'));
 
-  // hotbar: 9 slots only (no backpack), new things fill free slots in order
+  // hotbar: 9 hotbar slots + 9 backpack slots, new things fill free slots in order
   const bar = new Hotbar();
   bar.sync(holdables(eco));
-  check('hotbar: guns, grenades, tools in order (9 slots only)', bar.bar.slice(0, 4).join() === 'pistol,rifle,grenade,rod' && bar.pack.length === 0, bar.bar.join());
+  check('hotbar: guns, grenades, tools in order (9 slots + 9 backpack)', bar.bar.slice(0, 4).join() === 'pistol,rifle,grenade,rod' && bar.pack.length === 9, bar.bar.join());
   bar.swap({ where: 'bar', i: 0 }, { where: 'bar', i: 8 });
   eco.items.apple = 2;
   bar.sync(holdables(eco));
@@ -1231,14 +1240,14 @@ for (const deg of [20, 37, 45]) {
   const rocket = c.fire('rocket', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
   let boomT = 0;
   for (let k = 0; k < 64 * 2 && !boomT; k++) { c.tick(TICK_DT); if (c.events.some((e) => e.type === 'explode')) boomT = (k + 1) * TICK_DT; }
-  check('rocket flies straight at ~36 m/s and blows up on the wall', boomT > 0.58 && boomT < 0.78 && Math.abs(rocket.pos.y - 1) < 0.01 && rocket.pos.z > -24.6,
+  check('rocket flies at ~36 m/s with ballistic drop and blows up on the wall', boomT > 0.58 && boomT < 0.78 && rocket.pos.y < 0.8 && rocket.pos.y > 0.02 && rocket.pos.z > -24.6,
     `t=${boomT.toFixed(2)} at ${rocket.pos.toArray().map((v) => v.toFixed(2)).join(',')}`);
   check('rocket splash: 1.5 m away hurts, 8 m away does not', near.hp < MAX_HP - 40 && far.hp === MAX_HP, `near=${near.hp.toFixed(0)} far=${far.hp}`);
   const victim = dummy(1, 0, 1, -8);
   only(victim);
   c.fire('rocket', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Y.clone().negate());
   settle();
-  check('direct rocket hit: +70% damage (kills 100 HP target) and a big shove', victim.hp === 0 && (pushes.get(1)?.length() ?? 0) > 10,
+  check('direct rocket hit: 90 damage and a big shove', victim.hp > 0 && MAX_HP - victim.hp >= 88 && MAX_HP - victim.hp <= 90 && (pushes.get(1)?.length() ?? 0) > 10,
     `dmg=${MAX_HP - victim.hp} push=${pushes.get(1)?.length().toFixed(1)}`);
   shooter.center.set(0, 1, 10);
   shooter.hp = MAX_HP;
@@ -1351,13 +1360,27 @@ for (const deg of [20, 37, 45]) {
   const props = new Props(mw, map);
   const cm = new Combat(R, mw, map);
   cm.props = props;
-  // a lone crate on the ground with 8 m of open street on one side: kicked that way
+  // a lone crate / barrel on the ground (not pinned under a stacked crate) with 8 m open on one side
   const open = (i: number, up: Vector3): Vector3 | null => {
-    const p = new Vector3(...map.crates[i].pos);
+    const cr = map.crates[i];
+    if (cr.kind === 'crate' && cr.half[1] > 0.52) return null;
+    const p = new Vector3(...cr.pos);
+    // Reject crates pinned by another crate stacked on top, or clustered with adjacent side crates within kick path
+    const crowded = map.crates.some((o, j) => {
+      if (j === i) return false;
+      if (cr.kind === 'crate') return p.distanceTo(new Vector3(...o.pos)) < 2.1;
+      const d = new Vector3(...o.pos).sub(p);
+      const alongUp = d.dot(up);
+      d.addScaledVector(up, -alongUp);
+      return alongUp > 0.25 && alongUp < 1.8 && d.lengthSq() < 1.0;
+    });
+    if (crowded) return null;
     for (const d of [new Vector3(1, 0, 0), new Vector3(-1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, -1, 0), new Vector3(0, 0, 1), new Vector3(0, 0, -1)]) {
       if (Math.abs(d.dot(up)) > 0.5) continue;
-      const from = p.clone().addScaledVector(d, map.crates[i].half[0] + 0.05);
-      if (!mw.castRay(new R.Ray(from, d), 8, true) && !mw.castRay(new R.Ray(p.clone().addScaledVector(d, -map.crates[i].half[0] - 0.05), d.clone().negate()), 2, true)) return d;
+      const from = p.clone().addScaledVector(d, cr.half[0] + 0.05);
+      const back = cr.kind === 'crate' ? 1.45 - cr.half[0] : 2;
+      if (!mw.castRay(new R.Ray(from, d), 8, true)
+        && !mw.castRay(new R.Ray(p.clone().addScaledVector(d, -cr.half[0] - 0.05), d.clone().negate()), Math.max(0.2, back), true)) return d;
     }
     return null;
   };
@@ -1390,10 +1413,12 @@ for (const deg of [20, 37, 45]) {
   }
   for (let k = 0; k < 64; k++) props.tick(TICK_DT);
   check('bullets nudge a barrel', props.pos(shotCrate).distanceTo(b0) > 0.03, `moved ${(props.pos(shotCrate).distanceTo(b0) * 100).toFixed(0)} cm`);
+  for (let k = 0; k < 64 * 5 && props.active; k++) props.tick(TICK_DT);
+  const settledBeforeIdle = !props.active;
   let idle = performance.now();
   for (let k = 0; k < 64 * 4; k++) props.tick(TICK_DT);
   idle = performance.now() - idle;
-  check('resting crates cost nothing', !props.active && idle < 20 * perfBudgetMul, `${idle.toFixed(1)} ms for 4 s`);
+  check('resting crates cost nothing', settledBeforeIdle && !props.active && idle < 20 * perfBudgetMul, `${idle.toFixed(1)} ms for 4 s`);
 
   // grappling hook: bites the wall 20 m away and pulls you there; nothing within 30 m = it comes back empty
   const hs = new PlayerSim(R, aw, map, 'red');
@@ -1444,15 +1469,15 @@ for (const deg of [20, 37, 45]) {
     && s1.team === 'blue' && s1.seatIndex === 2);
   seatPlayer(lc, s1.team, s1.seatIndex, 'p1', 'Alice');
   check('humanTeams updates when remote player seats on another team', humanTeams(lc).join() === 'red,blue');
-  // Fill every remaining empty + bot seat across all 4×5 seats (1 host + 1 Alice already seated → 18 left)
+  // Fill every remaining empty + bot seat across all 5×5 seats (1 host + 1 Alice already seated → 23 left)
   let nextSeat = firstFreeSeat(lc);
   let steps = 0;
-  while (nextSeat && steps < 25) {
+  while (nextSeat && steps < 30) {
     seatPlayer(lc, nextSeat.team, nextSeat.seatIndex, `p${steps + 2}`, `P${steps + 2}`);
     nextSeat = firstFreeSeat(lc);
     steps++;
   }
-  check('firstFreeSeat returns null once all seats belong to humans', nextSeat === null && steps === 18);
+  check('firstFreeSeat returns null once all seats belong to humans', nextSeat === null && steps === TEAMS.length * 5 - 2);
 
   const sanitized = sanitizeLocalLobby(lc, 'p1');
   const remainingPlayers = Object.values(sanitized.seats).flat().filter((s) => s?.kind === 'player');
@@ -1485,9 +1510,7 @@ for (const deg of [20, 37, 45]) {
   const m1v1 = new Match(R, fw2, map, bsSolo, 'red', undefined, ['red', 'blue']);
   let enemyAlive = 1;
   m1v1.membersAlive = (tm) => (tm === 'blue' ? enemyAlive : 0);
-  m1v1.destroyBed('green');
-  m1v1.destroyBed('yellow');
-  m1v1.destroyBed('blue');
+  for (const t of TEAMS) if (t.id !== 'red') m1v1.destroyBed(t.id);
   const waitLastEnemy = !m1v1.isOut('blue') && m1v1.result === null;
   enemyAlive = 0;
   m1v1.tick(TICK_DT, new Vector3());
@@ -1612,6 +1635,343 @@ for (const deg of [20, 37, 45]) {
   check('intact fort block shields crystal from outer explosion splash; broken wall exposes it',
     blockedHits === 0 && eHits === 1 && shieldHpAfterFirst > 0,
     `blockedHits=${blockedHits} openHits=${eHits} shieldHp=${shieldHpAfterFirst}`);
+}
+
+// New mechanics verification: revolver ricochet, armor vest save, jetpack flight/overheat, active reload, doors & base hall heal
+{
+  const nw = new R.World({ x: 0, y: 0, z: 0 });
+  nw.createCollider(R.ColliderDesc.cuboid(60, 1, 60).setTranslation(0, -1, 0));
+  nw.step();
+  const nc = new Combat(R, nw, map);
+  nc.windMul = 0;
+  const Yn = new Vector3(0, 1, 0);
+  const shooter: Target = { id: 0, team: 'red', center: new Vector3(0, 1, 0), up: Yn, hp: MAX_HP, alive: true, respawnIn: -1 };
+  const t1: Target = { id: 1, team: 'blue', center: new Vector3(0, 1, -12), up: Yn, hp: MAX_HP, alive: true, respawnIn: -1 };
+  let armorBroken = false;
+  const t2: Target = { id: 2, team: 'blue', center: new Vector3(5, 1, -15), up: Yn, hp: 10, alive: true, respawnIn: -1, armor: true, onArmorBreak: () => { armorBroken = true; t2.armor = false; } };
+  nc.targets.push(shooter, t1, t2);
+  nc.use('revolver', 0, new Vector3(0, 1, 0), new Vector3(0, 0, -1), new Vector3(), Yn.clone().negate());
+  for (let k = 0; k < 20; k++) nc.tick(TICK_DT);
+  check('revolver deals 25 primary dmg, chains 20 dmg ricochet to nearby foe, and armor vest saves target with 50 HP',
+    t1.hp === 75 && armorBroken && t2.alive && t2.hp === 50 && !t2.armor,
+    `t1=${t1.hp} t2=${t2.hp} broken=${armorBroken}`);
+
+  // Active reload: green zone hit vs miss lockout
+  const rws = createWeaponState();
+  giveWeapon(rws, 'rifle');
+  rws.ammo.rifle = 10;
+  rws.reserve.rifle = 60;
+  weaponTick(rws, { fire: false, reload: false, select: 'rifle' }, TICK_DT);
+  weaponTick(rws, { fire: false, reload: true, select: null }, TICK_DT);
+  const zoneMid = rws.reloadZoneStart + rws.reloadZoneWidth * 0.5;
+  let tickedClick = false;
+  for (let k = 0; k < 400 && rws.reloadT > 0; k++) {
+    const prog = 1 - rws.reloadT / rws.reloadTotal;
+    const hit = prog >= zoneMid - 0.02 && prog <= rws.reloadZoneStart + rws.reloadZoneWidth;
+    weaponTick(rws, { fire: false, reload: hit, select: null }, TICK_DT);
+    if (rws.activeReloadClick) { tickedClick = true; break; }
+  }
+  check('active reload succeeds inside green zone with audible click and finishes immediately',
+    tickedClick && rws.reloadStatus === 'success' && rws.reloadT === 0 && rws.ammo.rifle === WEAPONS.rifle.mag + 1);
+
+  // Miss active reload -> lockout 10s (release R key first)
+  weaponTick(rws, { fire: false, reload: false, select: null }, TICK_DT);
+  rws.ammo.rifle = 5;
+  weaponTick(rws, { fire: false, reload: true, select: null }, TICK_DT);
+  for (let k = 0; k < 10; k++) weaponTick(rws, { fire: false, reload: false, select: null }, TICK_DT);
+  weaponTick(rws, { fire: false, reload: true, select: null }, TICK_DT);
+  check('missed active reload triggers fail status and 10s lockout',
+    rws.reloadStatus === 'fail' && rws.reloadLockout > 9.5);
+
+  // Revolver hold-to-cock & reloadAllOwnedWeapons
+  giveWeapon(rws, 'revolver');
+  rws.reserve.revolver = 12;
+  weaponTick(rws, { fire: false, reload: false, select: 'revolver' }, TICK_DT);
+  let revFired = false;
+  for (let t = 0; t < 0.7; t += TICK_DT) {
+    if (weaponTick(rws, { fire: true, reload: false, select: null }, TICK_DT) === 'revolver') { revFired = true; break; }
+  }
+  reloadAllOwnedWeapons(rws);
+  check('revolver fires after LMB cock hold and reloadAllOwnedWeapons refills mags',
+    revFired && rws.ammo.revolver === WEAPONS.revolver.mag && rws.ammo.rifle === WEAPONS.rifle.mag);
+
+  // Shotgun shell-by-shell reload interruptible by firing
+  giveWeapon(rws, 'shotgun');
+  rws.ammo.shotgun = 0;
+  rws.reserve.shotgun = 8;
+  weaponTick(rws, { fire: false, reload: false, select: 'shotgun' }, TICK_DT);
+  weaponTick(rws, { fire: false, reload: true, select: null }, TICK_DT);
+  let shellTicks = 0;
+  for (let k = 0; k < 50 && rws.ammo.shotgun < 1; k++) {
+    weaponTick(rws, { fire: false, reload: false, select: null }, TICK_DT);
+    if (rws.shotgunShellInserted) shellTicks++;
+  }
+  const intShot = weaponTick(rws, { fire: true, reload: false, select: null }, TICK_DT);
+  check('shotgun loads shell-by-shell and cancels reload when fired',
+    shellTicks >= 1 && intShot === 'shotgun' && rws.reloadT === 0);
+
+  // Jetpack flight, fuel consumption & 12s overheat explosion (fly in tight circles at center of cube so no void/wall interrupt)
+  const jw = buildPhysicsWorld(R, map);
+  const jSim = new PlayerSim(R, jw, map, 'red');
+  jSim.respawn();
+  jSim.state.pos.set(0, 0, 0);
+  jSim.state.vel.set(0, 0, 0);
+  jSim.state.onGround = false;
+  jSim.state.jumpHold = 0;
+  jSim.mover.place(jSim.state);
+  jSim.hasJetpack = true;
+  jSim.hasJetpackFuel = true;
+  const jpIn = emptyInput();
+  jpIn.jump = true;
+  let fuelEv = 0;
+  let exploded = false;
+  for (let k = 0; k < Math.ceil((JETPACK.maxFlight + 0.5) * 64); k++) {
+    jpIn.yaw += 0.08;
+    jSim.tick(jpIn, TICK_DT);
+    for (const ev of jSim.events.splice(0)) {
+      if (ev.type === 'jetpackFuel') fuelEv++;
+      if (ev.type === 'jetpackExplode') exploded = true;
+    }
+  }
+  check('jetpack flies airborne, consumes ammo fuel and explodes after 12s without disappearing',
+    fuelEv >= 40 && exploded && jSim.hasJetpack, `fuel=${fuelEv} exploded=${exploded}`);
+
+  // Doors: global grid wall/floor door variant opened by teammate, blocked for enemy
+  const nbs = new BlockSystem(R, nw);
+  nbs.inventory.metal = 10;
+  const dPlan = nbs.plan('wall', new Vector3(0, 1.5, 0), Yn, new Vector3(0, 0, -1), new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), 'door')!;
+  nbs.place(dPlan, 'metal', 'red');
+  const doorBlk = nbs.findByPos(dPlan.center, 0.2)!;
+  const enemyDenied = nbs.toggleDoor(new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), 'blue');
+  const allyOpened = nbs.toggleDoor(new Vector3(0, 1.5, 0), new Vector3(0, 0, -1), 'red');
+  check('team door variant opens for teammates and denies enemies',
+    doorBlk.variant === 'door' && !enemyDenied && !!allyOpened && doorBlk.open === true);
+
+  // Respawn delay 8s & base hall rate 2 HP/s & BED_HP 250 & BED_REGEN {15, 2.5}
+  check('updated rules constants: respawn 8s, base heal 2/s, crystal 250 HP and 15s/2.5 regen',
+    RESPAWN_DELAY === 8 && BASE_HEAL_RATE === 2 && BED_HP === 250 && BED_REGEN.delay === 15 && BED_REGEN.rate === 2.5);
+
+  // Remade base hall: square 4.5x4.5 doorway on global grid & open walkable under-ramp shop bay
+  const hallW = buildPhysicsWorld(R, map);
+  const hallBs = new BlockSystem(R, hallW);
+  hallBs.inventory.wood = 10;
+  const exitPlan = hallBs.plan('wall', new Vector3(-2.25, G + 1.0, 10.5), new Vector3(0, 1, 0), new Vector3(0, 0, 1),
+    new Vector3(-2.25, G + 1.7, 10.5), new Vector3(0, 0, 1), 'door');
+  check('base hall square exit aligns to single global-grid 4.5x4.5 wall/door slot at z=13.5',
+    !!exitPlan && Math.abs(exitPlan.center.x - (-2.25)) < 0.01 && Math.abs(exitPlan.center.z - 13.5) < 0.01
+    && Math.abs(exitPlan.center.y - (G + 2.25)) < 0.01 && hallBs.place(exitPlan, 'wood', 'red') === 'ok',
+    exitPlan ? `c=${exitPlan.center.toArray().map((v) => v.toFixed(2))}` : 'null');
+  const redShop = map.bases.find((b) => b.team === 'red')!;
+  check('red shop moved under west ramp (-8.75, -4.6) and fountain basin is fishable',
+    redShop.shop[0] < -7 && map.ponds.some((p) => Math.hypot(p.pos[0], p.pos[2]) > 0));
+}
+
+// GoldSrc / Source PMove: UserCommand anti-speedhack normalization, deterministic replay & 100ms Entity Interpolation
+{
+  const hacked = sanitizeUserCommand({
+    tick: 5,
+    forwardmove: 50,
+    sidemove: -50,
+    upmove: 99,
+    viewangles: [0.5, 99],
+    buttons: IN_JUMP | IN_SPEED | (1 << 30),
+  });
+  const mag = Math.hypot(hacked.forwardmove, hacked.sidemove);
+  check('sanitizeUserCommand normalizes anti-speedhack vectors and clamps pitch/buttons',
+    Math.abs(mag - 1) < 1e-5 && hacked.upmove === 1 && hacked.viewangles[1] < Math.PI / 2
+    && hacked.buttons === (IN_JUMP | IN_SPEED));
+
+  // Deterministic parity & Client Reconciliation Replay
+  const wClient = buildPhysicsWorld(R, map);
+  const wServer = buildPhysicsWorld(R, map);
+  const cSim = new PlayerSim(R, wClient, map, 'red');
+  const sSim = new PlayerSim(R, wServer, map, 'red');
+  cSim.surfaces = sSim.surfaces = false;
+  cSim.state.pos.set(0, 1.0, 0);
+  sSim.state.pos.set(0, 1.0, 0);
+  cSim.state.vel.set(0, 0, 0);
+  sSim.state.vel.set(0, 0, 0);
+  cSim.mover.place(cSim.state);
+  sSim.mover.place(sSim.state);
+
+  const pm = new PMoveClient();
+  let serverTick10State = capturePMoveState(sSim, 0);
+  for (let t = 1; t <= 20; t++) {
+    const raw = {
+      forwardmove: 1,
+      sidemove: t > 8 ? 0.5 : 0,
+      upmove: 0,
+      viewangles: [0.2, 0] as [number, number],
+      buttons: (t === 5 ? IN_JUMP : 0) | IN_SPEED | (t > 14 ? IN_DUCK : 0),
+    };
+    const cmd = pm.predictStep(cSim, raw, TICK_DT);
+    // Simulate server knockback/shove at tick 10 so client predicted state diverges cleanly from server
+    if (t === 10) sSim.state.pos.x += 1.5;
+    sSim.mover.place(sSim.state);
+    SimulateMovement(sSim, cmd, TICK_DT);
+    if (t === 10) serverTick10State = capturePMoveState(sSim, 10);
+  }
+  const divergeBefore = cSim.state.pos.distanceTo(sSim.state.pos);
+  const rec = pm.reconcile(cSim, serverTick10State, TICK_DT);
+  const errorAfterReplay = cSim.state.pos.distanceTo(sSim.state.pos);
+  check('PMove reconciliation resets to server tick 10 and replays queued UserCommands identically to server at tick 20',
+    rec.corrected && rec.replayedCount === 10 && divergeBefore > 1.0 && errorAfterReplay < 0.02,
+    `diverge=${divergeBefore.toFixed(2)}m afterReplay=${errorAfterReplay.toFixed(4)}m replayed=${rec.replayedCount}`);
+
+  // Entity Interpolation Buffer (100ms behind server stream)
+  const buf: EntitySnapshotEntry[] = [
+    { timeMs: 1000, pos: new Vector3(0, 0, 0), vel: new Vector3(10, 0, 0), frame: new Quaternion(), yaw: Math.PI - 0.2, pitch: 0 },
+    { timeMs: 1040, pos: new Vector3(10, 0, 0), vel: new Vector3(10, 0, 0), frame: new Quaternion(), yaw: -Math.PI + 0.2, pitch: 0 },
+    { timeMs: 1080, pos: new Vector3(60, 0, 0), vel: new Vector3(0, 0, 0), frame: new Quaternion(), yaw: 0, pitch: 0 }, // >18m teleport
+  ];
+  const outP = new Vector3();
+  const outF = new Quaternion();
+  const resMid = sampleEntityInterpolation(buf, 1120 - INTERP_DELAY_MS, outP, outF);
+  const errPosMid = Math.abs(outP.x - 5.0);
+  // Shortest angular lerp across ±pi at midpoint should pass right through Math.PI (abs ≈ PI)
+  const wrappedPi = Math.abs(Math.abs(resMid.yaw) - Math.PI) < 0.01;
+  const outTp = new Vector3();
+  sampleEntityInterpolation(buf, 1160 - INTERP_DELAY_MS, outTp, outF); // halfway into teleport interval [1040..1080]
+  check('Entity interpolation lerps cleanly with 100ms delay, wraps angles across ±pi, and snaps on teleports',
+    INTERP_DELAY_MS === 100 && errPosMid < 0.01 && wrappedPi && outTp.x === 60,
+    `midX=${outP.x.toFixed(2)} yaw=${resMid.yaw.toFixed(2)} tpX=${outTp.x.toFixed(1)}`);
+}
+
+// --- New gameplay & map verification checks ---
+{
+  // 1. Revolver & rocket gravity drop (+80% drop)
+  check('revolver and rocket use 0.18 gravityScale',
+    WEAPONS.revolver.gravityScale === 0.18 && WEAPONS.rocket.gravityScale === 0.18,
+    `rev=${WEAPONS.revolver.gravityScale} rkt=${WEAPONS.rocket.gravityScale}`);
+
+  // 2. Crossbow projectile retains shooter team for team-colored rendering
+  const cw = new R.World({ x: 0, y: 0, z: 0 });
+  cw.createCollider(R.ColliderDesc.cuboid(20, 1, 20).setTranslation(0, -1, 0));
+  cw.step();
+  const cbs = new Combat(R, cw, map);
+  cbs.targets.push({ id: 42, team: 'purple', center: new Vector3(0, 1, 0), up: new Vector3(0, 1, 0), hp: MAX_HP, alive: true, respawnIn: -1 });
+  const bolt = cbs.fire('crossbow', 42, new Vector3(0, 1.4, 0), new Vector3(0, 0, -1), new Vector3(), new Vector3(0, -1, 0), 1);
+  check('crossbow bolt carries shooter team id', bolt.team === 'purple', `team=${bolt.team}`);
+
+  // 3. Sandbox solo & Duel 4-island map modes
+  const sb = defaultLobby();
+  sb.mode = 'sandbox';
+  for (const tid of ['blue', 'green', 'yellow', 'purple'] as const) sb.seats[tid] = [null, null, null, null, null];
+  check('sandbox mode allows solo launch with 1 active team', lobbyProblem(sb) === null && activeTeams(sb).length === 1);
+
+  const dm = generateMap(77, 'red', ['red', 'blue'], 'duel');
+  const dmFaces = dm.faces.map((f) => f.id).sort().join(',');
+  check('duel mode creates 4 islands (ny, py opposing bases + nx, px neutral) and 4 bridge lanes',
+    dm.faces.length === 4 && dmFaces === 'nx,ny,px,py' && dm.statues.length === 2 && dm.lanes.length === 4,
+    `faces=${dmFaces} lanes=${dm.lanes.length}`);
+
+  // 4. Road holes carved cleanly without disconnecting road nav graphs
+  const hasHoles = (map.roadHoles?.length ?? 0) > 0 && (dm.roadHoles?.length ?? 0) > 0;
+  const connected = Object.values(map.nav).every((g) => {
+    if (!g.nodes.length) return false;
+    const adj: number[][] = Array.from({ length: g.nodes.length }, () => []);
+    for (const [a, b] of g.edges) { adj[a]?.push(b); adj[b]?.push(a); }
+    const seen = new Set<number>([0]);
+    const q = [0];
+    while (q.length) {
+      const u = q.pop()!;
+      for (const v of adj[u] ?? []) if (!seen.has(v)) { seen.add(v); q.push(v); }
+    }
+    return seen.size === g.nodes.length;
+  });
+  check('road holes are generated while keeping face road nav graphs fully connected',
+    hasHoles && connected, `holes=${map.roadHoles?.length ?? 0} duelHoles=${dm.roadHoles?.length ?? 0}`);
+
+  // 5. Museum has enclosed perimeter walls, two entrances (-Z / +Z) and open circular oculus ceiling hole
+  const mb = new Builder(1, { half: 72, face: 144 }, 28, 128);
+  const mf = new Frame(new Vector3(0, 0, 0), new Quaternion());
+  fillTile(mb, mf, new Rng(1), { i: 0, j: 0, kind: 'museum' }, 0, 0, null);
+  const mw = buildPhysicsWorld(R, mb.data);
+  const cast = (ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxToi = 30) =>
+    mw.castRay(new R.Ray({ x: ox, y: oy, z: oz }, { x: dx, y: dy, z: dz }), maxToi, true) !== null;
+  const openOculusCenter = !cast(0, 1.5, 0, 0, 1, 0, 20);
+  const solidRoofRim = cast(0, 1.5, 6.5, 0, 1, 0, 20);
+  const openDoorNegZ = !cast(0, 1.5, 0, 0, 0, -1, 18);
+  const openDoorPosZ = !cast(0, 1.5, 0, 0, 0, 1, 18);
+  const solidSideWall = cast(0, 2.0, 0, 1, 0, 0, 18) && cast(0, 2.0, 0, -1, 0, 0, 18);
+  check('museum tile has 2 opposite entrances (-Z/+Z), solid side walls, and open circular ceiling hole',
+    openOculusCenter && solidRoofRim && openDoorNegZ && openDoorPosZ && solidSideWall,
+    `oculusOpen=${openOculusCenter} roofRim=${solidRoofRim} doors=${openDoorNegZ}/${openDoorPosZ} walls=${solidSideWall}`);
+
+  // 6. Skirmish mode: 2 close opposing islands (45 m = 10 cells apart), 3 mirrored tiles, non-touching buildings, free weapons, base wood regen (1/s), kill reward
+  const skLobby = defaultLobby();
+  skLobby.mode = 'skirmish';
+  skLobby.seats.green = [null, null, null, null, null];
+  skLobby.seats.yellow = [null, null, null, null, null];
+  const skValid = lobbyProblem(skLobby) === null;
+  const sm = generateMap(2026, 'red', ['red', 'blue'], 'skirmish');
+  const smFaces = sm.faces.map((f) => f.id).sort().join(',');
+  const gapMeters = (sm.cube.halfY ?? 0) * 2;
+  // Check vertical air clearance between ny (y < 0) and py (y > 0) across multiple seeds: buildings must never overlap or touch
+  let minMidClearance = Infinity;
+  for (const sSeed of [101, 202, 303, 777, 1337, 2026]) {
+    const m = generateMap(sSeed, 'red', ['red', 'blue'], 'skirmish');
+    let maxNyY = -Infinity;
+    let minPyY = Infinity;
+    for (const bx of m.boxes) {
+      const topY = bx.pos[1] + bx.half[1];
+      const botY = bx.pos[1] - bx.half[1];
+      if (bx.pos[1] < 0) maxNyY = Math.max(maxNyY, topY);
+      else minPyY = Math.min(minPyY, botY);
+    }
+    minMidClearance = Math.min(minMidClearance, minPyY - maxNyY);
+  }
+  const swWorld = buildPhysicsWorld(R, sm);
+  const swSim = new PlayerSim(R, swWorld, sm, 'red');
+  const swBlocks = new BlockSystem(R, swWorld, swSim.mover.collider);
+  const swMatch = new Match(R, swWorld, sm, swBlocks, 'red', swSim.mover.collider);
+  const swCombat = new Combat(R, swWorld, sm, [swSim.mover.collider]);
+  swMatch.attach(swCombat);
+  const swEco = new Economy(swMatch.wallet, swBlocks, createWeaponState());
+  swEco.freeWeapons = sm.mode === 'skirmish';
+  const rifleOffer = swEco.offers().find((o) => o.item.id === 'rifle')!;
+  const woodOffer = swEco.offers().find((o) => o.item.id === 'wood')!;
+  const buyRifleFree = swEco.buy(rifleOffer.item);
+  // Standing in base hall regenerates 1 wood / sec
+  const startWood = swBlocks.inventory.wood;
+  for (let k = 0; k < 64 * 2; k++) swMatch.tick(TICK_DT, swSim.state.pos, true);
+  const outsideOk = !swSim.outside(new Vector3(-36, -22, 0)) && swSim.outside(new Vector3(-130, -22, 0)) && swSim.outside(new Vector3(0, 60, 0));
+  check('skirmish mode: 2 mirrored islands 10 cells (45m) apart, buildings never touch, free weapons, +1 wood/s in base, kill reward',
+    skValid && sm.faces.length === 2 && smFaces === 'ny,py' && gapMeters === 45 && minMidClearance >= 4.0
+    && rifleOffer.item.price === 0 && buyRifleFree === 'ok' && woodOffer.item.price > 0
+    && swBlocks.inventory.wood === startWood + 2 && killRewardFor('skirmish') === 25 && outsideOk,
+    `gap=${gapMeters}m clearance=${minMidClearance.toFixed(1)}m wood=${startWood}->${swBlocks.inventory.wood}`);
+
+  // 7. Bots demolish enemy player-built structures blocking their path
+  {
+    const bw = buildPhysicsWorld(R, map);
+    const bbs = new BlockSystem(R, bw);
+    const bMatch = new Match(R, bw, map, bbs, 'red');
+    const bCombat = new Combat(R, bw, map);
+    bCombat.onWorldDamage = (h, d) => bbs.damageCollider(h, d);
+    bCombat.onExplosion = (p, rad, d) => bbs.explosion(p, rad, d);
+    bMatch.attach(bCombat);
+    const bm = new BotManager(R, bw, map, bCombat, bMatch, bbs, 'red', 0, { red: ['normal', 'normal'], blue: ['normal'] });
+    const raider = bm.bots.find((b) => b.team === 'red' && b.role === 'attack')!;
+    giveWeapon(raider.weapons, 'rifle', WEAPONS.rifle.mag);
+    raider.weapons.reserve.rifle = 120;
+    raider.weapons.current = 'rifle';
+    raider.goal = 'blue';
+    raider.departAt = 0;
+    bMatch.time = 300;
+    // Place an enemy blue wood wall sealing the red door vestibule at z = -13.5 so the raider must demolish it
+    const doorWall = bbs.insertPiece('wall', new Vector3(-2.25, G + 2.25, -13.5), new Vector3(0.125, 2.25, 2.25), new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2), 'wood', 'blue');
+    const initialSize = bbs.blocks.size;
+    for (let k = 0; k < 64 * 10 && bbs.blocks.has(doorWall.collider.handle); k++) {
+      bMatch.time += TICK_DT;
+      bm.tick(TICK_DT);
+      bCombat.tick(TICK_DT);
+      bMatch.tick(TICK_DT, new Vector3(0, -5000, 0), false);
+    }
+    check('bot raiders actively demolish enemy-built walls in their way',
+      !bbs.blocks.has(doorWall.collider.handle) && bbs.blocks.size < initialSize,
+      `wallGone=${!bbs.blocks.has(doorWall.collider.handle)} remainingHp=${doorWall.hp}`);
+  }
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');

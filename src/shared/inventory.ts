@@ -2,8 +2,8 @@ import type { Economy, ItemId } from './economy';
 import { ITEM_ORDER } from './economy';
 
 /** Guns that go into a hand (bought in the shop). */
-export type GunId = 'pistol' | 'shotgun' | 'rifle' | 'crossbow' | 'rocket';
-export const HELD_GUNS: GunId[] = ['pistol', 'shotgun', 'rifle', 'crossbow', 'rocket'];
+export type GunId = 'pistol' | 'revolver' | 'shotgun' | 'rifle' | 'crossbow' | 'rocket';
+export const HELD_GUNS: GunId[] = ['pistol', 'revolver', 'shotgun', 'rifle', 'crossbow', 'rocket'];
 export const isHeldGun = (h: Holdable | null): h is GunId => !!h && (HELD_GUNS as string[]).includes(h);
 /** Everything that can go into a hand besides the bare fists (an empty hand punches). */
 export type Holdable = GunId | 'grenade' | 'build' | 'hook' | 'rod' | ItemId;
@@ -30,12 +30,12 @@ export function holdables(eco: Economy): Holdable[] {
 export interface SlotRef { where: 'bar' | 'pack'; i: number }
 
 /**
- * Hotbar (keys 1–9, 9 slots total, no separate inventory screen). Things you get go to their old slot if it is free,
+ * Hotbar (keys 1–9, 9 slots total, plus backpack slots for overflow). Things you get go to their old slot if it is free,
  * else to the first free one; things you run out of disappear but remember their slot. An empty selected slot = fists.
  */
 export class Hotbar {
   readonly bar: (Holdable | null)[] = Array(HOTBAR_SIZE).fill(null);
-  readonly pack: (Holdable | null)[] = [];
+  readonly pack: (Holdable | null)[] = Array(HOTBAR_SIZE).fill(null);
   /** Selected hotbar slot. */
   sel = 0;
   private readonly home = new Map<Holdable, SlotRef>();
@@ -54,22 +54,26 @@ export class Hotbar {
   }
 
   private set(r: SlotRef, h: Holdable | null) {
-    if (r.where !== 'bar') return;
-    this.bar[r.i] = h;
+    const arr = this.list(r.where);
+    if (r.i < 0 || r.i >= arr.length) return;
+    arr[r.i] = h;
     if (h) this.home.set(h, { ...r });
   }
 
-  /** Bring the slots in line with what is owned (9 hotbar slots only). */
+  /** Bring the slots in line with what is owned (9 hotbar slots + 9 pack slots). */
   sync(owned: Holdable[]) {
     const have = new Set(owned);
     for (let i = 0; i < this.bar.length; i++) if (this.bar[i] && !have.has(this.bar[i]!)) this.bar[i] = null;
+    for (let i = 0; i < this.pack.length; i++) if (this.pack[i] && !have.has(this.pack[i]!)) this.pack[i] = null;
     for (const h of owned) {
-      if (this.bar.includes(h)) continue;
+      if (this.bar.includes(h) || this.pack.includes(h)) continue;
       const home = this.home.get(h);
-      if (home && home.where === 'bar' && !this.get(home)) { this.set(home, h); continue; }
+      if (home && !this.get(home)) { this.set(home, h); continue; }
       let i = this.bar.findIndex((s, k) => !s && (k !== this.sel || !isItem(h)));
       if (i < 0) i = this.bar.findIndex((s) => !s);
-      if (i >= 0) this.set({ where: 'bar', i }, h);
+      if (i >= 0) { this.set({ where: 'bar', i }, h); continue; }
+      const pi = this.pack.findIndex((s) => !s);
+      if (pi >= 0) this.set({ where: 'pack', i: pi }, h);
     }
   }
 

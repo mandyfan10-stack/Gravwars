@@ -3,6 +3,7 @@ import {
   Quaternion, Vector3,
 } from 'three';
 import { generateMap } from '../shared/map';
+import type { GameMode } from '../shared/lobby';
 import { MapData } from '../shared/mapgen/core';
 import { WORLD } from '../shared/constants';
 import { GameAssets } from './render/assets';
@@ -57,14 +58,15 @@ export class MenuBackdrop {
     this.dust.frustumCulled = false;
   }
 
-  /** Build the world for (spawn team, playing teams, seed) and start the camera. */
-  start(assets: GameAssets, spawnTeam: string, teams: readonly string[], seed = 1337) {
-    const map = generateMap(seed, spawnTeam, teams);
+  /** Build the world for (spawn team, playing teams, seed, mode) and start the camera. */
+  start(assets: GameAssets, spawnTeam: string, teams: readonly string[], seed = 1337, mode: GameMode = 'standard') {
+    this.gfx.setSunVisible(mode !== 'skirmish');
+    const map = generateMap(seed, spawnTeam, teams, mode);
     const mapView = buildMapView(map);
     const propView = buildPropView(map, assets);
     this.gfx.scene.add(mapView.group, propView, this.dust);
     this.world = { map, mapView, propView };
-    this.key = MenuBackdrop.keyOf(seed, spawnTeam, teams);
+    this.key = MenuBackdrop.keyOf(seed, spawnTeam, teams, mode);
     mapView.cull(this.gfx.camera.position, Infinity);
     this.running = true;
     this.last = performance.now();
@@ -76,22 +78,34 @@ export class MenuBackdrop {
    * Stop the camera. The world is handed over when it was built for the same teams & seed (it then stays in the scene),
    * else it is removed and freed and null comes back.
    */
-  take(spawnTeam: string, teams: readonly string[], seed = 1337): BuiltWorld | null {
+  take(spawnTeam: string, teams: readonly string[], seed = 1337, mode: GameMode = 'standard'): BuiltWorld | null {
     this.running = false;
     document.body.classList.remove('backdrop', 'boot');
     this.gfx.scene.remove(this.dust);
-    this.dust.geometry.dispose();
     const w = this.world;
     this.world = null;
-    if (!w) return null;
-    if (this.key === MenuBackdrop.keyOf(seed, spawnTeam, teams)) return w;
+    if (!w) { this.dust.geometry.dispose(); return null; }
+    if (this.key === MenuBackdrop.keyOf(seed, spawnTeam, teams, mode)) return w;
+    this.dust.geometry.dispose();
     this.gfx.scene.remove(w.mapView.group, w.propView);
     for (const g of [w.mapView.group, w.propView]) free(g);
     return null;
   }
 
-  private static keyOf(seed: number, spawnTeam: string, teams: readonly string[]) {
-    return `${seed}|${spawnTeam}|${[...teams].sort().join(',')}`;
+  /** Resume the scenic rotating menu camera over an already built world when exiting a match back to the menu. */
+  resumeExisting(world: BuiltWorld) {
+    this.world = world;
+    this.gfx.setSunVisible(world.map.cube.halfY === undefined);
+    this.gfx.scene.add(this.dust);
+    world.mapView.cull(this.gfx.camera.position, Infinity);
+    this.running = true;
+    this.last = performance.now();
+    this.frame();
+    document.body.classList.add('backdrop');
+  }
+
+  private static keyOf(seed: number, spawnTeam: string, teams: readonly string[], mode = 'standard') {
+    return `${seed}|${mode}|${spawnTeam}|${[...teams].sort().join(',')}`;
   }
 
   /** The shot (tunable from the console): see `pose`. */
@@ -103,8 +117,11 @@ export class MenuBackdrop {
    */
   private pose(t: number) {
     const { camera } = this.gfx;
-    const S = WORLD.cubeHalf;
-    const { r, h, lookR, lookH, off, roll } = this.shot;
+    const isSkirmish = this.world?.map.cube.halfY !== undefined;
+    const S = isSkirmish ? (this.world!.map.cube.halfY!) : WORLD.cubeHalf;
+    const { r, h, lookR, lookH, off, roll } = isSkirmish
+      ? { r: 52, h: 14, lookR: 85, lookH: 6, off: 0.785, roll: 0 }
+      : this.shot;
     const a = this.a0 + (t / TURN) * Math.PI * 2;
     camera.position.set(Math.cos(a) * r, -S + h + Math.sin(t * 0.11) * 2, Math.sin(a) * r);
     const b = a + Math.PI + off;

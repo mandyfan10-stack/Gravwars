@@ -52,7 +52,7 @@ export function createSpace() {
     side: BackSide,
     depthWrite: false,
     fog: false,
-    uniforms: { time: { value: 0 } },
+    uniforms: { time: { value: 0 }, hasSun: { value: 1 } },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
       void main() {
@@ -61,6 +61,7 @@ export function createSpace() {
       }`,
     fragmentShader: /* glsl */ `
       uniform float time;
+      uniform float hasSun;
       varying vec3 vDir;
 
       float hash2(vec2 p) {
@@ -204,12 +205,14 @@ export function createSpace() {
         vec3 coreGlow = vec3(1.0, 0.86, 0.48);
         city = mix(city, mix(hazeCol, coreGlow, 0.55), smoothstep(0.0, 1.0, depthFade) * 0.78);
 
-        // Radiant golden-yellow sun core at the vanishing points
-        float pole = max(abs(z), 0.0);
-        float core = smoothstep(0.84, 0.998, pole);
-        float rays = 0.5 + 0.5 * sin(angle * 16.0 + fbm2(vec2(angle * 4.0, time * 0.05)) * 5.0);
-        city += vec3(1.0, 0.82, 0.38) * pow(pole, 7.0) * (0.55 + 0.25 * rays);
-        city = mix(city, vec3(1.0, 0.97, 0.82), pow(core, 2.2));
+        // Radiant golden-yellow sun core at the vanishing points (hidden in Skirmish)
+        if (hasSun > 0.5) {
+          float pole = max(abs(z), 0.0);
+          float core = smoothstep(0.84, 0.998, pole);
+          float rays = 0.5 + 0.5 * sin(angle * 16.0 + fbm2(vec2(angle * 4.0, time * 0.05)) * 5.0);
+          city += vec3(1.0, 0.82, 0.38) * pow(pole, 7.0) * (0.55 + 0.25 * rays);
+          city = mix(city, vec3(1.0, 0.97, 0.82), pow(core, 2.2));
+        }
 
         gl_FragColor = vec4(city, 1.0);
       }`,

@@ -37,6 +37,7 @@ interface Splat { mesh: Mesh; t: number }
  */
 const TRACER: Partial<Record<WeaponId, { core: Color; glow: Color; len: number; width: number }>> = {
   pistol: { core: new Color(9, 8, 4.5), glow: new Color(2.6, 2.1, 0.6), len: 3.2, width: 0.035 },
+  revolver: { core: new Color(11, 9.5, 6), glow: new Color(3.6, 2.4, 0.75), len: 5.5, width: 0.048 },
   rifle: { core: new Color(9, 6.5, 3), glow: new Color(3.2, 1.5, 0.35), len: 4.2, width: 0.035 },
   shotgun: { core: new Color(8, 5, 2.2), glow: new Color(3, 1.1, 0.25), len: 1.4, width: 0.03 },
   crossbow: { core: new Color(4.5, 9.2, 11), glow: new Color(0.8, 3.2, 5.2), len: 2.8, width: 0.06 },
@@ -395,6 +396,54 @@ export class Fx {
     this.puff(pos, _v.copy(dir).multiplyScalar(2.5), 1.35, 0.45, _c.setRGB(0.85, 0.72, 0.58), 0.5);
   }
 
+  /** Water splash when jumping or falling into a pond/fountain. */
+  waterSplash(pos: Vector3, speed: number) {
+    const scale = Math.min(2.2, Math.max(0.6, speed / 8));
+    const up = _v.copy(this.down).negate();
+    this.burst(pos, up, Math.round(28 * scale), 4.5 * scale, new Color(0.75, 0.92, 1.05), 0.55);
+    this.burst(pos, up, Math.round(14 * scale), 2.8 * scale, new Color(1.0, 1.0, 1.0), 0.42);
+    for (let i = 0; i < 6; i++) {
+      _d.set((Math.random() - 0.5) * 3.5, 0, (Math.random() - 0.5) * 3.5).addScaledVector(up, 1.1 * scale);
+      this.puff(pos, _d, 0.9 * scale, 0.65, _c.setRGB(0.82, 0.94, 1.0), 0.45);
+    }
+  }
+
+  /** Jetpack thruster flames, sparks, and heat smoke emitted downward from twin nozzles. */
+  jetpackThrust(pos: Vector3, down: Vector3, vel: Vector3, heatRatio: number, dt: number) {
+    _d.copy(down).normalize();
+    _right.crossVectors(_d, Math.abs(_d.x) < 0.9 ? _v.set(1, 0, 0) : _v.set(0, 0, 1)).normalize();
+    const hot = Math.max(0, Math.min(1, heatRatio));
+    const spawnCount = hot > 0.72 ? 5 : 3;
+    for (let s = 0; s < spawnCount; s++) {
+      const side = (s % 2 === 0 ? -0.18 : 0.18);
+      _b.copy(pos).addScaledVector(_d, 0.25).addScaledVector(_right, side);
+      _v.copy(_d).multiplyScalar(7.5 + hot * 5.5 + Math.random() * 2.5)
+        .addScaledVector(vel, 0.25)
+        .add(_s.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.6));
+      const col = hot > 0.78
+        ? _c.setRGB(6.5, 1.8, 0.4)
+        : hot > 0.45
+        ? _c.setRGB(5.2, 3.2, 0.6)
+        : _c.setRGB(1.8, 4.4, 6.2);
+      this.spark(_b, _v, col, 0.16 + Math.random() * 0.1);
+    }
+    if (Math.random() < dt * (18 + hot * 22)) {
+      _b.copy(pos).addScaledVector(_d, 0.45);
+      _v.copy(_d).multiplyScalar(3.2).add(_s.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.9));
+      const sc = hot > 0.75 ? _c.setRGB(0.85, 0.48, 0.32) : _c.setRGB(0.75, 0.78, 0.85);
+      this.puff(_b, _v, 0.55 + hot * 0.45, 0.45 + hot * 0.3, sc, 0.45);
+    }
+  }
+
+  /** Car vanish despawn effect after idling untouched. */
+  carVanish(pos: Vector3) {
+    this.burst(pos, _v.copy(this.down).negate(), 26, 4.2, new Color(0.65, 0.9, 1.0), 0.5);
+    for (let i = 0; i < 5; i++) {
+      _d.set(Math.random() - 0.5, 0.4, Math.random() - 0.5).multiplyScalar(2);
+      this.puff(pos, _d, 1.3, 0.75, _c.setRGB(0.75, 0.85, 0.92), 0.45);
+    }
+  }
+
   /** A rocket: olive body, warhead, fins and a flame at the back (pooled). */
   private rocketMesh(): Group {
     const g = this.rocketPool.pop();
@@ -452,10 +501,10 @@ export class Fx {
         }
         let coreCol = look.core;
         let glowCol = look.glow;
-        if (p.weapon === 'crossbow' && p.team && (p.team === 'red' || p.team === 'blue' || p.team === 'green' || p.team === 'yellow')) {
+        if (p.weapon === 'crossbow' && p.team) {
           const tc = new Color(getTeam(p.team as TeamId).color);
-          coreCol = tc.clone().multiplyScalar(5.5).addScalar(1.4);
-          glowCol = tc.clone().multiplyScalar(3.2);
+          coreCol = tc.clone().lerp(_c.setRGB(1, 1, 1), 0.14).multiplyScalar(3.6);
+          glowCol = tc.clone().multiplyScalar(2.6);
         }
         _m.compose(_b, _q, _s.set(wX, wY, len));
         this.cores.setMatrixAt(n, _m);
@@ -488,13 +537,26 @@ export class Fx {
         flame.scale.set(1, 1, 0.8 + Math.random() * 0.5);
         // a smoke trail: a puff every ~0.6 m, none in the first metres (it would fill the shooter's view)
         const last = r.userData.last as Vector3;
-        if (!r.userData.started) { last.copy(r.position); r.userData.started = true; }
+        if (!Number.isFinite(r.position.x) || !Number.isFinite(r.position.y) || !Number.isFinite(r.position.z)) continue;
+        if (!r.userData.started || !Number.isFinite(last.x) || !Number.isFinite(last.y) || !Number.isFinite(last.z)) {
+          last.copy(r.position);
+          r.userData.started = true;
+        }
         const from = mo ? mo.start : last;
-        while (last.distanceTo(r.position) > 0.6) {
-          last.addScaledVector(_s.copy(r.position).sub(last).normalize(), 0.6);
-          if (last.distanceTo(from) < 2.5) continue;
-          _v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.5);
-          this.puff(last, _v, 0.6 + Math.random() * 0.3, 1.2 + Math.random() * 0.4, _c.setRGB(0.7, 0.68, 0.66), 0.6);
+        const dist = last.distanceTo(r.position);
+        if (!Number.isFinite(dist) || dist > 40) {
+          last.copy(r.position);
+        } else {
+          let steps = 0;
+          while (last.distanceTo(r.position) > 0.6 && steps++ < 24) {
+            _s.copy(r.position).sub(last);
+            const len = _s.length();
+            if (!(len > 1e-4)) break;
+            last.addScaledVector(_s, 0.6 / len);
+            if (last.distanceTo(from) < 2.5) continue;
+            _v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.5);
+            this.puff(last, _v, 0.6 + Math.random() * 0.3, 1.2 + Math.random() * 0.4, _c.setRGB(0.7, 0.68, 0.66), 0.6);
+          }
         }
         for (let k = 0; k < 2; k++) {
           this.spark(_b.copy(p.pos).addScaledVector(_d, -0.45), _v.copy(_d).multiplyScalar(-5).add(_s.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(1.6)),

@@ -78,8 +78,9 @@ function check(name: string, ok: boolean, info = '') {
   const all = bots.bots;
   check('bots earn money and spend it at the counters', all.every((b) => b.earned > 0 && b.spent > 0 && b.bought.length > 0),
     all.map((b) => `${b.team}${b.role[0]} +${b.earned}/-${b.spent}`).join(' '));
+  const guns = ['pistol', 'revolver', 'shotgun', 'rifle', 'crossbow'];
   check('every bot buys a gun; raiders buy wood for their bridges',
-    all.every((b) => b.bought.includes('pistol')) && all.some((b) => (b.bought.includes('wood') || b.bought.includes('builder')) && b.built > 0)
+    all.every((b) => guns.some((g) => b.bought.includes(g))) && all.some((b) => (b.bought.includes('wood') || b.bought.includes('builder')) && b.built > 0)
     && all.every((b) => b.kit.wood >= 0 && b.wallet.cash >= 0));
   check('bots pick up loot and fish for money', all.some((b) => b.taken > 0) && kinds.has('fish') && kinds.has('shop'),
     [...kinds].join(','));

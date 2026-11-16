@@ -3,7 +3,7 @@ import { DEFAULT_MOVEMENT, MovementConfig, PLAYER_HEIGHT } from './constants';
 import { fieldFor, GravityField } from './gravity';
 import type { MapData } from './map';
 import { upOf } from './math';
-import { createPlayerState, MoveInput, moveBasis, Mover, PlayerState } from './movement';
+import { createPlayerState, MoveInput, moveBasis, Mover, PlayerState, viewQuat } from './movement';
 import type { PhysicsWorld, Rapier } from './physics';
 import { getTeam, TeamDef, TeamId } from './teams';
 
@@ -14,6 +14,25 @@ export type RespawnReason = 'void' | 'manual' | 'spawn' | 'killed';
  * when it attaches it gives an immediate pull impulse and pulls its owner there at up to `pull` m/s.
  */
 export const HOOK = { range: 35, magnet: 0.25, fly: 110, pull: 24, grip: 7, arrive: 1.1, maxPull: 3, cooldown: 0.5 };
+
+/**
+ * Jetpack: holding Space while airborne flies toward camera look direction + a share of movement velocity.
+ * After `maxFlight` (12 s) of continuous flight it overheats and explodes (self: 50% max HP, others: 50 HP),
+ * but is not destroyed. Uses ammo as fuel (1 round every `fuelInterval` s).
+ */
+export const JETPACK = {
+  maxFlight: 12,
+  coolRate: 1.8,
+  speed: 15.5,
+  accel: 10,
+  lookWeight: 0.82,
+  moveWeight: 0.35,
+  fuelInterval: 0.25,
+  explodeRadius: 5.5,
+  explodeDamageOther: 50,
+  explodeSelfFrac: 0.5,
+  overheatCooldown: 3.5,
+};
 
 export interface HookState {
   /** Where the claw bit (or where it gives up, for a miss). */
@@ -37,11 +56,19 @@ export type SimEvent =
   | { type: 'respawn'; reason: RespawnReason }
   | { type: 'launch' }
   /** Touched the ground after falling at `speed` m/s (fall damage, landing thud). */
-  | { type: 'land'; speed: number };
+  | { type: 'land'; speed: number }
+  /** Landed in water (pond / river / fountain): splash effect and zero fall damage. */
+  | { type: 'splash'; pos: Vector3; speed: number }
+  /** Jetpack consumed 1 unit of ammo fuel. */
+  | { type: 'jetpackFuel' }
+  /** Jetpack overheated after 12 s of flight and exploded. */
+  | { type: 'jetpackExplode'; pos: Vector3 };
 
 const _up = new Vector3();
 const _fwd = new Vector3();
 const _right = new Vector3();
+const _look = new Vector3();
+const _wish = new Vector3();
 const _q = new Quaternion();
 const _n = new Vector3();
 /** After a switch the body is put this far above the new surface (capsule half height + a short drop). */
@@ -64,6 +91,20 @@ export class PlayerSim {
   hook: HookState | null = null;
   hookCd = 0;
 
+  /** Jetpack ownership & fuel flags (updated by the owner each tick). */
+  hasJetpack = false;
+  hasJetpackFuel = false;
+  /** True while the jetpack thrusters are firing this tick. */
+  jetpackActive = false;
+  /** Seconds of continuous flight accumulated (0..JETPACK.maxFlight). */
+  jetpackHeat = 0;
+  /** Cooldown remaining after an overheat explosion, s. */
+  jetpackOverheatCd = 0;
+  private jetpackFuelT = 0;
+  /** Rotating spawn angle so team members spawn in a circle around their crystal. */
+  spawnSlot = 0;
+  private spawnCount = 0;
+
   constructor(private R: Rapier, world: PhysicsWorld, readonly map: MapData, teamId: TeamId,
     readonly cfg: MovementConfig = { ...DEFAULT_MOVEMENT }) {
     this.team = getTeam(teamId);
@@ -72,19 +113,52 @@ export class PlayerSim {
     this.respawn('spawn');
   }
 
-  respawn(reason: RespawnReason = 'manual') {
-    const sp = this.map.spawns[this.team.id];
+  /** Spawn on a ring around the team's crystal inside the base hall. */
+  respawn(reason: RespawnReason = 'manual', angleOverride?: number) {
+    const sp = this.map.spawns[this.team.id] ?? Object.values(this.map.spawns)[0];
+    const statue = this.map.statues.find((st) => st.team === this.team.id);
     const s = this.state;
-    s.pos.set(...sp.pos);
-    s.vel.set(0, 0, 0);
     s.frame.set(...sp.quat);
-    s.yaw = sp.yaw;
+    if (statue) {
+      // Spawn in a ring of radius 3.4 m around the crystal at floor height
+      const angle = angleOverride !== undefined
+        ? angleOverride
+        : (this.spawnSlot * 1.2566 + this.spawnCount * 2.39996) % (Math.PI * 2);
+      this.spawnCount++;
+      const radius = 3.4;
+      const bedPos = new Vector3(...statue.bed);
+      const spPos = new Vector3(...sp.pos);
+      const up = upOf(s.frame, _up);
+      // Keep the exact spawn height above floor from sp.pos, centered around bedPos horizontally
+      const hDiff = spPos.clone().sub(bedPos).dot(up);
+      const offset = new Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius).applyQuaternion(s.frame);
+      s.pos.copy(bedPos).addScaledVector(up, hDiff).add(offset);
+      s.yaw = sp.yaw;
+    } else {
+      s.pos.set(...sp.pos);
+      s.yaw = sp.yaw;
+    }
+    s.vel.set(0, 0, 0);
     s.pitch = 0;
     s.onGround = false;
     s.airT = -1;
     this.mover.place(s);
     this.hook = null;
+    this.jetpackActive = false;
+    this.jetpackHeat = 0;
+    this.jetpackOverheatCd = 0;
     this.events.push({ type: 'respawn', reason });
+  }
+
+  /** Is `pos` inside any pond / river / fountain water volume? */
+  inWater(pos = this.state.pos): boolean {
+    for (const p of this.map.ponds) {
+      const rel = _to.copy(pos).sub(new Vector3(...p.pos)).applyQuaternion(_q.set(...p.quat).invert());
+      if (Math.abs(rel.x) <= p.half[0] + 0.25 && Math.abs(rel.z) <= p.half[1] + 0.25 && Math.abs(rel.y) <= 2.1) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -108,7 +182,6 @@ export class PlayerSim {
           const orig = eye.clone().addScaledVector(u, Math.cos(a) * r).addScaledVector(v, Math.sin(a) * r);
           const h = this.mover.world.castRay(new this.R.Ray(orig, d), HOOK.range, true, undefined, undefined, this.mover.collider, undefined, filter);
           if (h && h.timeOfImpact > 0.4 && h.timeOfImpact < bestToi) {
-            // Ensure the line from eye to the magnetized point isn't blocked right in front of the player
             bestToi = h.timeOfImpact;
             hit = h;
             anchorPos = orig.addScaledVector(d, h.timeOfImpact);
@@ -144,7 +217,6 @@ export class PlayerSim {
       h.t = 0;
       this.events.push({ type: 'hook', what: h.miss ? 'miss' : 'attach' });
       if (!h.miss) {
-        // Immediate impulse upon attach
         const s = this.state;
         const up = upOf(s.frame, _up);
         const pullDir = _to.copy(h.anchor).sub(s.pos);
@@ -170,20 +242,74 @@ export class PlayerSim {
     const to = _to.copy(h.anchor).sub(s.pos);
     const d = to.length();
     if (d < h.best - 0.3) { h.best = d; h.still = 0; } else h.still += dt;
-    // there (or as close as the wall lets): keep a little of the speed, the rest is caught by the arms
     if (d < HOOK.arrive || h.still > 0.35 || h.t > HOOK.maxPull || (input.jump && h.t > 0.2)) {
       if (d < HOOK.arrive || h.still > 0.35) s.vel.multiplyScalar(0.35);
       this.releaseHook();
       return;
     }
-    // ease into full speed, slow down over the last metres
     const speed = HOOK.pull * Math.min(1, 0.35 + h.t * 2.5) * Math.min(1, 0.35 + d / 4);
     to.divideScalar(d).multiplyScalar(speed);
     s.vel.lerp(to, Math.min(1, HOOK.grip * dt));
-    // off the ground, and gravity is cancelled for this tick (the mover adds it back)
     s.vel.addScaledVector(up, this.cfg.gravity * dt);
     s.onGround = false;
     s.airT = -1;
+  }
+
+  /** Jetpack flight logic when holding Space in the air. */
+  private jetpackTick(input: MoveInput, dt: number) {
+    const s = this.state;
+    this.jetpackOverheatCd = Math.max(0, this.jetpackOverheatCd - dt);
+    const canFly = this.hasJetpack
+      && this.hasJetpackFuel
+      && this.jetpackOverheatCd <= 0
+      && !s.onGround
+      && !s.noclip
+      && this.hook?.phase !== 'pull'
+      && input.jump
+      && s.jumpHold <= 0.12;
+
+    if (canFly) {
+      this.jetpackActive = true;
+      const up = upOf(s.frame, _up);
+      viewQuat(s.frame, input.yaw, input.pitch, _q);
+      _look.set(0, 0, -1).applyQuaternion(_q);
+      moveBasis(s.frame, input.yaw, _fwd, _right);
+      _wish.set(0, 0, 0).addScaledVector(_fwd, input.forward).addScaledVector(_right, input.right);
+      if (_wish.lengthSq() > 1e-4) _wish.normalize();
+
+      // Combine camera look direction + a share of movement direction + slight upward lift
+      const flyDir = _to.copy(_look).multiplyScalar(JETPACK.lookWeight)
+        .addScaledVector(_wish, JETPACK.moveWeight)
+        .addScaledVector(up, 0.22);
+      if (flyDir.lengthSq() > 1e-4) flyDir.normalize();
+      const targetVel = flyDir.multiplyScalar(JETPACK.speed);
+      s.vel.lerp(targetVel, Math.min(1, JETPACK.accel * dt));
+      // Counteract gravity while jetpack thrusters are active
+      s.vel.addScaledVector(up, this.cfg.gravity * dt);
+      s.jumpHold = 0;
+
+      // Consume fuel (ammo)
+      this.jetpackFuelT += dt;
+      if (this.jetpackFuelT >= JETPACK.fuelInterval) {
+        this.jetpackFuelT -= JETPACK.fuelInterval;
+        this.events.push({ type: 'jetpackFuel' });
+      }
+
+      // Accumulate heat; explode after 12 seconds of flight
+      this.jetpackHeat += dt;
+      if (this.jetpackHeat >= JETPACK.maxFlight) {
+        this.jetpackHeat = 0;
+        this.jetpackActive = false;
+        this.jetpackOverheatCd = JETPACK.overheatCooldown;
+        this.events.push({ type: 'jetpackExplode', pos: s.pos.clone() });
+      }
+    } else {
+      this.jetpackActive = false;
+      this.jetpackFuelT = 0;
+      if (this.jetpackHeat > 0) {
+        this.jetpackHeat = Math.max(0, this.jetpackHeat - JETPACK.coolRate * dt);
+      }
+    }
   }
 
   /** Rotate the body so that its up becomes -down. 180° flips roll around the view direction. */
@@ -202,7 +328,6 @@ export class PlayerSim {
     s.frame.premultiply(_q).normalize();
     s.onGround = false;
     this.mover.place(s);
-    // turned onto a new surface: the rope has done its job
     if (this.hook?.phase === 'pull') this.releaseHook();
     this.events.push({ type: 'gravity' });
   }
@@ -217,7 +342,9 @@ export class PlayerSim {
 
   /** Fallen out of the cube: further than the void margin outside it on some axis. */
   outside(p = this.state.pos) {
-    return Math.max(Math.abs(p.x), Math.abs(p.y), Math.abs(p.z)) > this.map.cube.half + this.map.voidMargin;
+    const hx = this.map.cube.half + this.map.voidMargin;
+    const hy = (this.map.cube.halfY ?? this.map.cube.half) + this.map.voidMargin;
+    return Math.abs(p.x) > hx || Math.abs(p.z) > hx || Math.abs(p.y) > hy;
   }
 
   gravityDown(out = new Vector3()): Vector3 {
@@ -228,13 +355,20 @@ export class PlayerSim {
     const s = this.state;
     const wasGround = s.onGround;
     this.hookTick(input, dt);
-    // the rope lowers you: no fall damage at the end of a pull
-    const roped = this.hook?.phase === 'pull';
+    this.jetpackTick(input, dt);
+    // the rope or jetpack lowers you: no fall damage at the end of a pull
+    const roped = this.hook?.phase === 'pull' || this.jetpackActive;
     const fall = roped ? Math.min(-s.vel.dot(upOf(s.frame, _up)), 8) : -s.vel.dot(upOf(s.frame, _up));
     this.mover.step(s, input, dt);
     if (s.noclip) return;
     const up = upOf(s.frame, _up);
-    if (s.onGround && !wasGround && fall > 3) this.events.push({ type: 'land', speed: fall });
+    if (s.onGround && !wasGround && fall > 3) {
+      if (this.inWater(s.pos)) {
+        this.events.push({ type: 'splash', pos: s.pos.clone(), speed: fall });
+      } else {
+        this.events.push({ type: 'land', speed: fall });
+      }
+    }
 
     // walked onto a surface of another gravity (bridge stub, built floor): turn onto it
     if (this.surfaces) {

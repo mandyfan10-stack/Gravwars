@@ -1,7 +1,8 @@
 import {
   BoxGeometry, CanvasTexture, Color, EdgesGeometry, Group, InstancedMesh, LineBasicMaterial, LineSegments, Matrix4, Mesh,
-  MeshBasicMaterial, MeshStandardMaterial, NearestFilter, RepeatWrapping, Scene, SRGBColorSpace, Vector3,
+  MeshBasicMaterial, MeshStandardMaterial, NearestFilter, Quaternion, RepeatWrapping, Scene, SRGBColorSpace, Vector3,
 } from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   BLOCK_ORDER, BlockKind, BlockMaterial, BlockSystem, PIECE_CELL, PIECE_LEVEL, PIECE_THICK, PiecePlan,
 } from '../../shared/blocks';
@@ -214,8 +215,12 @@ function withDamage(mat: MeshStandardMaterial, cracks: CanvasTexture) {
 const _m = new Matrix4();
 const _c = new Color();
 const _s = new Vector3();
+const _p = new Vector3();
+const _q = new Quaternion();
+const _lq = new Quaternion();
+const _yAxis = new Vector3(0, 1, 0);
+const _xAxis = new Vector3(1, 0, 0);
 
-/** All placed blocks as one instanced mesh per material + the placement preview. */
 /** Box with UVs in metres / TILE, so the texture repeats on big pieces instead of stretching. */
 const TILE = 1.5;
 function tiledBox(sx: number, sy: number, sz: number) {
@@ -231,6 +236,28 @@ function tiledBox(sx: number, sy: number, sz: number) {
   return g;
 }
 
+const partBox = (sx: number, sy: number, sz: number, ox: number, oy: number, oz: number) =>
+  tiledBox(sx, sy, sz).translate(ox, oy, oz);
+
+/** Wall frame leaving a central 2.1m × 3.2m doorway open (for 'hole' & 'door' variants). */
+function wallHoleGeometry() {
+  return mergeGeometries([
+    partBox(PIECE_THICK, PIECE_LEVEL, 1.2, 0, 0, -1.65),
+    partBox(PIECE_THICK, PIECE_LEVEL, 1.2, 0, 0, 1.65),
+    partBox(PIECE_THICK, 1.3, 2.1, 0, 1.6, 0),
+  ], false)!;
+}
+
+/** Floor frame leaving a centered 1.9m × 1.9m square hatch open (for 'hole' & 'door' variants). */
+function floorHoleGeometry() {
+  return mergeGeometries([
+    partBox(1.3, PIECE_THICK, PIECE_CELL, -1.6, 0, 0),
+    partBox(1.3, PIECE_THICK, PIECE_CELL, 1.6, 0, 0),
+    partBox(1.9, PIECE_THICK, 1.3, 0, 0, -1.6),
+    partBox(1.9, PIECE_THICK, 1.3, 0, 0, 1.6),
+  ], false)!;
+}
+
 const PIECE_SIZE: Record<BlockKind, [number, number, number]> = {
   block: [1, 1, 1],
   wall: [PIECE_THICK, PIECE_LEVEL, PIECE_CELL],
@@ -239,26 +266,42 @@ const PIECE_SIZE: Record<BlockKind, [number, number, number]> = {
 };
 const KINDS = Object.keys(PIECE_SIZE) as BlockKind[];
 
-/** Placed blocks and pieces: one instanced mesh per material and shape, plus the placement preview. */
+/** Placed blocks and pieces: instanced meshes per material/shape/variant + door leaves + placement preview. */
 export class BlockView {
   private readonly meshes = new Map<string, InstancedMesh>();
   private version = -1;
   private readonly ghost = new Group();
+  private readonly ghostHole = new LineSegments(new EdgesGeometry(new BoxGeometry(1, 1, 1)), new LineBasicMaterial({ color: 0xffe066 }));
   private readonly ghostMat = new MeshBasicMaterial({ color: 0x55eecb, transparent: true, opacity: 0.3, depthWrite: false });
   private readonly outlineMat = new LineBasicMaterial({ color: 0xbaffea });
 
   constructor(private readonly scene: Scene) {
     const cracks = crackTexture();
+    const wallHoleGeo = wallHoleGeometry();
+    const floorHoleGeo = floorHoleGeometry();
+    // Door / hatch leaves with pivot at hinge edge (swings open smoothly on E)
+    const wallLeafGeo = partBox(0.14, 3.2, 2.1, 0, 0, 1.05);
+    const floorLeafGeo = partBox(1.9, 0.14, 1.9, 0, 0, 0.95);
     for (const m of BLOCK_ORDER) {
       const map = texture(m);
       map.wrapS = map.wrapT = RepeatWrapping;
       const mat = withDamage(new MeshStandardMaterial({ map, roughness: m === 'metal' ? 0.5 : 0.88, metalness: m === 'metal' ? 0.55 : 0 }), cracks);
+      const leafMat = new MeshStandardMaterial({
+        map,
+        color: m === 'wood' ? 0xc29568 : m === 'stone' ? 0x8e9296 : 0xaabcc6,
+        roughness: m === 'metal' ? 0.42 : 0.78,
+        metalness: m === 'metal' ? 0.65 : 0.12,
+      });
       for (const k of KINDS) {
         const mesh = this.makeMesh(tiledBox(...PIECE_SIZE[k]), mat, k === 'block' ? MAX_PER_MATERIAL : 512);
         this.meshes.set(`${m}:${k}`, mesh);
       }
+      this.meshes.set(`${m}:wall:hole`, this.makeMesh(wallHoleGeo, mat, 256));
+      this.meshes.set(`${m}:floor:hole`, this.makeMesh(floorHoleGeo, mat, 256));
+      this.meshes.set(`${m}:wall:leaf`, this.makeMesh(wallLeafGeo, leafMat, 256));
+      this.meshes.set(`${m}:floor:leaf`, this.makeMesh(floorLeafGeo, leafMat, 256));
     }
-    this.ghost.add(new Mesh(new BoxGeometry(1.004, 1.004, 1.004), this.ghostMat), new LineSegments(new EdgesGeometry(new BoxGeometry(1.004, 1.004, 1.004)), this.outlineMat));
+    this.ghost.add(new Mesh(new BoxGeometry(1.004, 1.004, 1.004), this.ghostMat), new LineSegments(new EdgesGeometry(new BoxGeometry(1.004, 1.004, 1.004)), this.outlineMat), this.ghostHole);
     this.ghost.visible = false;
     scene.add(this.ghost);
   }
@@ -277,8 +320,9 @@ export class BlockView {
   private grow(key: string, need: number) {
     const old = this.meshes.get(key)!;
     let cap = old.instanceMatrix.count;
-    if (need <= cap) return;
-    while (cap < need) cap *= 2;
+    if (!Number.isFinite(need) || need <= cap) return;
+    const clampedNeed = Math.min(need, 1_048_576);
+    while (cap < clampedNeed && cap < 1_048_576) cap *= 2;
     this.scene.remove(old);
     old.dispose(); // instance buffers only: geometry and material are shared with the new mesh
     this.meshes.set(key, this.makeMesh(old.geometry, old.material, cap));
@@ -289,18 +333,40 @@ export class BlockView {
     if (system.version !== this.version) {
       this.version = system.version;
       const need = new Map<string, number>();
+      const keyOf = (b: { material: BlockMaterial; kind: BlockKind; variant: string }) =>
+        (b.variant === 'hole' || b.variant === 'door') && (b.kind === 'wall' || b.kind === 'floor')
+          ? `${b.material}:${b.kind}:hole`
+          : `${b.material}:${b.kind}`;
       for (const b of system.blocks.values()) {
-        const key = `${b.material}:${b.kind}`;
+        const key = keyOf(b);
         need.set(key, (need.get(key) ?? 0) + 1);
+        if (b.variant === 'door' && (b.kind === 'wall' || b.kind === 'floor')) {
+          const lk = `${b.material}:${b.kind}:leaf`;
+          need.set(lk, (need.get(lk) ?? 0) + 1);
+        }
       }
       for (const [key, n] of need) this.grow(key, n);
       for (const mesh of this.meshes.values()) mesh.count = 0;
       for (const b of system.blocks.values()) {
-        const mesh = this.meshes.get(`${b.material}:${b.kind}`)!;
+        const mesh = this.meshes.get(keyOf(b))!;
         const i = mesh.count++;
         mesh.setMatrixAt(i, _m.compose(b.center, b.quat, _s.set(1, 1, 1)));
         // health → the shader: darker and more cracked as it is damaged
         mesh.setColorAt(i, _c.setScalar(b.hp / b.maxHp));
+        if (b.variant === 'door' && (b.kind === 'wall' || b.kind === 'floor')) {
+          const leaf = this.meshes.get(`${b.material}:${b.kind}:leaf`)!;
+          const li = leaf.count++;
+          if (b.kind === 'wall') {
+            _p.set(0, -0.65, -1.05).applyQuaternion(b.quat).add(b.center);
+            _lq.setFromAxisAngle(_yAxis, b.open ? Math.PI * 0.46 : 0);
+          } else {
+            _p.set(0, 0, -0.95).applyQuaternion(b.quat).add(b.center);
+            _lq.setFromAxisAngle(_xAxis, b.open ? -Math.PI * 0.48 : 0);
+          }
+          _q.copy(b.quat).multiply(_lq);
+          leaf.setMatrixAt(li, _m.compose(_p, _q, _s.set(1, 1, 1)));
+          leaf.setColorAt(li, _c.setScalar(0.75 + 0.25 * (b.hp / b.maxHp)));
+        }
       }
       for (const mesh of this.meshes.values()) {
         mesh.instanceMatrix.needsUpdate = true;
@@ -312,6 +378,18 @@ export class BlockView {
     this.ghost.position.copy(preview.center);
     this.ghost.quaternion.copy(preview.quat);
     this.ghost.scale.copy(preview.half).multiplyScalar(2);
+    const v = preview.variant ?? 'plain';
+    this.ghostHole.visible = (v === 'hole' || v === 'door') && (preview.kind === 'wall' || preview.kind === 'floor');
+    if (this.ghostHole.visible) {
+      if (preview.kind === 'wall') {
+        this.ghostHole.position.set(0, -0.65 / PIECE_LEVEL, 0);
+        this.ghostHole.scale.set(1.06, 3.2 / PIECE_LEVEL, 2.1 / PIECE_CELL);
+      } else {
+        this.ghostHole.position.set(0, 0, 0);
+        this.ghostHole.scale.set(1.9 / PIECE_CELL, 1.15, 1.9 / PIECE_CELL);
+      }
+      (this.ghostHole.material as LineBasicMaterial).color.set(v === 'door' ? 0xffe066 : 0x6ef0ff);
+    }
     this.ghostMat.color.set(ok ? 0x55eecb : 0xff5360);
     this.outlineMat.color.set(ok ? 0xbaffea : 0xff9b9b);
   }

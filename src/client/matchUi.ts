@@ -1,6 +1,6 @@
 import { BLOCK_MATERIALS } from '../shared/blocks';
 import { CURRENCY_LABEL, Economy, ITEMS, MAX_MEDKITS, SELLABLE, SHOP, SHOP_ROWS, SHOP_SHORT, ShopItem } from '../shared/economy';
-import { Bed, BED_HP, BED_REGEN, Match, MatchEvent } from '../shared/match';
+import { Bed, BED_REGEN, Match, MatchEvent, maxCrystalHp } from '../shared/match';
 import { CRYSTAL } from '../shared/combat';
 import { getTeam, TEAMS } from '../shared/teams';
 import { isGun, WEAPONS } from '../shared/weapons';
@@ -22,6 +22,8 @@ function shopIcon(item: ShopItem): string {
   if (item.kind === 'ammo') return icon('ammo');
   if (item.kind === 'item') return icon(ITEM_ICON[item.item]);
   if (item.kind === 'weapon') return icon(item.weapon === 'fists' ? 'rifle' : item.weapon);
+  if (item.id === 'jetpack') return icon('jetpack');
+  if (item.id === 'armor') return icon('armor');
   return icon(item.id === 'rod' ? 'rod' : item.id === 'hook' ? 'hook' : 'shovel');
 }
 
@@ -185,6 +187,7 @@ export class MatchUi {
       + (m.wallet.crystal ? `<span class="crystal" title="Кристаллы">${icon('crystal')}${m.wallet.crystal}</span>` : '')
       + `<span class="time">${formatTime(m.time)}</span>`;
 
+    const maxBedHp = maxCrystalHp();
     const key = m.beds.map((b) => `${+b.alive}:${b.stage}:${Math.ceil(b.invulnT)}:${Math.ceil(b.hp)}:${+(b.calm >= BED_REGEN.delay)}:${m.membersAlive(b.team)}${+m.isOut(b.team)}`).join('|');
     if (key !== this.bedsKey) {
       this.bedsKey = key;
@@ -192,15 +195,15 @@ export class MatchUi {
         const bed = m.bed(t.id);
         const mine = t.id === m.team ? ' mine' : '';
         const out = m.isOut(t.id);
-        const pct = Math.ceil((bed.hp / BED_HP) * 100);
+        const pct = Math.ceil((bed.hp / maxBedHp) * 100);
         const inv = bed.invulnT > 0;
         const inner = out ? icon('skull') : !bed.alive ? `${icon('crystal')}<b>${m.membersAlive(t.id)}</b>`
           : inv ? `${icon('crystal')}<b>${Math.ceil(bed.invulnT)}с</b>`
-          : bed.hp < BED_HP ? `${icon('crystal')}<b>${pct}%</b>`
+          : bed.hp < maxBedHp ? `${icon('crystal')}<b>${pct}%</b>`
           : bed.stage === 2 ? `${icon('crystal')}<b>II</b>` : icon('crystal');
         const state = out ? 'выбыли' : !bed.alive ? `кристалл сломан, бойцов: ${m.membersAlive(t.id)}`
           : inv ? `неуязвим (${Math.ceil(bed.invulnT)} с до взрыва)`
-          : `стадия ${bed.stage === 1 ? 'I' : 'II'}, ${bed.hp < BED_HP ? `${pct}%${bed.calm >= BED_REGEN.delay ? ' (реген)' : ''}` : 'цел'}`;
+          : `стадия ${bed.stage === 1 ? 'I' : 'II'}, ${bed.hp < maxBedHp ? `${pct}%${bed.calm >= BED_REGEN.delay ? ' (реген)' : ''}` : 'цел'}`;
         return `<span class="bed${bed.alive ? '' : ' dead'}${out ? ' out' : ''}${mine}" style="--c:${teamHex(t.color)}" title="${t.name}: ${state}">${inner}</span>`;
       }).join('') + `<span class="goal">врагов<b>${m.enemiesLeft}</b></span>`;
     }
@@ -213,7 +216,7 @@ export class MatchUi {
         prompt = `Кристалл: ${name} — неуязвим (${Math.ceil(sight.bed.invulnT)} с до взрыва!)`;
       } else {
         const stLabel = sight.bed.stage === 1 ? ' [Стадия I]' : ' [Стадия II]';
-        const regen = sight.bed.hp < BED_HP && sight.bed.calm >= BED_REGEN.delay ? ' · восстанавливается' : '';
+        const regen = sight.bed.hp < maxBedHp && sight.bed.calm >= BED_REGEN.delay ? ' · восстанавливается' : '';
         prompt = (near ? `Кристалл: ${name}${stLabel} — стреляй или бей` : `Кристалл: ${name}${stLabel} — подойди ближе, ломается только с ${CRYSTAL.range} м`) + regen;
       }
     } else if (nearShop && !this.shopOpen) prompt = '<b>E</b> магазин';
@@ -229,11 +232,11 @@ export class MatchUi {
       // HP bar of the crystal you aim at (or hit a moment ago, or your own crystal while damaged/regenerating)
       const recent = performance.now() / 1000 - this.hitAt < 3.5 ? this.hitBed : null;
       const ownBed = m.bed(m.team);
-      const bar = (sight && sight.dist < 20 ? sight.bed : null) ?? (recent && recent.alive ? recent : null) ?? (ownBed.alive && ownBed.hp < BED_HP ? ownBed : null);
+      const bar = (sight && sight.dist < 20 ? sight.bed : null) ?? (recent && recent.alive ? recent : null) ?? (ownBed.alive && ownBed.hp < maxBedHp ? ownBed : null);
       const show = !!bar && bar.alive;
       this.breakEl.style.opacity = show ? '1' : '0';
       if (show) {
-        this.breakBar.style.width = bar!.invulnT > 0 ? `${(bar!.invulnT / 10) * 100}%` : `${(bar!.hp / BED_HP) * 100}%`;
+        this.breakBar.style.width = bar!.invulnT > 0 ? `${(bar!.invulnT / 10) * 100}%` : `${(bar!.hp / maxBedHp) * 100}%`;
         this.breakBar.style.background = bar!.invulnT > 0 ? '#7cf5ff' : teamHex(getTeam(bar!.team).color);
       }
     }
@@ -249,6 +252,7 @@ export class MatchUi {
     let status = '';
     if (item.kind === 'weapon' && item.weapon === 'grenade') status = `есть ${ws.ammo.grenade} из ${WEAPONS.grenade.mag}`;
     else if (item.kind === 'weapon' && item.weapon === 'crossbow') status = 'заряд 0–3 ур.';
+    else if (item.kind === 'weapon' && item.weapon === 'revolver') status = 'рикошет 20 HP';
     else if (item.kind === 'weapon') {
       const w = WEAPONS[item.weapon];
       status = (w.pellets ?? 1) > 1 ? `${w.pellets} дробин` : w.radius ? `взрыв ${w.radius} м` : `магазин ${w.mag}`;
@@ -258,12 +262,14 @@ export class MatchUi {
     else if (item.id === 'builder') status = item.note ?? '';
     else if (item.id === 'hook') status = 'до 35 м';
     else if (item.id === 'rod') status = 'рыбалка';
+    else if (item.id === 'jetpack') status = 'полёт (патроны = топливо)';
+    else if (item.id === 'armor') status = 'спасает от 1 смерти';
     const owned = item.step ? eco.has(item.step) : item.kind === 'weapon' && isGun(item.weapon) && ws.owned[item.weapon];
     if (owned) return { cls: 'owned', status: 'куплено', why: 'Уже есть' };
     const full = (item.kind === 'weapon' && item.weapon === 'grenade' && ws.ammo.grenade + item.count > WEAPONS.grenade.mag)
       || (item.kind === 'item' && item.item === 'medkit' && eco.items.medkit + item.count > MAX_MEDKITS);
     if (full) return { cls: 'full', status, why: 'Больше не унести' };
-    if (cur < item.price) return { cls: 'poor', status, why: lack(item.price - cur, item.currency) };
+    if (cur < this.eco.priceOf(item)) return { cls: 'poor', status, why: lack(this.eco.priceOf(item) - cur, item.currency) };
     if (item.kind === 'ammo' && !ws.owned[item.weapon]) return { cls: 'na', status, why: `Клик — купить (${WEAPONS[item.weapon].name.toLowerCase()} ещё не куплен)` };
     return { cls: '', status, why: 'Клик — купить' };
   }
@@ -271,7 +277,7 @@ export class MatchUi {
   private renderShop() {
     const eco = this.eco;
     const ws = eco.weapons;
-    const key = [this.tab, eco.wallet.cash, eco.wallet.crystal, ...SELLABLE.map((i) => eco.items[i]), eco.items.medkit,
+    const key = [this.tab, +eco.freeWeapons, eco.wallet.cash, eco.wallet.crystal, ...SELLABLE.map((i) => eco.items[i]), eco.items.medkit,
       ...Object.values(ws.owned), ...Object.values(ws.reserve), ws.ammo.grenade, eco.has('hook'), eco.has('rod'), eco.has('builder'),
       ...Object.values(eco.blocks.inventory)].join('|');
     if (key !== this.shopKey) {
@@ -282,7 +288,7 @@ export class MatchUi {
         + `<span class="crystal">${icon('crystal')}${eco.wallet.crystal}</span></span>`;
       const head = `<h3>${icon('shop')}Магазин<nav>${tab('buy', 'Купить')}${tab('sell', 'Продать')}</nav>${money}`
         + `<button class="x" data-act="close" title="Закрыть (E)">×</button></h3>`;
-      const price = (cur: 'cash' | 'crystal', n: number | string) => `<span class="price ${cur}">${icon(cur === 'cash' ? 'coins' : 'crystal')}${n}</span>`;
+      const price = (cur: 'cash' | 'crystal', n: number | string) => `<span class="price ${cur}">${n === 0 ? 'Беспл.' : `${icon(cur === 'cash' ? 'coins' : 'crystal')}${n}`}</span>`;
       let body = '';
       if (this.tab === 'buy') {
         const cols = Math.max(...SHOP_ROWS.map((r) => r.ids.length));
@@ -291,9 +297,10 @@ export class MatchUi {
           const item = id ? SHOP_ITEM.get(id) : undefined;
           if (!item) return '<i class="slot"></i>';
           const st = this.itemState(item);
+          const effective = eco.priceOf(item);
           const count = 'count' in item && item.count > 1 && !(item.kind === 'weapon' && isGun(item.weapon)) ? `<small>×${item.count}</small>` : '';
           const look = item.kind === 'blocks' ? ` style="--c:#${BLOCK_MATERIALS[item.material].color.toString(16).padStart(6, '0')}"` : '';
-          return `<div class="tile ${st.cls}" data-act="buy" data-id="${item.id}"${look}>${shopIcon(item)}${price(item.currency, item.price)}`
+          return `<div class="tile ${st.cls}" data-act="buy" data-id="${item.id}"${look}>${shopIcon(item)}${price(item.currency, effective)}`
             + `<b>${SHOP_SHORT[item.id] ?? item.label}${count}</b><em>${st.status}</em></div>`;
         }).join('')).join('') + '</div>';
       } else {

@@ -1,4 +1,4 @@
-import { BoxGeometry, BufferGeometry, CylinderGeometry, Group, Mesh, MeshStandardMaterial, Object3D, Vector3 } from 'three';
+import { BoxGeometry, BufferGeometry, ConeGeometry, CylinderGeometry, Group, Mesh, MeshStandardMaterial, Object3D, TorusGeometry, Vector3 } from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 /**
@@ -163,33 +163,76 @@ export function launcherModel(): GunModel {
 
 export function hookGunModel(teamColor: number): GunModel {
   const root = new Group();
-  const st = steel(), bl = blued(), pl = polymer();
+  const st = new MeshStandardMaterial({ color: 0x727a84, roughness: 0.3, metalness: 0.85 });
+  const bl = blued();
+  const pl = polymer();
   const team = paint(teamColor);
-  root.add(part(box(0.04, 0.06, 0.2, 0.01), team, 0, 0.03, -0.06));
-  root.add(part(tube(0.026, 0.2), bl, 0, 0.04, -0.24));
-  root.add(part(box(0.032, 0.1, 0.044, 0.008), pl, 0, -0.045, 0.02, -0.3)); // grip
-  root.add(part(box(0.006, 0.006, 0.05, 0), bl, 0, -0.008, -0.03)); // guard
-  // rope drum on the side
-  root.add(part(new CylinderGeometry(0.04, 0.04, 0.03, 14).rotateZ(Math.PI / 2), st, 0.04, 0.03, -0.06));
-  root.add(part(new CylinderGeometry(0.03, 0.03, 0.032, 14).rotateZ(Math.PI / 2), paint(0xd8c9a3), 0.04, 0.03, -0.06));
-  // the claw: a shank with three prongs folded forward
-  const mag = new Group();
-  mag.add(part(tube(0.008, 0.1, 6), st, 0, 0, 0.03));
-  for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI * 2;
-    const prong = part(box(0.008, 0.008, 0.06, 0.002), st, Math.cos(a) * 0.016, Math.sin(a) * 0.016, -0.03);
-    prong.rotation.set(-Math.sin(a) * 0.5, Math.cos(a) * 0.5, 0);
-    mag.add(prong);
+  const gold = paint(0xd8a832);
+  const glow = new MeshStandardMaterial({ color: 0x5df2ff, emissive: 0x35d6ff, emissiveIntensity: 1.5, roughness: 0.25 });
+  const ropeCol = paint(0xcfc19a);
+
+  // Sculpted chassis receiver & heavy vented barrel shroud
+  root.add(part(box(0.044, 0.058, 0.22, 0.008), team, 0, 0.032, -0.065));
+  root.add(part(box(0.048, 0.014, 0.21, 0.004), bl, 0, 0.064, -0.065)); // upper Picatinny rail spine
+  for (let z = -0.15; z <= 0.01; z += 0.025) {
+    root.add(part(box(0.034, 0.006, 0.01, 0.001), st, 0, 0.072, z)); // rail teeth
   }
-  mag.position.set(0, 0.04, -0.36);
+  // Glow ready-charge bar + rear iron notch sight
+  root.add(part(box(0.024, 0.008, 0.055, 0.002), glow, 0, 0.066, -0.02));
+  root.add(part(box(0.022, 0.014, 0.012, 0.002), bl, 0, 0.074, 0.035));
+
+  // Heavy rifled barrel + vented heat-sink collar + flanged funnel muzzle cup
+  root.add(part(tube(0.022, 0.22, 12), bl, 0, 0.044, -0.23));
+  for (const s of [-1, 1]) {
+    root.add(part(box(0.008, 0.026, 0.14, 0.002), st, s * 0.024, 0.044, -0.21));
+  }
+  root.add(part(new CylinderGeometry(0.034, 0.025, 0.042, 12).rotateX(Math.PI / 2), st, 0, 0.044, -0.34));
+  root.add(part(new TorusGeometry(0.031, 0.0055, 6, 14), team, 0, 0.044, -0.358));
+
+  // Ergonomic angled grip + butt-plate + trigger guard & gold trigger
+  root.add(part(box(0.034, 0.11, 0.046, 0.008), pl, 0, -0.046, 0.02, -0.3));
+  root.add(part(box(0.038, 0.014, 0.052, 0.004), st, 0, -0.098, 0.036, -0.3));
+  root.add(part(box(0.007, 0.007, 0.054, 0), bl, 0, -0.01, -0.032));
+  root.add(part(box(0.007, 0.026, 0.007, 0), bl, 0, 0.002, -0.056));
+  root.add(part(box(0.006, 0.018, 0.006, 0), gold, 0, -0.001, -0.02, 0.25));
+
+  // Under-barrel motorized winch spool + wound braided cable + front line fairlead guide
+  root.add(part(new CylinderGeometry(0.038, 0.038, 0.048, 16).rotateZ(Math.PI / 2), st, 0, -0.014, -0.145));
+  for (const sx of [-0.026, 0.026]) {
+    root.add(part(new CylinderGeometry(0.043, 0.043, 0.006, 16).rotateZ(Math.PI / 2), bl, sx, -0.014, -0.145));
+    // Ratchet gear hub on side of winch drum
+    root.add(part(new CylinderGeometry(0.022, 0.022, 0.01, 10).rotateZ(Math.PI / 2), gold, sx * 1.15, -0.014, -0.145));
+  }
+  root.add(part(new CylinderGeometry(0.033, 0.033, 0.042, 14).rotateZ(Math.PI / 2), ropeCol, 0, -0.014, -0.145));
+  // Taut cable feeding from drum forward under barrel towards muzzle claw
+  root.add(part(tube(0.0045, 0.16, 6), ropeCol, 0, 0.012, -0.24));
+  root.add(part(new TorusGeometry(0.012, 0.004, 6, 10), st, 0, 0.012, -0.32));
+
+  // Four-pronged folding titanium grappling claw seated in muzzle (`mag` hides while in flight)
+  const mag = new Group();
+  // Central harpoon spearhead tip + hub collar + glowing ring
+  mag.add(part(tube(0.011, 0.12, 8), st, 0, 0, 0.035));
+  mag.add(part(new ConeGeometry(0.016, 0.068, 8).rotateX(-Math.PI / 2), st, 0, 0, -0.055));
+  mag.add(part(new TorusGeometry(0.018, 0.0045, 6, 12), glow, 0, 0, 0.01));
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const arm = new Group();
+    arm.rotation.z = a;
+    // Outward hinged grapple arm + sharp inward recurve hook fang + team highlight stripe
+    arm.add(part(box(0.009, 0.012, 0.082, 0.002), st, 0.024, 0, -0.02, 0, -0.26, 0));
+    arm.add(part(box(0.007, 0.008, 0.045, 0.001), team, 0.028, 0, -0.015, 0, -0.26, 0));
+    arm.add(part(new ConeGeometry(0.009, 0.044, 6).rotateX(-Math.PI * 0.8), st, 0.038, 0, -0.056, 0, -0.45, 0));
+    mag.add(arm);
+  }
+  mag.position.set(0, 0.044, -0.37);
   root.add(mag);
-  return { root, mag, slide: new Group(), muzzle: new Vector3(0, 0.04, -0.36) };
+  return { root, mag, slide: new Group(), muzzle: new Vector3(0, 0.044, -0.37) };
 }
 
-export function crossbowModel(): GunModel {
+export function crossbowModel(teamColor = 0x38d8ff): GunModel {
   const root = new Group();
   const st = steel(), bl = blued(), wd = wood(), pl = polymer();
-  const cyanGlow = new MeshStandardMaterial({ color: 0x38d8ff, emissive: 0x18a0d8, emissiveIntensity: 1.6, roughness: 0.25 });
+  const teamGlow = new MeshStandardMaterial({ color: teamColor, emissive: teamColor, emissiveIntensity: 1.85, roughness: 0.22 });
   // Stock, flight track, pistol grip, and scope rail
   root.add(part(box(0.042, 0.048, 0.48, 0.006), wd, 0, 0.02, -0.14));
   root.add(part(box(0.028, 0.016, 0.46, 0.002), st, 0, 0.048, -0.15)); // flight rail
@@ -213,10 +256,44 @@ export function crossbowModel(): GunModel {
   }
   slide.add(part(box(0.024, 0.016, 0.024, 0.003), bl, 0, 0.056, -0.22));
   root.add(slide);
-  // Loaded bolt (`mag` glows and widens with charge level)
+  // Loaded bolt (`mag` glows and widens with charge level in shooter's team color)
   const mag = new Group();
-  mag.add(part(tube(0.006, 0.34, 8), st, 0, 0.058, -0.25));
-  mag.add(part(new CylinderGeometry(0.002, 0.014, 0.055, 6).rotateX(-Math.PI / 2), cyanGlow, 0, 0.058, -0.44));
+  mag.add(part(tube(0.006, 0.34, 8), teamGlow, 0, 0.058, -0.25));
+  mag.add(part(new CylinderGeometry(0.002, 0.014, 0.055, 6).rotateX(-Math.PI / 2), teamGlow, 0, 0.058, -0.44));
   root.add(mag);
   return { root, mag, slide, muzzle: new Vector3(0, 0.058, -0.46) };
+}
+
+export function revolverModel(): GunModel {
+  const root = new Group();
+  const chrome = new MeshStandardMaterial({ color: 0xc2c8ce, roughness: 0.28, metalness: 0.88 });
+  const bl = blued(), wd = wood();
+  // Frame & heavy top strap
+  root.add(part(box(0.024, 0.048, 0.11, 0.004), chrome, 0, 0.024, -0.02));
+  root.add(part(box(0.02, 0.014, 0.11, 0.002), chrome, 0, 0.056, -0.02));
+  // Curved wooden grip & trigger guard
+  root.add(part(box(0.026, 0.098, 0.044, 0.008), wd, 0, -0.044, 0.022, -0.34));
+  root.add(part(box(0.006, 0.006, 0.044, 0), chrome, 0, -0.022, -0.028));
+  root.add(part(box(0.006, 0.024, 0.006, 0), chrome, 0, -0.01, -0.05));
+  root.add(part(box(0.005, 0.016, 0.005, 0), bl, 0, -0.006, -0.022, 0.25));
+  // Long octagonal/ribbed barrel + ejector shroud under barrel + brass bead front sight
+  root.add(part(tube(0.01, 0.175, 8), chrome, 0, 0.048, -0.16));
+  root.add(part(box(0.014, 0.014, 0.165, 0.002), chrome, 0, 0.032, -0.155));
+  root.add(part(box(0.007, 0.012, 0.165, 0.002), bl, 0, 0.058, -0.155)); // ventilated rib
+  root.add(part(box(0.005, 0.01, 0.009, 0), paint(0xd4af37), 0, 0.068, -0.238)); // front sight
+  // Fluted cylinder (`slide` rotates on cocking & swings out on reload)
+  const slide = new Group();
+  slide.position.set(0, 0.033, -0.03);
+  slide.add(part(tube(0.022, 0.058, 12), chrome, 0, 0, 0));
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    slide.add(part(tube(0.0052, 0.06, 6), bl, Math.cos(a) * 0.013, Math.sin(a) * 0.013, 0));
+  }
+  root.add(slide);
+  // Hammer (`mag` pivots back while LMB holds)
+  const mag = new Group();
+  mag.position.set(0, 0.05, 0.036);
+  mag.add(part(box(0.006, 0.022, 0.016, 0.002), bl, 0, 0.008, 0.004, -0.35));
+  root.add(mag);
+  return { root, mag, slide, muzzle: new Vector3(0, 0.048, -0.255) };
 }

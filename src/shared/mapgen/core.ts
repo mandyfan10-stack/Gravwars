@@ -97,6 +97,7 @@ export interface LaneDef {
 
 export interface MapData {
   seed: number;
+  mode?: 'standard' | 'sandbox' | 'duel' | 'skirmish';
   /** Teams that play (a team with no players gets no face). */
   teams: string[];
   boxes: BoxDef[];
@@ -113,12 +114,13 @@ export interface MapData {
   decals: DecalDef[];
   crystalSpots: CrystalSpotDef[];
   ponds: PondDef[];
+  roadHoles?: { face: FaceId; xz: XZ; half: [number, number] }[];
   faces: FaceDef[];
   plates: PlateDef[];
   nav: Record<string, FaceNav>;
   lanes: LaneDef[];
-  /** Cube half size (face ground distance from the centre) and the half size of a face's city. */
-  cube: { half: number; face: number };
+  /** Cube half size (XZ boundary and optional tighter Y distance for vertical modes) and face half size. */
+  cube: { half: number; halfY?: number; face: number };
   /** Further than this outside the cube = the void. */
   voidMargin: number;
   killRadius: number;

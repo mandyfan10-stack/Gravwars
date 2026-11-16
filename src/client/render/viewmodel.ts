@@ -7,7 +7,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { ITEM_ORDER, ItemId } from '../../shared/economy';
 import type { WeaponId } from '../../shared/weapons';
 import type { GameAssets } from './assets';
-import { crossbowModel, GunModel, hookGunModel, launcherModel, pistolModel, rifleModel, shotgunModel } from './guns';
+import { crossbowModel, GunModel, hookGunModel, launcherModel, pistolModel, revolverModel, rifleModel, shotgunModel } from './guns';
 import { itemMeshes } from './pickupView';
 
 /**
@@ -20,6 +20,7 @@ const RIFLE_OFFSET = new Vector3(-0.03, 0.055, 0.16);
 const SHOVEL_TILT = 0.7;
 const PISTOL_ROT = [0.03, 0.08, -0.03] as const;
 const PISTOL_OFFSET = new Vector3(-0.13, 0.1, 0.02);
+const REVOLVER_OFFSET = new Vector3(-0.12, 0.1, 0.02);
 /** The shotgun sits like the rifle; the launcher rides higher on the shoulder, the hook gun is held out one-handed. */
 const SHOTGUN_OFFSET = new Vector3(-0.03, 0.06, 0.16);
 const CROSSBOW_OFFSET = new Vector3(-0.03, 0.055, 0.14);
@@ -29,8 +30,8 @@ const HOOK_ROT = [0.04, 0.1, -0.05] as const;
 const HOOK_OFFSET = new Vector3(-0.06, 0.08, 0.04);
 /** How far the slide / bolt / pump travels back, m. */
 const SLIDE_TRAVEL: Partial<Record<WeaponId, number>> = { pistol: 0.035, rifle: 0.075, shotgun: 0.09, crossbow: 0.11 };
-type Gun = 'pistol' | 'rifle' | 'shotgun' | 'rocket' | 'crossbow';
-const isViewGun = (w: WeaponId): w is Gun => w === 'pistol' || w === 'rifle' || w === 'shotgun' || w === 'rocket' || w === 'crossbow';
+type Gun = 'pistol' | 'revolver' | 'rifle' | 'shotgun' | 'rocket' | 'crossbow';
+const isViewGun = (w: WeaponId): w is Gun => w === 'pistol' || w === 'revolver' || w === 'rifle' || w === 'shotgun' || w === 'rocket' || w === 'crossbow';
 
 /** What the hands hold besides weapons: tools and pocket items. */
 export type ViewTool = 'build' | 'rod' | 'hook' | ItemId | null;
@@ -69,6 +70,7 @@ export class ViewModel {
   private root = new Group();
   private rifle = new Group();
   private pistol = new Group();
+  private revolver = new Group();
   private shotgun = new Group();
   private rocket = new Group();
   private crossbow = new Group();
@@ -112,6 +114,7 @@ export class ViewModel {
   private flashT = 1;
   private guns!: Record<Gun, GunModel>;
   private muzzles!: Record<Gun, Vector3>;
+  private revSpinPivot!: Group;
   private reloadEmpty = false;
   private swayX = 0;
   private swayY = 0;
@@ -178,6 +181,24 @@ export class ViewModel {
     this.pistolMuzzle.copy(pistolGun.muzzle).applyMatrix4(pistolGun.root.matrix);
     this.pistol.add(pistolGun.root);
 
+    // revolver: steady one-handed frame + trigger-finger pivot (`revSpinPivot`) so ONLY the gun spins on the finger
+    const revFrame = new Group();
+    revFrame.rotation.set(...PISTOL_ROT);
+    revFrame.position.copy(REVOLVER_OFFSET);
+    revFrame.add(hand(0.004, -0.045, 0.022, 0.36, 0, 0));
+    const revolverGun = revolverModel();
+    const spinPivot = new Group();
+    spinPivot.position.set(0, -0.014, -0.028); // exact center of trigger guard / index finger axis
+    revolverGun.root.position.set(0, 0.014, 0.028);
+    revolverGun.root.rotation.set(0, 0, 0);
+    spinPivot.add(revolverGun.root);
+    revFrame.add(spinPivot);
+    revFrame.updateMatrix();
+    spinPivot.updateMatrix();
+    revolverGun.root.updateMatrix();
+    this.revSpinPivot = spinPivot;
+    this.revolver.add(revFrame);
+
     // pump shotgun: right hand on the grip, left on the pump
     const shotgunGun = shotgunModel();
     shotgunGun.root.rotation.set(...RIFLE_ROT);
@@ -202,16 +223,23 @@ export class ViewModel {
     this.hookClaw.copy(hookGun.muzzle).applyMatrix4(hookGun.root.matrix);
     this.hookGun.add(hookGun.root);
     this.hookModel = hookGun;
-    // crossbow: shouldered like a rifle, two hands
-    const xbowGun = crossbowModel();
+    // crossbow: shouldered like a rifle, two hands (bolt colored in shooter's team color)
+    const xbowGun = crossbowModel(teamColor);
     xbowGun.root.rotation.set(...RIFLE_ROT);
     xbowGun.root.position.copy(CROSSBOW_OFFSET);
     xbowGun.root.add(hand(0.006, -0.05, 0.05, 0.55, 0, 0), hand(-0.012, -0.01, -0.22, 0.85, 0.45, 0.25));
     xbowGun.root.updateMatrix();
     this.crossbow.add(xbowGun.root);
-    this.guns = { rifle: rifleGun, pistol: pistolGun, shotgun: shotgunGun, rocket: launcher, crossbow: xbowGun };
+    this.guns = { rifle: rifleGun, pistol: pistolGun, revolver: revolverGun, shotgun: shotgunGun, rocket: launcher, crossbow: xbowGun };
     const at = (g: GunModel) => g.muzzle.clone().applyMatrix4(g.root.matrix);
-    this.muzzles = { rifle: this.muzzle, pistol: this.pistolMuzzle, shotgun: at(shotgunGun), rocket: at(launcher), crossbow: at(xbowGun) };
+    this.muzzles = {
+      rifle: this.muzzle,
+      pistol: this.pistolMuzzle,
+      revolver: revolverGun.muzzle.clone().applyMatrix4(revolverGun.root.matrix).applyMatrix4(spinPivot.matrix).applyMatrix4(revFrame.matrix),
+      shotgun: at(shotgunGun),
+      rocket: at(launcher),
+      crossbow: at(xbowGun),
+    };
 
     // the kicking leg: trousers in the team colour, a heavy boot; it lives below the screen until a kick
     const legM = new MeshStandardMaterial({ color: new Color(teamColor).multiplyScalar(0.45), roughness: 0.85 });
@@ -327,7 +355,7 @@ export class ViewModel {
       this.held.add(g);
     }
 
-    this.root.add(this.rifle, this.pistol, this.shotgun, this.rocket, this.crossbow, this.hookGun, this.fists, this.rod, this.grenade, this.shovel, this.held);
+    this.root.add(this.rifle, this.pistol, this.revolver, this.shotgun, this.rocket, this.crossbow, this.hookGun, this.fists, this.rod, this.grenade, this.shovel, this.held);
     this.scene.add(this.root, this.leg, this.sun, this.sun.target, this.hemi);
     this.setWeapon('fists');
   }
@@ -379,7 +407,7 @@ export class ViewModel {
   }
 
   private gunGroup(w: Gun) {
-    return w === 'rifle' ? this.rifle : w === 'pistol' ? this.pistol : w === 'shotgun' ? this.shotgun : w === 'crossbow' ? this.crossbow : this.rocket;
+    return w === 'rifle' ? this.rifle : w === 'pistol' ? this.pistol : w === 'revolver' ? this.revolver : w === 'shotgun' ? this.shotgun : w === 'crossbow' ? this.crossbow : this.rocket;
   }
 
   fire() {
@@ -389,7 +417,7 @@ export class ViewModel {
       return;
     }
     const w = this.current;
-    this.recoilK = w === 'pistol' ? 0.7 : w === 'shotgun' ? 1.6 : w === 'rocket' ? 1.3 : w === 'crossbow' ? 0.55 : 1;
+    this.recoilK = w === 'pistol' ? 0.7 : w === 'revolver' ? 1.15 : w === 'shotgun' ? 1.6 : w === 'rocket' ? 1.3 : w === 'crossbow' ? 0.55 : 1;
     if (w === 'shotgun') this.pumpT = 1;
     if (w === 'rocket') this.guns.rocket.mag.visible = false;
     if (isViewGun(w) && w !== 'crossbow') {
@@ -442,11 +470,16 @@ export class ViewModel {
     empty?: boolean;
     /** Crossbow charge time (0..3s). */
     charge?: number;
+    /** Revolver trigger-hold cock ratio (0..1) and RMB spin timer (0..1). */
+    cock?: number;
+    spin?: number;
+    /** Shotgun single-shell insertion progress (0..1 while loading shells). */
+    shell?: number;
     /** Apple eating progress (0..1). */
     eatProgress?: number; }) {
     this.camera.aspect = opts.aspect;
     this.camera.updateProjectionMatrix();
-    this.recoilK = Math.max(0, this.recoilK - dt * (this.current === 'shotgun' || this.current === 'rocket' ? 6 : 9));
+    this.recoilK = Math.max(0, this.recoilK - dt * (this.current === 'shotgun' || this.current === 'rocket' || this.current === 'revolver' ? 6 : 9));
     this.flashT += dt;
     this.flash.visible = this.flashT < 0.045;
     this.flashLight.intensity = this.flash.visible ? 3 : 0;
@@ -459,18 +492,22 @@ export class ViewModel {
     const k = this.recoilK;
     const rel = opts.reload;
     const charge = opts.charge ?? 0;
+    const cock = opts.cock ?? 0;
+    const spin = opts.spin ?? 0;
     const shake = charge > 0 ? Math.min(1, charge / 3) * 0.0035 * Math.sin(this.bobT * 18) : 0;
     // reload: the gun rolls to show the magazine well, then comes back
     const relDip = rel > 0 ? Math.sin(Math.min(rel, 1) * Math.PI) : 0;
     const r = this.root;
-    r.position.set(0.25 - this.swayX + Math.cos(this.bobT) * bob - relDip * 0.04 + shake, -0.25 - this.swayY - Math.abs(Math.sin(this.bobT)) * bob - this.lower * 0.25 - relDip * 0.04,
+    r.position.set(0.25 - this.swayX + Math.cos(this.bobT) * bob - relDip * 0.04 + shake,
+      -0.25 - this.swayY - Math.abs(Math.sin(this.bobT)) * bob - this.lower * 0.25 - relDip * 0.04,
       -0.5 + k * 0.05 + Math.min(1, charge / 3) * 0.035);
     r.rotation.set(k * 0.09 + relDip * 0.18, -0.04 + this.swayX * 0.6 + relDip * 0.15, relDip * 0.45);
-    this.animateGun(rel, opts.empty ?? false, charge);
+    this.animateGun(rel, opts.empty ?? false, charge, cock, spin, opts.shell);
     this.swing = Math.max(0, this.swing - dt * 5);
     const weapon = this.tool === null;
     this.rifle.visible = weapon && this.current === 'rifle';
     this.pistol.visible = weapon && this.current === 'pistol';
+    this.revolver.visible = weapon && this.current === 'revolver';
     this.shotgun.visible = weapon && this.current === 'shotgun';
     this.rocket.visible = weapon && this.current === 'rocket';
     this.crossbow.visible = weapon && this.current === 'crossbow';
@@ -538,11 +575,23 @@ export class ViewModel {
   }
 
   /** Magazine out / in and the slide or bolt during a reload; the slide cycles on a shot and locks back when empty. */
-  private animateGun(rel: number, empty: boolean, charge = 0) {
+  private animateGun(rel: number, empty: boolean, charge = 0, cock = 0, spin = 0, shellArg?: number) {
     const smooth = (a: number, b: number, x: number) => {
       const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
       return t * t * (3 - 2 * t);
     };
+    if (this.current === 'revolver') {
+      const g = this.guns.revolver;
+      // RMB stylish gunfighter spin: ONLY the revolver loops twice around the trigger guard while the arm & hand stay calm
+      const s = Math.max(0, Math.min(1, spin));
+      const swingOut = rel > 0 ? Math.sin(Math.min(rel, 1) * Math.PI) : 0;
+      const spinTilt = spin > 0 ? Math.sin(s * Math.PI) * 0.28 : 0;
+      this.revSpinPivot.rotation.set(-(1 - s) * (spin > 0 ? Math.PI * 4 : 0) + this.recoilK * 0.28, swingOut * 0.35, spinTilt);
+      g.slide.position.set(swingOut * 0.035, 0.033 - swingOut * 0.015, -0.03);
+      g.slide.rotation.z = (rel > 0 ? rel * Math.PI * 6 : cock * (Math.PI / 3) + (spin > 0 ? s * Math.PI * 6 : 0));
+      g.mag.rotation.x = cock * 0.72; // hammer pulled back while LMB holds
+      return;
+    }
     if (this.current === 'crossbow') {
       const g = this.guns.crossbow;
       const cRatio = Math.min(1, charge / 3);
@@ -563,8 +612,8 @@ export class ViewModel {
     if (this.current === 'shotgun') {
       const g = this.guns.shotgun;
       // shells go into the loading port one after another, the pump is worked at the end (and after every shot)
-      const shell = rel > 0 && rel < 0.85 ? (rel * 4) % 1 : 0;
-      g.mag.visible = rel > 0 && rel < 0.85;
+      const shell = shellArg !== undefined ? (rel > 0 ? shellArg : 0) : (rel > 0 && rel < 0.85 ? (rel * 4) % 1 : 0);
+      g.mag.visible = rel > 0 && (shellArg !== undefined || rel < 0.85);
       g.mag.position.set(0, -0.06 + smooth(0.2, 0.7, shell) * 0.05, 0.05 - smooth(0.2, 0.7, shell) * 0.02);
       const pump = this.pumpT > 0 ? Math.sin((1 - this.pumpT) * Math.PI) : rel > 0.85 ? Math.sin(smooth(0.85, 1, rel) * Math.PI) : 0;
       g.slide.position.z = pump * SLIDE_TRAVEL.shotgun!;

@@ -7,6 +7,7 @@ import type { createDebugGui, DebugToggles } from './debugGui';
 import type { Hands } from './hands';
 import type { Hud } from './hud';
 import type { Input } from './input';
+import type { InventoryUi } from './inventoryUi';
 import type { LocalPlayer } from './localPlayer';
 import type { MatchUi } from './matchUi';
 import type { PlayerCombat } from './playerCombat';
@@ -19,6 +20,7 @@ export interface KeyContext {
   build: BlockController;
   player: PlayerCombat;
   ui: MatchUi;
+  inv?: InventoryUi;
   hands: Hands;
   pockets: Pockets;
   /** Is the player standing at their shop? */
@@ -28,6 +30,7 @@ export interface KeyContext {
   toggles: DebugToggles;
   applyToggles: () => void;
   gui: ReturnType<typeof createDebugGui>;
+  onOpenChat?: () => void;
 }
 
 /** Edge-triggered keyboard shortcuts (hotbar, items, shop, inventory, debug). Call once per frame. */
@@ -53,13 +56,23 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     if (shift && local.input.forward === 0 && local.input.right === 0) {
       sim.map.faces.forEach((f, i) => { if (input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...f.up).negate()); });
     }
-    // E: shop when standing at it, otherwise pick up the item in reach (holding E at an enemy crystal: per frame)
+    // I: inventory (bar + backpack, stats, drop)
+    if (input.take('KeyI')) ctx.inv?.toggle(() => { if (ui.shopOpen) ui.toggleShop(); });
+    // E: shop when standing at it, otherwise pick up item in reach, otherwise open/close team door or hatch
     if (input.take('KeyE')) {
+      if (ctx.inv?.open) ctx.inv.close();
       if (ui.shopOpen || ctx.nearShop()) ui.toggleShop();
-      else pockets.interact();
+      else if (!pockets.interact()) {
+        const fwd = new Vector3(0, 0, -1).applyQuaternion(ctx.camera.quaternion);
+        build.blocks.toggleDoor(ctx.camera.position, fwd, sim.team.id);
+      }
     }
-    if (ui.shopOpen) {
-      if (input.take('KeyQ') || input.take('Tab')) ui.switchTab();
+    if (ui.shopOpen || ctx.inv?.open) {
+      if (ui.shopOpen && (input.take('KeyQ') || input.take('Tab'))) ui.switchTab();
+      if (ctx.inv?.open && input.take('KeyG')) {
+        const fwd = new Vector3(0, 0, -1).applyQuaternion(ctx.camera.quaternion);
+        ctx.inv.dropSelected(fwd);
+      }
     } else {
       for (let i = 1; i <= HOTBAR_SIZE; i++) if (input.take(`Digit${i}`)) hands.select(i - 1);
       // B: toggle building mode directly
@@ -71,7 +84,10 @@ export function createKeyHandler(ctx: KeyContext): () => void {
     }
     if (input.take('KeyF')) hands.equipApple();
     if (input.take('KeyZ') && build.active) build.cycleMaterial(-1);
-    if (input.take('KeyR')) player.pendingReload = true;
+    if (input.take('KeyR')) {
+      if (build.active) build.cycleVariant(1);
+      else player.pendingReload = true;
+    }
     if (input.take('KeyV')) player.kick();
     // eliminated players stay out: K is a debug respawn for the living only
     if (input.take('KeyK') && player.me.alive) sim.respawn('manual');
@@ -79,7 +95,10 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       sim.state.noclip = !sim.state.noclip;
       hud.toast(sim.state.noclip ? 'Noclip: вкл' : 'Noclip: выкл', '#8af5ff', 1);
     }
-    if (input.take('KeyT')) {
+    if (input.take('KeyT') && !ui.shopOpen && !ctx.inv?.open) {
+      ctx.onOpenChat?.();
+    }
+    if (input.take('KeyY')) {
       // debug: onto the square of a neutral face (the next one each press)
       const faces = sim.map.faces.filter((f) => !f.team);
       const f = faces[(tCount++) % Math.max(1, faces.length)] ?? sim.map.faces[0];

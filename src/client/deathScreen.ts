@@ -14,7 +14,7 @@ const _k = new Vector3();
 const ease = (x: number) => 1 - (1 - x) ** 3;
 
 const WEAPON_ICON: Record<string, IconName> = {
-  fists: 'fist', kick: 'kick', pistol: 'pistol', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade',
+  fists: 'fist', kick: 'kick', pistol: 'pistol', revolver: 'revolver', shotgun: 'shotgun', rifle: 'rifle', crossbow: 'crossbow', rocket: 'rocket', grenade: 'grenade', car: 'car', jetpack: 'jetpack', crystal: 'crystal',
 };
 
 function killerName(t: Target) {
@@ -77,7 +77,12 @@ export class DeathScreen {
       const w = d.weapon ? `${icon(WEAPON_ICON[d.weapon] ?? 'swords')}<small>${SOURCE_NAME[d.weapon]}</small>` : '';
       this.by.innerHTML = `${killerName(d.killer)}${w}<small>· ${Math.round(d.dist)} м</small>`;
     } else {
-      const why = d.cause === 'void' ? 'Упал в пустоту' : d.cause === 'fall' ? 'Разбился при падении' : 'Подорвал себя';
+      const why = d.cause === 'void' ? 'Упал в пустоту'
+        : d.cause === 'fall' ? 'Разбился при падении'
+        : d.cause === 'car' ? 'Взорван машиной'
+        : d.cause === 'jetpack' ? 'Перегрелся реактивный ранец'
+        : d.cause === 'crystal' ? 'Испепелён взрывом кристалла'
+        : 'Подорвал себя';
       this.by.innerHTML = `${icon('skull')}<small>${why}</small>`;
     }
     this.time.innerHTML = d.final ? 'Нажми <kbd>Esc</kbd> — режим наблюдателя или главное меню' : '';

@@ -1,6 +1,6 @@
 /** Weapon definitions + per-player weapon state machine (shared by client prediction and server). */
-export type WeaponId = 'fists' | 'pistol' | 'shotgun' | 'rifle' | 'crossbow' | 'rocket' | 'grenade';
-export const WEAPON_ORDER: WeaponId[] = ['fists', 'pistol', 'shotgun', 'rifle', 'crossbow', 'rocket', 'grenade'];
+export type WeaponId = 'fists' | 'pistol' | 'revolver' | 'shotgun' | 'rifle' | 'crossbow' | 'rocket' | 'grenade';
+export const WEAPON_ORDER: WeaponId[] = ['fists', 'pistol', 'revolver', 'shotgun', 'rifle', 'crossbow', 'rocket', 'grenade'];
 
 export interface CrossbowLevel {
   level: 0 | 1 | 2 | 3;
@@ -17,6 +17,12 @@ export interface CrossbowLevel {
 }
 
 export const CROSSBOW_CHARGE_RATE = 1.5;
+/** Seconds of holding LMB to cock and fire the revolver. */
+export const REVOLVER_COCK_TIME = 0.22;
+/** Damage of a revolver bullet after ricocheting off a living target into the next target. */
+export const REVOLVER_RICOCHET_DAMAGE = 20;
+/** Max distance (m) a revolver bullet can chain-ricochet to the next living target. */
+export const REVOLVER_RICOCHET_RANGE = 28;
 
 export const CROSSBOW_LEVELS: readonly CrossbowLevel[] = [
   { level: 0, damage: 5, blockDamage: 15, width: 0.25, reload: 0.375, push: 0.8, speed: 180 },
@@ -48,7 +54,7 @@ export interface WeaponDef {
   cone: number;
   /** Knockback of a hit × this (pellets push a little each, the sum is one good shove). */
   push: number;
-  /** `damage` is final, not scaled by DAMAGE_SCALE (the rocket: 50 HP). */
+  /** `damage` is final, not scaled by DAMAGE_SCALE. */
   raw: boolean;
   /** Blows up on the first thing it touches (the rocket); grenades bounce and wait for the fuse. */
   explodeOnHit: boolean;
@@ -116,7 +122,13 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     interval: 0.12, mag: 15, reload: 1.69, reloadEmpty: 2.14, life: 3, drag: 0.0019, minEnergy: 0.3,
     spread: 0.004, bloom: 0.006, moveSpread: 0.02, recoil: 0.03, recoilYaw: 0.008, airPush: 2.8,
   },
-  // pump shotgun: 8 pellets in a fixed cone, 2x ballistics, damage 11, +50% owner pushback
+  // heavy revolver: hold LMB to cock & fire; ricochets between living targets (25 dmg -> 20 dmg chain); RMB spins
+  revolver: {
+    ...base, id: 'revolver', name: 'Револьвер', speed: 180, power: 520, gravityScale: 0.18, windScale: 0.25, damage: 25, raw: true,
+    blockDamage: 34, headMul: 1.4, interval: 0.48, auto: true, mag: 6, reload: 1.85, reloadEmpty: 2.15, life: 3,
+    drag: 0, minEnergy: 1, spread: 0.0018, bloom: 0.0035, moveSpread: 0.014, recoil: 0.048, recoilYaw: 0.009, airPush: 3.6,
+  },
+  // pump shotgun: 8 pellets in a fixed cone, shell-by-shell reload, damage 11, +50% owner pushback
   shotgun: {
     ...base, id: 'shotgun', name: 'Дробовик', speed: 140, power: 420, pellets: 8, cone: 0.065, push: 0.35, gravityScale: 0.3, windScale: 0.5,
     damage: 11, blockDamage: 12, headMul: 1.5, interval: 0.8, mag: 6, reload: 2.7, reloadEmpty: 3.15, life: 1.2, drag: 0.012, minEnergy: 0.15,
@@ -134,9 +146,9 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     blockDamage: 40, headMul: 1.5, interval: 0.5, mag: 1, reload: 0.375, reloadEmpty: 0.375, life: 16,
     drag: 0, minEnergy: 1, recoil: 0.025, recoilYaw: 0.004, airPush: 3.2,
   },
-  // single-shot rocket launcher: 2x ballistics, +70% rocket damage (80 * 1.7 = 136), +50% radius (4.5 -> 6.75)
+  // single-shot rocket launcher: 90 player damage, +50% radius (6.75 m)
   rocket: {
-    ...base, id: 'rocket', name: 'Ракетница', speed: 36, gravityScale: 0, windScale: 0, damage: 136, raw: true, explodeOnHit: true,
+    ...base, id: 'rocket', name: 'Ракетница', speed: 36, gravityScale: 0.18, windScale: 0, damage: 90, raw: true, explodeOnHit: true,
     blockDamage: 272, interval: 0.9, mag: 1, reload: 1.91, reloadEmpty: 1.91, life: 5,
     radius: 6.75, knockback: 20, selfMul: 0.4, recoil: 0.05, recoilYaw: 0.01, airPush: 5.0,
   },
@@ -156,9 +168,13 @@ export const MELEE = { cos: Math.cos(0.8), push: 5.5, lift: 0.3 };
 export const KICK = { reach: 2.4, cos: Math.cos(1), damage: 10, push: 3.6, lift: 0.14, propSpeed: 3.6, cdHit: 2, cdMiss: 0.1, recoilDist: 0.6, recoilPush: 3.4, wallRecoilPush: 5.8 };
 
 /** Guns that use a magazine + spare ammo bought in the shop. */
-export const isGun = (w: WeaponId) => w === 'pistol' || w === 'rifle' || w === 'shotgun' || w === 'crossbow' || w === 'rocket';
+export const isGun = (w: WeaponId) => w === 'pistol' || w === 'revolver' || w === 'rifle' || w === 'shotgun' || w === 'crossbow' || w === 'rocket';
+/** Guns that have the active reload green zone (pistol, shotgun, rifle). */
+export const hasActiveReloadZone = (w: WeaponId) => w === 'pistol' || w === 'shotgun' || w === 'rifle';
 /** Guns in the order a fighter prefers them when nothing better is said. */
-export const GUNS_BEST_FIRST: WeaponId[] = ['rifle', 'crossbow', 'shotgun', 'pistol', 'rocket'];
+export const GUNS_BEST_FIRST: WeaponId[] = ['rifle', 'crossbow', 'revolver', 'shotgun', 'pistol', 'rocket'];
+
+export type ActiveReloadStatus = 'none' | 'ready' | 'success' | 'fail';
 
 export interface WeaponState {
   current: WeaponId;
@@ -174,6 +190,8 @@ export interface WeaponState {
   reloadTotal: number;
   /** Trigger was held last tick (semi-auto guns fire on the press). */
   held: boolean;
+  /** Reload key was held last tick (for active reload edge detection). */
+  reloadHeld: boolean;
   /** Sustained fire: shots in a row, cools down between them (spread bloom, recoil pattern). */
   heat: number;
   /** Tried to fire an empty gun with nothing to reload: dry click (for the sound). */
@@ -187,6 +205,24 @@ export interface WeaponState {
   /** Charge time & level of the most recently released crossbow bolt. */
   lastChargeT: number;
   lastChargeLevel: 0 | 1 | 2 | 3;
+  /** Revolver hammer cock timer while holding LMB (0..REVOLVER_COCK_TIME). */
+  revolverCockT: number;
+  /** Revolver spin animation timer triggered by RMB. */
+  revolverSpinT: number;
+  /** Active reload zone start (0.60..0.82) and width (0.08..0.12) in normalized progress [0..1]. */
+  reloadZoneStart: number;
+  reloadZoneWidth: number;
+  /** Active reload state for the current/last reload. */
+  reloadStatus: ActiveReloadStatus;
+  /** Seconds left of 10s lockout after missing an active reload. */
+  reloadLockout: number;
+  /** HUD flash timer after hitting (green) or missing (red) an active reload. */
+  reloadFlashT: number;
+  /** True on the tick an active reload succeeded (plays metallic click audible to everyone nearby). */
+  activeReloadClick: boolean;
+  /** Shotgun shell-by-shell reload timer and pulse flag when a shell is inserted. */
+  shotgunShellT: number;
+  shotgunShellInserted: boolean;
 }
 
 export interface ShootInput {
@@ -196,14 +232,40 @@ export interface ShootInput {
   airborne?: boolean;
 }
 
-const none = (): Record<WeaponId, number> => ({ fists: 0, pistol: 0, shotgun: 0, rifle: 0, crossbow: 0, rocket: 0, grenade: 0 });
+const none = (): Record<WeaponId, number> => ({
+  fists: 0, pistol: 0, revolver: 0, shotgun: 0, rifle: 0, crossbow: 0, rocket: 0, grenade: 0,
+});
 
 /** Everyone starts with bare fists; guns, grenades and ammo come from the shop. */
 export function createWeaponState(): WeaponState {
   return {
-    current: 'fists', owned: { fists: true, pistol: false, shotgun: false, rifle: false, crossbow: false, rocket: false, grenade: false },
-    ammo: none(), reserve: none(), cooldown: 0, reloadT: 0, reloadTotal: 0, held: false, heat: 0, dry: false, kickCd: 0, kickCdTotal: 0,
-    charging: false, chargeT: 0, lastChargeT: 0, lastChargeLevel: 0,
+    current: 'fists',
+    owned: { fists: true, pistol: false, revolver: false, shotgun: false, rifle: false, crossbow: false, rocket: false, grenade: false },
+    ammo: none(),
+    reserve: none(),
+    cooldown: 0,
+    reloadT: 0,
+    reloadTotal: 0,
+    held: false,
+    reloadHeld: false,
+    heat: 0,
+    dry: false,
+    kickCd: 0,
+    kickCdTotal: 0,
+    charging: false,
+    chargeT: 0,
+    lastChargeT: 0,
+    lastChargeLevel: 0,
+    revolverCockT: 0,
+    revolverSpinT: 0,
+    reloadZoneStart: 0,
+    reloadZoneWidth: 0,
+    reloadStatus: 'none',
+    reloadLockout: 0,
+    reloadFlashT: 0,
+    activeReloadClick: false,
+    shotgunShellT: 0,
+    shotgunShellInserted: false,
   };
 }
 
@@ -220,7 +282,7 @@ export const maxReserve = (w: WeaponId) => w === 'rocket' ? 6 : w === 'crossbow'
 /** Refill reserve ammo for all owned guns (or pistol/rifle reserve if none owned yet). Returns true if any ammo was added. */
 export function refillAmmo(ws: WeaponState, mags = 1): boolean {
   let added = false;
-  const guns: WeaponId[] = ['pistol', 'shotgun', 'rifle', 'crossbow', 'rocket'];
+  const guns: WeaponId[] = ['pistol', 'revolver', 'shotgun', 'rifle', 'crossbow', 'rocket'];
   const anyOwned = guns.some((g) => ws.owned[g]);
   for (const g of guns) {
     if (!ws.owned[g] && (anyOwned || g !== 'pistol')) continue;
@@ -235,42 +297,199 @@ export function refillAmmo(ws: WeaponState, mags = 1): boolean {
   return added;
 }
 
+/**
+ * Automatically reload all owned weapons in inventory on respawn: fills every owned gun's magazine
+ * (using reserve rounds if present, or topping up the magazine so every owned gun starts loaded).
+ */
+export function reloadAllOwnedWeapons(ws: WeaponState) {
+  ws.reloadT = 0;
+  ws.reloadTotal = 0;
+  ws.cooldown = 0;
+  ws.charging = false;
+  ws.chargeT = 0;
+  ws.revolverCockT = 0;
+  ws.reloadZoneStart = 0;
+  ws.reloadZoneWidth = 0;
+  ws.reloadStatus = 'none';
+  ws.shotgunShellT = 0;
+  const guns: WeaponId[] = ['pistol', 'revolver', 'shotgun', 'rifle', 'crossbow', 'rocket'];
+  for (const g of guns) {
+    if (!ws.owned[g]) continue;
+    const mag = WEAPONS[g].mag;
+    const need = Math.max(0, mag - ws.ammo[g]);
+    if (need > 0) {
+      const fromRes = Math.min(need, ws.reserve[g]);
+      ws.reserve[g] -= fromRes;
+      ws.ammo[g] = mag;
+    }
+  }
+}
+
+/** Consume `count` rounds of ammo from any owned gun (reserve first, then magazine) as jetpack fuel. */
+export function consumeJetpackFuel(ws: WeaponState, count = 1): boolean {
+  const guns: WeaponId[] = ['rifle', 'pistol', 'revolver', 'shotgun', 'crossbow', 'rocket'];
+  for (const g of guns) {
+    if (!ws.owned[g]) continue;
+    if (ws.reserve[g] >= count) {
+      ws.reserve[g] -= count;
+      return true;
+    }
+  }
+  for (const g of guns) {
+    if (!ws.owned[g]) continue;
+    if (ws.ammo[g] >= count) {
+      ws.ammo[g] -= count;
+      return true;
+    }
+  }
+  return false;
+}
+
+export function totalFuelAmmo(ws: WeaponState): number {
+  const guns: WeaponId[] = ['rifle', 'pistol', 'revolver', 'shotgun', 'crossbow', 'rocket'];
+  let sum = 0;
+  for (const g of guns) {
+    if (ws.owned[g]) sum += ws.reserve[g] + ws.ammo[g];
+  }
+  return sum;
+}
+
 /** Can this weapon be used right now (owned, something to shoot / throw)? */
 export function hasAmmo(ws: WeaponState, w: WeaponId) {
   return ws.owned[w] && (WEAPONS[w].mag === 0 || ws.ammo[w] > 0 || (isGun(w) && ws.reserve[w] > 0));
 }
 
+/** Bell-shaped random in [0, 1] biased toward the middle (average of 3 uniforms). */
+function midRandom(): number {
+  return (Math.random() + Math.random() + Math.random()) / 3;
+}
+
+function finishMagazineReload(ws: WeaponState, w: WeaponId) {
+  const def = WEAPONS[w];
+  const tacticalBonus = w !== 'shotgun' && ws.reloadTotal === def.reload && ws.ammo[w] > 0 ? 1 : 0;
+  const cap = def.mag + tacticalBonus;
+  const take = Math.min(cap - ws.ammo[w], ws.reserve[w]);
+  ws.ammo[w] += take;
+  ws.reserve[w] -= take;
+}
+
+function beginReload(ws: WeaponState, w: WeaponId) {
+  const def = WEAPONS[w];
+  if (w === 'shotgun') {
+    const need = Math.min(def.mag - ws.ammo.shotgun, ws.reserve.shotgun);
+    const shellDur = 0.45;
+    const emptyRack = ws.ammo.shotgun === 0 ? 0.45 : 0;
+    ws.reloadTotal = ws.reloadT = Math.max(shellDur, need * shellDur + emptyRack);
+    ws.shotgunShellT = shellDur;
+  } else {
+    ws.reloadTotal = ws.reloadT = ws.ammo[w] > 0 ? def.reload : def.reloadEmpty;
+  }
+  ws.heat = 0;
+  ws.revolverCockT = 0;
+  if (hasActiveReloadZone(w) && ws.reloadLockout <= 0) {
+    const width = 0.08 + midRandom() * 0.04; // 8%..12%, centered at 10%
+    const minStart = 0.60;
+    const maxStart = 0.90 - width;
+    const start = minStart + midRandom() * Math.max(0.01, maxStart - minStart);
+    ws.reloadZoneWidth = width;
+    ws.reloadZoneStart = start;
+    ws.reloadStatus = 'ready';
+  } else {
+    ws.reloadZoneStart = 0;
+    ws.reloadZoneWidth = 0;
+    ws.reloadStatus = 'none';
+  }
+}
+
 /** Advances timers; returns the weapon that fires / swings this tick (or null). */
 export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): WeaponId | null {
   ws.cooldown = Math.max(0, ws.cooldown - dt);
+  ws.reloadLockout = Math.max(0, ws.reloadLockout - dt);
+  ws.reloadFlashT = Math.max(0, ws.reloadFlashT - dt);
+  ws.revolverSpinT = Math.max(0, ws.revolverSpinT - dt);
+  ws.activeReloadClick = false;
+  ws.shotgunShellInserted = false;
   if (!input.airborne) ws.kickCd = Math.max(0, ws.kickCd - dt);
   ws.dry = false;
   const pressed = input.fire && !ws.held;
   ws.held = input.fire;
+  const reloadPressed = input.reload && !ws.reloadHeld;
+  ws.reloadHeld = input.reload;
 
   if (input.select && input.select !== ws.current && ws.owned[input.select]) {
     ws.current = input.select;
     ws.reloadT = 0;
+    ws.reloadTotal = 0;
+    ws.reloadZoneWidth = 0;
+    ws.reloadStatus = 'none';
     ws.charging = false;
     ws.chargeT = 0;
+    ws.revolverCockT = 0;
     ws.cooldown = Math.max(ws.cooldown, 0.25);
   }
   const w = ws.current;
   const def = WEAPONS[w];
   // the gun settles a shot's worth every ~2 intervals without firing
   if (ws.cooldown <= 0) ws.heat = Math.max(0, ws.heat - dt / Math.max(def.interval * 2, 0.15));
+
   if (ws.reloadT > 0) {
-    ws.reloadT -= dt;
-    if (ws.reloadT <= 0) {
+    // Shotgun can interrupt shell-by-shell reload to fire if at least 1 shell is in the tube
+    if (w === 'shotgun' && input.fire && ws.ammo.shotgun > 0) {
       ws.reloadT = 0;
-      // a tactical reload keeps the round in the chamber: mag + 1
-      const cap = def.mag + (ws.reloadTotal === def.reload && ws.ammo[w] > 0 ? 1 : 0);
-      const take = Math.min(cap - ws.ammo[w], ws.reserve[w]);
-      ws.ammo[w] += take;
-      ws.reserve[w] -= take;
+      ws.reloadTotal = 0;
+      ws.reloadZoneWidth = 0;
+      ws.reloadStatus = 'none';
+    } else {
+      // Check active reload press (R pressed again after reload started)
+      const elapsed = ws.reloadTotal - ws.reloadT;
+      if (reloadPressed && elapsed > 0.08 && ws.reloadStatus === 'ready' && ws.reloadZoneWidth > 0) {
+        const progress = Math.max(0, Math.min(1, 1 - ws.reloadT / Math.max(1e-4, ws.reloadTotal)));
+        if (progress >= ws.reloadZoneStart && progress <= ws.reloadZoneStart + ws.reloadZoneWidth) {
+          finishMagazineReload(ws, w);
+          ws.reloadT = 0;
+          ws.reloadStatus = 'success';
+          ws.reloadFlashT = 0.55;
+          ws.activeReloadClick = true;
+          ws.reloadZoneWidth = 0;
+          return null;
+        } else {
+          // Missed the green zone: flash red, slow remaining reload by 50%, lock out active reload for 10s
+          ws.reloadStatus = 'fail';
+          ws.reloadFlashT = 0.8;
+          ws.reloadLockout = 10;
+          ws.reloadZoneWidth = 0;
+          const elapsedBefore = ws.reloadTotal - ws.reloadT;
+          ws.reloadT *= 1.5;
+          ws.reloadTotal = elapsedBefore + ws.reloadT;
+        }
+      }
+
+      // Shotgun shell-by-shell loading
+      if (w === 'shotgun' && ws.ammo.shotgun < def.mag && ws.reserve.shotgun > 0) {
+        const rateMul = ws.reloadStatus === 'fail' ? (1 / 1.5) : 1;
+        ws.shotgunShellT -= dt * rateMul;
+        if (ws.shotgunShellT <= 0) {
+          ws.shotgunShellT += 0.45;
+          ws.ammo.shotgun++;
+          ws.reserve.shotgun--;
+          ws.shotgunShellInserted = true;
+          if (ws.ammo.shotgun >= def.mag || ws.reserve.shotgun <= 0) {
+            ws.reloadT = Math.min(ws.reloadT, 0.25);
+          }
+        }
+      }
+
+      ws.reloadT -= dt;
+      if (ws.reloadT <= 0) {
+        ws.reloadT = 0;
+        finishMagazineReload(ws, w);
+        ws.reloadZoneWidth = 0;
+        if (ws.reloadStatus === 'ready') ws.reloadStatus = 'none';
+      }
+      return null;
     }
-    return null;
   }
+
   if (w === 'crossbow') {
     // Crossbow keeps an infinite or reserve-fed bolt ready; holding LMB charges, releasing fires.
     if (ws.ammo.crossbow <= 0) {
@@ -302,14 +521,34 @@ export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): Weap
     }
     return null;
   }
+
   // reload on R, or automatically when trying to fire an empty gun (only if there are spare rounds); a single-shot
   // launcher reloads by itself right after the shot
   const single = def.mag === 1 && ws.ammo[w] === 0 && ws.cooldown <= 0;
-  if (isGun(w) && ws.ammo[w] < def.mag && ws.reserve[w] > 0 && (input.reload || (input.fire && ws.ammo[w] === 0) || single)) {
-    ws.reloadTotal = ws.reloadT = ws.ammo[w] > 0 ? def.reload : def.reloadEmpty;
-    ws.heat = 0;
+  if (isGun(w) && ws.ammo[w] < def.mag && ws.reserve[w] > 0 && (reloadPressed || (input.fire && ws.ammo[w] === 0) || single)) {
+    beginReload(ws, w);
     return null;
   }
+
+  if (w === 'revolver') {
+    if (!input.fire || ws.cooldown > 0) {
+      ws.revolverCockT = Math.max(0, ws.revolverCockT - dt * 3);
+      return null;
+    }
+    if (ws.ammo.revolver <= 0) {
+      if (pressed) { ws.dry = true; ws.cooldown = 0.25; }
+      ws.revolverCockT = 0;
+      return null;
+    }
+    ws.revolverCockT += dt;
+    if (ws.revolverCockT < REVOLVER_COCK_TIME) return null;
+    ws.revolverCockT = 0;
+    ws.ammo.revolver--;
+    ws.cooldown = def.interval;
+    ws.heat = Math.min(ws.heat + 1, 30);
+    return 'revolver';
+  }
+
   if (!input.fire || ws.cooldown > 0) return null;
   if (!def.auto && !pressed) return null;
   if (def.mag > 0) {
@@ -322,6 +561,12 @@ export function weaponTick(ws: WeaponState, input: ShootInput, dt: number): Weap
   ws.cooldown = def.interval;
   ws.heat = Math.min(ws.heat + 1, 30);
   return w;
+}
+
+/** Progress of the current reload in [0..1] (0 when not reloading). */
+export function reloadProgressOf(ws: WeaponState): number {
+  if (ws.reloadT <= 0 || ws.reloadTotal <= 0) return 0;
+  return Math.max(0, Math.min(1, 1 - ws.reloadT / ws.reloadTotal));
 }
 
 /** Can kick now (V)? */

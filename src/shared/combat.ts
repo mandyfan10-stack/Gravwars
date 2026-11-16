@@ -1,10 +1,11 @@
 import { Vector3 } from 'three';
 import { DEFAULT_MOVEMENT, PLAYER_HALF_SEGMENT, PLAYER_RADIUS } from './constants';
+import { MATCH_RULES } from './lobby';
 import type { MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 import type { Props } from './props';
 import type { TeamId } from './teams';
-import { crossbowSpec, energyLeft, KICK, MELEE, PENETRATION, WeaponId, WEAPONS } from './weapons';
+import { crossbowSpec, energyLeft, KICK, MELEE, PENETRATION, REVOLVER_RICOCHET_DAMAGE, REVOLVER_RICOCHET_RANGE, WeaponId, WEAPONS } from './weapons';
 import { Wind } from './wind';
 
 /**
@@ -50,6 +51,12 @@ export interface Target {
   calm?: number;
   /** True for human players (allows shooting ambient cars in multiplayer too). */
   isHuman?: boolean;
+  /** Custom maximum HP when lobby playerHp multiplier is active. */
+  maxHp?: number;
+  /** Armor vest: prevents lethal damage once, breaks and restores 50 HP immediately. */
+  armor?: boolean;
+  /** Callback fired when the target's armor vest breaks upon saving them from death. */
+  onArmorBreak?: () => void;
 }
 
 export interface Projectile {
@@ -80,7 +87,7 @@ export interface Projectile {
 }
 
 /** What dealt a blow (death screen, kill feed). */
-export type HitSource = WeaponId | 'kick';
+export type HitSource = WeaponId | 'kick' | 'car' | 'jetpack' | 'crystal';
 
 /**
  * A team's crystal as combat sees it: a vertical capsule (CRYSTAL) around `pos` along `up`. Only shots and blows of
@@ -99,6 +106,7 @@ export type CombatEvent =
   | { type: 'fizzle'; pos: Vector3 }
   | { type: 'explode'; pos: Vector3; radius: number }
   | { type: 'hit'; target: number; owner: number; damage: number; head: boolean; killed: boolean; pos: Vector3; cause?: DamageCause; weapon?: HitSource }
+  | { type: 'armorBreak'; target: number; pos: Vector3 }
   /**
    * A punch or a kick: `pos` = what it landed on first (null = into the air), `target` = the first one hit, `hits` =
    * how many people / crates it got.
@@ -112,7 +120,7 @@ export type CombatEvent =
 /** Something loud happened: NPCs within `radius` hear it. */
 export interface Noise { pos: Vector3; radius: number; owner: number }
 /** Hearing radius of actions, m. */
-export const NOISE = { gun: 38, grenade: 45, punch: 9 };
+export const NOISE = { gun: 38, grenade: 45, punch: 9, click: 22 };
 
 /** What a bullet hits in the world: a placed block / piece of some material, or the map itself (null: concrete). */
 export type BulletMaterial = keyof typeof PENETRATION;
@@ -128,11 +136,11 @@ export const MAX_HP = 100;
 export const DAMAGE_SCALE = 1 / 3;
 /** Out of a fight for `delay` s → heal `rate` HP/s (players and bots, not city NPCs). */
 export const REGEN = { delay: 3, rate: 2 };
-/** Every hit shoves the victim away from the attacker: m/s per HP of damage taken, capped; much stronger in the air. */
-export const HIT_PUSH = { perHp: 0.55, min: 1.1, max: 8.5, lift: 0.28, airMul: 2.6, airLift: 0.42, maxAir: 16 };
+/** Every hit shoves the victim away from the attacker: m/s per HP of damage taken, capped (-50% knockback). */
+export const HIT_PUSH = { perHp: 0.275, min: 0.55, max: 4.25, lift: 0.28, airMul: 2.6, airLift: 0.42, maxAir: 8 };
 /** Falls: landing faster than `safe` m/s hurts `perMs` HP for every m/s above it (not scaled by DAMAGE_SCALE). */
 export const FALL = { safe: 18, perMs: 4.25, maxDmg: 25 };
-export type DamageCause = 'fall';
+export type DamageCause = 'fall' | 'car' | 'jetpack' | 'crystal';
 export interface DamageOpts {
   /** Already final: no DAMAGE_SCALE. */
   raw?: boolean;
@@ -580,10 +588,21 @@ export class Combat {
       this.events.push({ type: 'guarded', target: tg.id, pos: pos.clone() });
       return;
     }
-    const dmg = opts.raw ? amount : Math.round(amount * DAMAGE_SCALE * 10) / 10;
+    const ruleMul = opts.cause === 'fall' ? 1 : MATCH_RULES.damage;
+    const dmg = opts.raw
+      ? Math.round(amount * ruleMul * 10) / 10
+      : Math.round(amount * DAMAGE_SCALE * ruleMul * 10) / 10;
     tg.hp = Math.max(0, tg.hp - dmg);
     tg.calm = 0;
-    const killed = tg.hp <= 0.05;
+    let killed = tg.hp <= 0.05;
+    if (killed && tg.armor) {
+      tg.armor = false;
+      const maxHp = tg.maxHp ?? MAX_HP * MATCH_RULES.playerHp;
+      tg.hp = Math.round(50 * (maxHp / MAX_HP));
+      killed = false;
+      tg.onArmorBreak?.();
+      this.events.push({ type: 'armorBreak', target: tg.id, pos: pos.clone() });
+    }
     if (killed) tg.hp = 0;
     tg.onHit?.(owner, dmg);
     if (!opts.noPush && owner !== tg.id && tg.onImpulse) {
@@ -661,7 +680,8 @@ export class Combat {
         dir.normalize().addScaledVector(tg.up, 0.35).normalize();
         tg.onImpulse(dir.multiplyScalar(knockback * (0.35 + 0.65 * k)));
       }
-      this.damage(tg, dmg, owner, false, tg.center, { noPush: true, raw, weapon });
+      const cause: DamageCause | undefined = weapon === 'car' ? 'car' : weapon === 'jetpack' ? 'jetpack' : weapon === 'crystal' ? 'crystal' : undefined;
+      this.damage(tg, dmg, owner, false, tg.center, { noPush: true, raw, weapon, cause });
     }
   }
 
@@ -833,13 +853,38 @@ export class Combat {
         continue;
       }
       if (th && (!wh || th.t <= wh.t)) {
-        p.alive = false;
         p.pos.copy(end);
         const energy = energyLeft(def, p.vel.length());
         const baseDmg = p.customDamage ?? def.damage;
         const pushMul = p.customPush ?? def.push;
-        this.damage(th.target, Math.max(1, Math.round(baseDmg * energy * (th.head ? def.headMul : 1))), p.owner, th.head, end,
+        const hitDmg = p.weapon === 'revolver'
+          ? (p.ricochets > 0 ? REVOLVER_RICOCHET_DAMAGE : def.damage)
+          : Math.max(1, Math.round(baseDmg * energy * (th.head ? def.headMul : 1)));
+        this.damage(th.target, hitDmg, p.owner, th.head, end,
           { raw: def.raw, from: _push2.copy(end).addScaledVector(p.vel, -1 / Math.max(1, p.vel.length())), pushMul, weapon: p.weapon });
+        if (p.weapon === 'revolver') {
+          p.hitTargets ??= new Set<number>();
+          p.hitTargets.add(th.target.id);
+          let nextTarget: Target | null = null;
+          let bestDist = REVOLVER_RICOCHET_RANGE;
+          for (const cand of this.targets) {
+            if (!cand.alive || cand.id === p.owner || cand.team === p.team || p.hitTargets.has(cand.id) || cand.npc === 'car') continue;
+            const d = end.distanceTo(cand.center);
+            if (d < bestDist && this.lineOfSight(end, cand.center)) {
+              bestDist = d;
+              nextTarget = cand;
+            }
+          }
+          if (nextTarget) {
+            p.ricochets++;
+            p.customDamage = REVOLVER_RICOCHET_DAMAGE;
+            p.age = 0;
+            p.vel.copy(nextTarget.center).sub(end).normalize().multiplyScalar(def.speed);
+            this.events.push({ type: 'ricochet', pos: end.clone(), normal: p.vel.clone().normalize() });
+            continue;
+          }
+        }
+        p.alive = false;
         continue;
       }
       if (wh) {

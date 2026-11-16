@@ -1,8 +1,13 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
 import { CROUCH_EYE_DROP, EYE_OFFSET, TICK_DT } from '../shared/constants';
 import { emptyInput, MoveInput, viewQuat } from '../shared/movement';
+import {
+  commandToMoveInput, emptyUserCommand, IN_ATTACK, IN_ATTACK2, IN_DUCK, IN_JUMP, IN_RELOAD, IN_SPEED, IN_USE,
+  SimulateMovement, type UserCommand,
+} from '../shared/net/pmove';
 import type { PlayerSim, SimEvent } from '../shared/sim';
 import type { Input } from './input';
+import type { PMoveClient } from './net/pmoveClient';
 
 const GRAVITY_TURN_TIME = 0.35;
 const _up = new Vector3();
@@ -21,6 +26,9 @@ export class LocalPlayer {
   private turnFrom = new Quaternion();
   private turnT = 1;
   readonly input: MoveInput = emptyInput();
+  readonly lastCmd: UserCommand = emptyUserCommand();
+  /** Optional networked client prediction & reconciliation driver. */
+  pmove: PMoveClient | null = null;
   onEvent: (e: SimEvent) => void = () => {};
   /** Runs right after every simulation tick (weapons / projectiles). */
   onTick: () => void = () => {};
@@ -49,19 +57,31 @@ export class LocalPlayer {
     this.turnT = 1;
   }
 
-  private sampleInput() {
+  private sampleCommand(): Omit<UserCommand, 'tick'> {
     const k = this.keys;
-    const i = this.input;
     const on = k.locked && !this.frozen;
-    i.forward = on ? k.axis('KeyW', 'KeyS') : 0;
-    i.right = on ? k.axis('KeyD', 'KeyA') : 0;
-    i.up = on ? (k.down('Space') ? 1 : 0) - (k.down('ControlLeft') || k.down('KeyC') ? 1 : 0) : 0;
-    i.jump = on && k.jump();
-    i.sprint = on && (k.down('ShiftLeft') || k.down('ShiftRight'));
-    i.walk = false;
-    i.crouch = on && !this.sim.state.noclip && (k.down('ControlLeft') || k.down('KeyC'));
-    i.yaw = k.yaw;
-    i.pitch = k.pitch;
+    let f = on ? k.axis('KeyW', 'KeyS') : 0;
+    let s = on ? k.axis('KeyD', 'KeyA') : 0;
+    const mag = Math.hypot(f, s);
+    if (mag > 1) { f /= mag; s /= mag; }
+    const u = on ? (k.down('Space') ? 1 : 0) - (k.down('ControlLeft') || k.down('KeyC') ? 1 : 0) : 0;
+    let buttons = 0;
+    if (on) {
+      if (k.jump()) buttons |= IN_JUMP;
+      if (!this.sim.state.noclip && (k.down('ControlLeft') || k.down('KeyC'))) buttons |= IN_DUCK;
+      if (k.down('ShiftLeft') || k.down('ShiftRight')) buttons |= IN_SPEED;
+      if (k.down('Mouse0')) buttons |= IN_ATTACK;
+      if (k.down('Mouse2')) buttons |= IN_ATTACK2;
+      if (k.down('KeyR')) buttons |= IN_RELOAD;
+      if (k.down('KeyE')) buttons |= IN_USE;
+    }
+    return {
+      forwardmove: f,
+      sidemove: s,
+      upmove: u,
+      viewangles: [k.yaw, k.pitch],
+      buttons,
+    };
   }
 
   /** Fraction of the next simulation tick already accumulated (render interpolation). */
@@ -70,16 +90,26 @@ export class LocalPlayer {
   }
 
   update(dt: number) {
+    if (!Number.isFinite(dt) || dt <= 0) return;
     this.acc += Math.min(dt, 0.25);
-    while (this.acc >= TICK_DT) {
+    let ticks = 0;
+    while (this.acc >= TICK_DT && ticks++ < 4) {
       this.acc -= TICK_DT;
       this.prevPos.copy(this.sim.state.pos);
-      this.sampleInput();
+      const rawCmd = this.sampleCommand();
       const s = this.sim.state;
       const wasGround = s.onGround;
       _up.set(0, 1, 0).applyQuaternion(s.frame);
       const fall = -s.vel.dot(_up);
-      this.sim.tick(this.input, TICK_DT);
+      if (this.pmove) {
+        const executed = this.pmove.predictStep(this.sim, rawCmd, TICK_DT);
+        Object.assign(this.lastCmd, executed);
+      } else {
+        const cmd: UserCommand = { ...rawCmd, tick: this.lastCmd.tick + 1 };
+        Object.assign(this.lastCmd, cmd);
+        SimulateMovement(this.sim, cmd, TICK_DT);
+      }
+      commandToMoveInput(this.lastCmd, this.input);
       if (s.onGround && !wasGround && fall > 3) {
         this.landed = Math.max(this.landed, fall);
         this.landV -= Math.min(fall, 20) * 0.045;
@@ -88,6 +118,7 @@ export class LocalPlayer {
       this.onTick();
       this.drainEvents();
     }
+    if (this.acc > TICK_DT * 2) this.acc = TICK_DT * 2;
     // keep mouse look responsive between ticks
     this.sim.state.yaw = this.keys.yaw;
     this.sim.state.pitch = this.keys.pitch;
@@ -100,6 +131,10 @@ export class LocalPlayer {
       this.renderFrame.copy(this.sim.state.frame);
     }
     this.renderPos.lerpVectors(this.prevPos, this.sim.state.pos, this.acc / TICK_DT);
+    if (this.pmove) {
+      this.pmove.decayError(dt);
+      this.renderPos.add(this.pmove.smoothError);
+    }
     // crouch eases the eye down; a landing dips the camera on a damped spring
     this.crouchT += ((this.sim.state.crouched ? 1 : 0) - this.crouchT) * Math.min(1, dt * 12);
     this.landV += (-this.landDip * 160 - this.landV * 18) * Math.min(dt, 0.05);

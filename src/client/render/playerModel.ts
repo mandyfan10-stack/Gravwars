@@ -4,7 +4,7 @@ import {
 } from 'three';
 import type { GameAssets } from './assets';
 import { pixelGlint } from './pixelart';
-import { crossbowModel, hookGunModel, launcherModel, pistolModel, rifleModel, shotgunModel } from './guns';
+import { crossbowModel, hookGunModel, launcherModel, pistolModel, revolverModel, rifleModel, shotgunModel } from './guns';
 import { bakeMeshes } from './bake';
 import { buildHuman, HumanRig, Outfit, solveArm } from './human';
 
@@ -67,7 +67,7 @@ export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0)
 }
 
 /** fists / none: empty hands (punching / standing behind a counter); grenade: the right arm up, about to throw. */
-export type HeldItem = 'rifle' | 'pistol' | 'shotgun' | 'crossbow' | 'rocket' | 'hook' | 'fists' | 'none' | 'grenade' | 'rod';
+export type HeldItem = 'rifle' | 'pistol' | 'revolver' | 'shotgun' | 'crossbow' | 'rocket' | 'hook' | 'fists' | 'none' | 'grenade' | 'rod';
 export type { Outfit } from './human';
 
 export interface ModelState {
@@ -98,15 +98,16 @@ const POLE_L = new Vector3(1, -0.9, -0.2).normalize();
 const RIFLE_AT = new Vector3(-0.1, 0.22, 0.3);
 const ROCKET_AT = new Vector3(-0.15, 0.34, 0.26);
 const PISTOL_AT = new Vector3(-0.03, 0.27, 0.46);
-type Gun3P = 'rifle' | 'pistol' | 'shotgun' | 'crossbow' | 'rocket' | 'hook';
+type Gun3P = 'rifle' | 'pistol' | 'revolver' | 'shotgun' | 'crossbow' | 'rocket' | 'hook';
 const isGun3P = (h: HeldItem): h is Gun3P =>
-  h === 'rifle' || h === 'pistol' || h === 'shotgun' || h === 'crossbow' || h === 'rocket' || h === 'hook';
+  h === 'rifle' || h === 'pistol' || h === 'revolver' || h === 'shotgun' || h === 'crossbow' || h === 'rocket' || h === 'hook';
 const GUN_POSE: Record<Gun3P, { at: Vector3; r: [number, number, number]; l: [number, number, number]; kick: number; pitch: number }> = {
   rifle: { at: RIFLE_AT, r: [0, -0.035, 0.07], l: [0, 0.0, -0.2], kick: 0.04, pitch: 0.08 },
   shotgun: { at: RIFLE_AT, r: [0, -0.035, 0.08], l: [0, 0.01, -0.25], kick: 0.06, pitch: 0.14 },
   crossbow: { at: RIFLE_AT, r: [0, -0.035, 0.04], l: [0, 0.0, -0.22], kick: 0.02, pitch: 0.05 },
   rocket: { at: ROCKET_AT, r: [0, -0.03, 0.0], l: [0, -0.02, -0.3], kick: 0.07, pitch: 0.12 },
   pistol: { at: PISTOL_AT, r: [0, -0.035, 0.015], l: [0.03, -0.05, 0.03], kick: 0.05, pitch: 0.25 },
+  revolver: { at: PISTOL_AT, r: [0, -0.035, 0.02], l: [0.03, -0.05, 0.025], kick: 0.06, pitch: 0.3 },
   hook: { at: PISTOL_AT, r: [0, -0.035, 0.02], l: [0.03, -0.05, 0.035], kick: 0.04, pitch: 0.18 },
 };
 /** Fishing rod: butt in both hands in front of the belly, the rod up and out over the water. */
@@ -190,8 +191,9 @@ export class PlayerModel {
     if (g) return g;
     g = (id === 'rifle' ? rifleModel()
       : id === 'pistol' ? pistolModel()
+      : id === 'revolver' ? revolverModel()
       : id === 'shotgun' ? shotgunModel()
-      : id === 'crossbow' ? crossbowModel()
+      : id === 'crossbow' ? crossbowModel(this.teamColor)
       : id === 'rocket' ? launcherModel()
       : hookGunModel(this.teamColor)).root;
     g.rotation.y = Math.PI;

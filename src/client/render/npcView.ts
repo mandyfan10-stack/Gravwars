@@ -41,7 +41,9 @@ interface CarView {
 }
 
 const _carYawQ = new Quaternion();
+const _carTiltQ = new Quaternion();
 const _yAxis = new Vector3(0, 1, 0);
+const _xAxis = new Vector3(1, 0, 0);
 
 function buildCarGroup(color: number): { group: Group; bodyMat: MeshLambertMaterial; wheels: Mesh[] } {
   const g = new Group();
@@ -142,14 +144,17 @@ export class NpcView {
       }
       if (car.state === 'crashing') {
         cv.bodyMat.emissive.setHex(Math.floor(car.crashT * 16) % 2 === 0 ? 0x661a08 : 0x220500);
+      } else if (car.state === 'vanishing') {
+        cv.bodyMat.emissive.setHex(0x164a5e);
       } else {
         cv.bodyMat.emissive.setHex(0x000000);
       }
       if (car.prevPos.distanceToSquared(car.pos) > 36) _p.copy(car.pos);
       else _p.lerpVectors(car.prevPos, car.pos, alpha);
-      cv.group.position.copy(_p).addScaledVector(car.up, (car.scale - 1) * 0.6);
-      cv.group.scale.setScalar(car.scale);
-      _carYawQ.setFromAxisAngle(_yAxis, car.yaw);
+      const vanishK = car.state === 'vanishing' ? Math.max(0.02, Math.min(1, car.vanishT / 1.1)) : 1;
+      cv.group.position.copy(_p).addScaledVector(car.up, (car.scale * vanishK - 1) * 0.6 + (car.state === 'vanishing' ? (1 - vanishK) * 0.65 : 0));
+      cv.group.scale.setScalar(car.scale * vanishK);
+      _carYawQ.setFromAxisAngle(_yAxis, car.yaw + (car.state === 'vanishing' ? (1 - vanishK) * 4.5 : 0));
       cv.group.quaternion.copy(car.quat).multiply(_carYawQ);
       const spin = car.vel.length() * dt * 2.5;
       for (const w of cv.wheels) w.rotation.x -= spin;

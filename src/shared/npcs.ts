@@ -210,17 +210,19 @@ export interface NpcCar {
   scale: number;
   color: number;
   target: Target;
-  state: 'drive' | 'crashing' | 'dead';
+  state: 'drive' | 'crashing' | 'vanishing' | 'dead';
   currNode: number;
   nextNode: number;
   crashGoal: Vector3 | null;
   crashT: number;
+  /** Magical vanish timer (counts down from 1.1 -> 0 before disappearing). */
+  vanishT: number;
   respawnT: number;
-  /** Player/bot who shot the car, if chosen as ram/explosion target. */
+  /** Player/bot chosen as ram/explosion target (either attacker or random nearby player). */
   attackerId: number | null;
   /** Remaining time the car flees at high speed after being attacked. */
   fleeT: number;
-  /** Number of road segments left before the car can despawn at an island border node. */
+  /** Number of road segments left before the car magically vanishes at an island border node. */
   stepsLeft: number;
 }
 
@@ -248,7 +250,8 @@ export type NpcEvent =
   | { type: 'meleeSpark'; id: number; pos: Vector3 }
   | { type: 'meleeStrike'; id: number; pos: Vector3; dir: Vector3 }
   | { type: 'carExplode'; id: number; pos: Vector3 }
-  | { type: 'carAlarm'; id: number; pos: Vector3 };
+  | { type: 'carAlarm'; id: number; pos: Vector3 }
+  | { type: 'carVanish'; id: number; pos: Vector3 };
 
 export class NpcManager {
   readonly npcs: Npc[] = [];
@@ -337,7 +340,7 @@ export class NpcManager {
       id, island: isl.id, pos, prevPos: new Vector3(), vel, up, quat: isl.q.clone(), yaw: 0,
       scale, color: this.carRng.pick(CAR_COLORS), target, state: 'drive',
       currNode: isl.borderNodes[0] ?? 0, nextNode: isl.borderNodes[0] ?? 0,
-      crashGoal: null, crashT: 0, respawnT: 0,
+      crashGoal: null, crashT: 0, vanishT: 0, respawnT: 0,
       attackerId: null, fleeT: 0, stepsLeft: 6,
     };
     target.onHit = (owner) => this.onCarHit(car, owner);
@@ -355,6 +358,7 @@ export class NpcManager {
     car.state = 'drive';
     car.crashGoal = null;
     car.crashT = 0;
+    car.vanishT = 0;
     car.attackerId = null;
     car.fleeT = 0;
     car.stepsLeft = this.carRng.int(4, 9);
@@ -370,9 +374,22 @@ export class NpcManager {
     car.yaw = Math.atan2(-(nextXZ[0] - p[0]), -(nextXZ[1] - p[1]));
   }
 
+  /** Begin magical vanishing animation at the end of a road route. */
+  private beginVanishCar(car: NpcCar) {
+    if (car.state === 'vanishing' || car.state === 'dead') return;
+    car.state = 'vanishing';
+    car.vanishT = 1.1;
+    car.target.alive = false;
+    car.attackerId = null;
+    car.fleeT = 0;
+    car.vel.set(0, 0, 0);
+    this.events.push({ type: 'carVanish', id: car.id, pos: car.pos.clone() });
+  }
+
   private despawnCar(car: NpcCar) {
     car.state = 'dead';
     car.target.alive = false;
+    car.vanishT = 0;
     car.respawnT = 6;
     car.attackerId = null;
     car.fleeT = 0;
@@ -381,24 +398,35 @@ export class NpcManager {
     car.vel.set(0, 0, 0);
   }
 
+  /** Find a random nearby living fighter (player/bot) on this island within `maxDist` m. */
+  private pickRandomNearbyPlayer(car: NpcCar, isl: Island, maxDist = 28): Target | null {
+    const candidates = this.combat.targets.filter(
+      (t) => t.alive && !t.npc && t.id !== car.id && this.onStreets(isl, t.center) && t.center.distanceTo(car.pos) <= maxDist,
+    );
+    return candidates.length ? this.carRng.pick(candidates) : null;
+  }
+
   private onCarHit(car: NpcCar, owner: number) {
-    if (car.state === 'dead' || owner === car.id) return;
+    if (car.state === 'dead' || car.state === 'vanishing' || owner === car.id) return;
     const isl = this.island(car.island);
     this.events.push({ type: 'carAlarm', id: car.id, pos: car.pos.clone() });
     const attacker = this.combat.target(owner);
+    const randomNearby = this.pickRandomNearbyPlayer(car, isl, 28);
+    // Can choose either the attacker or a random nearby player/fighter as explosion target
+    const chosenTarget = (randomNearby && this.carRng.chance(0.45)) ? randomNearby : (attacker && attacker.alive ? attacker : randomNearby);
     if (car.state === 'crashing') {
-      if (attacker && attacker.alive) {
-        car.attackerId = attacker.id;
-        car.crashGoal = attacker.center.clone();
+      if (chosenTarget && chosenTarget.alive) {
+        car.attackerId = chosenTarget.id;
+        car.crashGoal = chosenTarget.center.clone();
       }
       return;
     }
     const lowHp = !car.target.alive || car.target.hp <= 88 * car.scale;
-    if (attacker && attacker.alive) car.attackerId = attacker.id;
-    if (lowHp || (owner === 0 && attacker && attacker.alive && this.carRng.chance(0.45))) {
+    if (chosenTarget && chosenTarget.alive) car.attackerId = chosenTarget.id;
+    if (lowHp || (chosenTarget && chosenTarget.alive && this.carRng.chance(0.5))) {
       car.state = 'crashing';
       car.crashT = 0;
-      car.crashGoal = attacker && attacker.alive ? attacker.center.clone() : this.findCrashObject(car, isl);
+      car.crashGoal = chosenTarget && chosenTarget.alive ? chosenTarget.center.clone() : this.findCrashObject(car, isl);
     } else {
       // Flee away from the attacker at high speed
       car.fleeT = 6.5;
@@ -431,6 +459,11 @@ export class NpcManager {
     if (car.attackerId !== null) {
       const att = this.combat.target(car.attackerId);
       if (att && att.alive && this.onStreets(isl, att.center)) return att.center.clone();
+    }
+    const rndPlayer = this.pickRandomNearbyPlayer(car, isl, 28);
+    if (rndPlayer) {
+      car.attackerId = rndPlayer.id;
+      return rndPlayer.center.clone();
     }
     let best: Vector3 | null = null;
     let bestD = Infinity;
@@ -465,7 +498,7 @@ export class NpcManager {
   private explodeCar(car: NpcCar, isl: Island) {
     const pos = car.pos.clone();
     this.events.push({ type: 'carExplode', id: car.id, pos: pos.clone() });
-    this.combat.triggerExplosion(pos, car.id, car.target.team, 12.5, 162.5, 24, 250, 0, false, 'rocket', pos);
+    this.combat.triggerExplosion(pos, car.id, car.target.team, 12.5, 162.5, 24, 250, 0, false, 'car', pos);
     // Drop random resources (cash, ammo, metal, wood); 1.5x reward, size-scaled
     const s = car.scale * 1.5;
     if (this.rng.chance(0.8)) this.pickups.dropSpread('cash', pos, isl.up, Math.max(3, Math.round(this.rng.int(4, 11) * s)));
@@ -482,12 +515,42 @@ export class NpcManager {
     car.vel.set(0, 0, 0);
   }
 
+  /** Cast whisker rays ahead of `car` to steer around obstacles whenever possible. */
+  private steerCarAroundObstacles(car: NpcCar, isl: Island, dt: number): number {
+    moveBasis(isl.q, car.yaw, _fwd, _right);
+    const origin = car.pos.clone().addScaledVector(isl.up, 0.35);
+    const probeLen = 5.2 * car.scale;
+    const leftDir = _fwd.clone().addScaledVector(_right, -0.38).normalize();
+    const rightDir = _fwd.clone().addScaledVector(_right, 0.38).normalize();
+    const hitL = this.world.castRay(new this.R.Ray(origin, leftDir), probeLen, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
+    const hitR = this.world.castRay(new this.R.Ray(origin, rightDir), probeLen, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
+    const hitC = this.world.castRay(new this.R.Ray(origin, _fwd), probeLen * 0.85, true, undefined, undefined, undefined, undefined, this.combat.notCharacter);
+    let steer = 0;
+    if (hitL && (!hitR || hitL.timeOfImpact < hitR.timeOfImpact)) {
+      steer -= 4.2 * (1 - hitL.timeOfImpact / probeLen);
+    } else if (hitR && (!hitL || hitR.timeOfImpact < hitL.timeOfImpact)) {
+      steer += 4.2 * (1 - hitR.timeOfImpact / probeLen);
+    } else if (hitC) {
+      steer += (car.id % 2 === 0 ? 1 : -1) * 4.5 * (1 - hitC.timeOfImpact / probeLen);
+    }
+    if (steer !== 0) car.yaw += steer * dt;
+    return hitC ? Math.max(0.35, hitC.timeOfImpact / probeLen) : 1;
+  }
+
   private tickCars(dt: number) {
     for (const car of this.cars) {
       const isl = this.island(car.island);
       if (car.state === 'dead') {
         car.respawnT -= dt;
         if (car.respawnT <= 0) this.spawnCar(car);
+        continue;
+      }
+      if (car.state === 'vanishing') {
+        car.prevPos.copy(car.pos);
+        car.vanishT -= dt;
+        car.yaw += 3.2 * dt;
+        car.pos.addScaledVector(isl.up, 1.1 * dt);
+        if (car.vanishT <= 0) this.despawnCar(car);
         continue;
       }
       car.prevPos.copy(car.pos);
@@ -499,7 +562,7 @@ export class NpcManager {
       }
       if (car.state === 'crashing') {
         car.crashT += dt;
-        // Dynamically track the player who shot the car if alive on this island
+        // Dynamically track the chosen target if alive on this island
         if (car.attackerId !== null) {
           const att = this.combat.target(car.attackerId);
           if (att && att.alive && this.onStreets(isl, att.center)) {
@@ -510,7 +573,7 @@ export class NpcManager {
         _v.copy(goal).sub(car.pos);
         _v.addScaledVector(isl.up, -_v.dot(isl.up));
         const dist = _v.length();
-        if (dist < 2.4 * car.scale || car.crashT > 2.6) {
+        if (dist < 2.4 * car.scale || car.crashT > 2.8) {
           this.explodeCar(car, isl);
           continue;
         }
@@ -518,6 +581,7 @@ export class NpcManager {
         const l = _w.copy(_v).applyQuaternion(_inv.copy(isl.q).invert());
         const desiredYaw = Math.atan2(-l.x, -l.z);
         car.yaw = lerpAngle(car.yaw, desiredYaw, 6.5 * dt);
+        this.steerCarAroundObstacles(car, isl, dt * 0.65);
         moveBasis(isl.q, car.yaw, _fwd, _right);
         const speed = 17.5;
         car.vel.copy(_fwd).lerp(_v, 0.35).normalize().multiplyScalar(speed);
@@ -535,7 +599,7 @@ export class NpcManager {
         const isEdge = isl.borderNodes.includes(car.nextNode)
           || Math.max(Math.abs(targetXZ[0]), Math.abs(targetXZ[1])) >= isl.half - 11;
         if (car.stepsLeft <= 0 && isEdge) {
-          this.despawnCar(car);
+          this.beginVanishCar(car);
           continue;
         }
         const next = this.pickNextCarNode(isl, car.nextNode, car.currNode);
@@ -547,14 +611,14 @@ export class NpcManager {
         const desiredYaw = Math.atan2(-l.x, -l.z);
         const turnRate = car.fleeT > 0 ? 5.8 : 3.8;
         car.yaw = lerpAngle(car.yaw, desiredYaw, turnRate * dt);
+        const clearMul = this.steerCarAroundObstacles(car, isl, dt);
         moveBasis(isl.q, car.yaw, _fwd, _right);
-        let speed = car.fleeT > 0 ? 14.5 : 7.5;
-        // Slow down on sharp turns or when obstacles are right ahead during calm driving
+        let speed = (car.fleeT > 0 ? 14.5 : 7.5) * clearMul;
         const turnDiff = Math.abs(lerpAngle(car.yaw, desiredYaw, Math.PI) - car.yaw);
         if (turnDiff > 0.45 && car.fleeT <= 0) speed *= 0.72;
         if (car.fleeT <= 0) {
           for (const other of this.cars) {
-            if (other === car || other.state === 'dead' || other.island !== car.island) continue;
+            if (other === car || other.state === 'dead' || other.state === 'vanishing' || other.island !== car.island) continue;
             const od = other.pos.distanceTo(car.pos);
             if (od < 4.5 && _v.copy(other.pos).sub(car.pos).normalize().dot(_fwd) > 0.6) {
               speed *= 0.45;
@@ -562,7 +626,6 @@ export class NpcManager {
             }
           }
         }
-        // Blend forward direction with node direction so smooth turns stay on the road
         car.vel.copy(_fwd).lerp(_w, 0.35).normalize().multiplyScalar(speed);
         car.pos.addScaledVector(car.vel, dt);
       }
@@ -772,9 +835,15 @@ export class NpcManager {
       n.sim.tick(input, h);
       for (const e of n.sim.events.splice(0)) if (e.type === 'respawn') this.spawn(n); // fell off: back on the street
       upOf(n.sim.state.frame, n.target.up);
+      if (n.kind === 'gang') {
+        n.weapons.reserve.pistol = 999;
+        if (n.fire !== 'burst' && n.weapons.ammo.pistol < NPC.gang.burst) {
+          n.weapons.ammo.pistol = WEAPONS.pistol.mag;
+          n.weapons.reloadT = 0;
+        }
+      }
       const pull = fire && (WEAPONS[n.weapons.current].auto || !n.weapons.held);
       const fired = weaponTick(n.weapons, { fire: pull, reload: false, select: n.kind === 'gang' ? 'pistol' : null }, h);
-      if (n.kind === 'gang') n.weapons.reserve.pistol = 999;
       if (fired && aim) {
         const eye = n.sim.state.pos.clone().addScaledVector(n.target.up, EYE_OFFSET);
         this.combat.use(fired, n.id, eye, aim, n.sim.state.vel, n.target.up.clone().negate());
@@ -819,13 +888,16 @@ export class NpcManager {
       if (d > cfg.sight) continue;
       _v.copy(t.center).sub(eye);
       _v.addScaledVector(up, -_v.dot(up));
-      const inCone = _v.lengthSq() < 1e-6 || _v.normalize().dot(_fwd) > cosHalf;
+      const alerted = (n.state === 'combat' && (!n.foe || n.foe.id === t.id)) || n.foe?.id === t.id;
+      const inCone = alerted || _v.lengthSq() < 1e-6 || _v.normalize().dot(_fwd) > cosHalf;
       const speed = t.vel ? Math.sqrt(Math.max(0, t.vel.lengthSq() - t.vel.dot(t.up) ** 2)) : 0;
       const loud = !t.quiet && speed > N.loud;
       const close = d < N.close;
       const pointBlank = d < 2.8 && Math.abs(_w.copy(t.center).sub(s.pos).dot(up)) < 2.5;
       let gain = 0;
-      if (pointBlank || ((inCone || close) && this.combat.lineOfSight(eye, _w.copy(t.center).addScaledVector(t.up, 0.5)))) {
+      const hasLos = this.combat.lineOfSight(eye, _w.copy(t.center).addScaledVector(t.up, 0.5))
+        || this.combat.lineOfSight(eye, _w.copy(t.center).addScaledVector(t.up, 0.78));
+      if (pointBlank || ((inCone || close) && hasLos)) {
         const motion = loud ? N.run : speed > 0.5 ? N.walk : N.still;
         gain = pointBlank
           ? N.rate * 4.5
@@ -887,7 +959,7 @@ export class NpcManager {
       } else if (seen) {
         if (seen.has(foe.id)) { n.lastSeen = foe.center.clone(); n.lostT = 0; } else n.lostT += 0.2;
       }
-      n.seenT = n.lostT === 0 ? n.seenT + dt : 0;
+      n.seenT = n.lostT === 0 ? n.seenT + dt : n.lostT < 0.6 ? n.seenT : 0;
       const d = eye.distanceTo(foe.center);
       if (n.kind === 'bum') {
         speed = NPC.bum.run;

@@ -2,6 +2,7 @@ import { Quaternion, Vector3 } from 'three';
 import type { BlockMaterial } from './blocks';
 import { DEFAULT_MOVEMENT } from './constants';
 import type { MapData } from './map';
+import { MATCH_RULES } from './lobby';
 import { Rng } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
 import { giveWeapon, isGun, WeaponId, WeaponState, WEAPONS } from './weapons';
@@ -326,8 +327,8 @@ export class Pickups {
 export type Currency = 'cash' | 'crystal';
 export const CURRENCY_LABEL: Record<Currency, string> = { cash: 'деньги', crystal: 'кристаллы' };
 
-/** One-off tools: bought once, kept for the match. */
-export type Step = 'rod' | 'builder' | 'hook';
+/** One-off tools: bought once, kept for the match (armor breaks when saving from death and can be bought again). */
+export type Step = 'rod' | 'builder' | 'hook' | 'jetpack' | 'armor';
 
 /** Wood that comes with the build tool, so that it is usable right away (a bridge to the centre is ~75 plates). */
 export const BUILDER_WOOD = 16;
@@ -349,29 +350,39 @@ export type ShopItem = {
   | { kind: 'item'; item: ItemId; count: number }
 );
 
+/** Effective shop price after applying match lobby multipliers. */
+export function effectivePrice(item: ShopItem): number {
+  const mul = item.currency === 'crystal' ? MATCH_RULES.crystalPrice : MATCH_RULES.cashPrice;
+  return Math.max(1, Math.round(item.price * mul));
+}
+
 /**
- * The shop window's rows: item ids by column (null = an empty slot). Every gun's ammo sits right under the gun.
+ * The shop window's rows: item ids by column (null = an empty slot).
  * `short`: the name on the tile (the full label is in the details line).
  */
 export const SHOP_ROWS: { label: string; ids: (string | null)[] }[] = [
-  { label: 'Оружие', ids: ['pistol', 'shotgun', 'rifle', 'crossbow', 'rocket', 'grenade'] },
+  { label: 'Оружие', ids: ['pistol', 'revolver', 'shotgun', 'rifle', 'crossbow', 'rocket', 'grenade'] },
   { label: 'Блоки', ids: ['wood', 'stone', 'metal'] },
-  { label: 'Снаряжение', ids: ['hook', 'rod', 'medkit'] },
+  { label: 'Снаряжение', ids: ['hook', 'rod', 'medkit', 'jetpack', 'armor'] },
 ];
 export const SHOP_SHORT: Record<string, string> = {
-  builder: 'Лопатка', crossbow: 'Арбалет', grenade: 'Гранаты', wood: 'Дерево', stone: 'Камень', metal: 'Металл',
+  builder: 'Лопатка', revolver: 'Револьвер', crossbow: 'Арбалет', grenade: 'Гранаты',
+  wood: 'Дерево', stone: 'Камень', metal: 'Металл', jetpack: 'Ранец', armor: 'Броня',
 };
 
 /** Everything is on the shelf from the start; building mode (B) is always available and ammo is found in the world or at your crystal. */
 export const SHOP: ShopItem[] = [
-  { id: 'rod', label: 'Удочка', note: 'ловить рыбу в прудах парка', price: 5, currency: 'cash', step: 'rod', kind: 'tool' },
+  { id: 'rod', label: 'Удочка', note: 'ловить рыбу в прудах и фонтанах', price: 5, currency: 'cash', step: 'rod', kind: 'tool' },
   { id: 'hook', label: 'Крюк-кошка', note: 'притягивает к точке до 35 м', price: 9, currency: 'cash', step: 'hook', kind: 'tool' },
-  { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 19, currency: 'cash', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
-  { id: 'shotgun', label: 'Дробовик', note: `${WEAPONS.shotgun.mag} патронов, вблизи смертелен`, price: 27, currency: 'cash', kind: 'weapon', weapon: 'shotgun', count: WEAPONS.shotgun.mag },
-  { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 41, currency: 'cash', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
-  { id: 'crossbow', label: 'Арбалет', note: 'зажим ЛКМ (0–3 ур., 5–20 ур.), ПКМ — зум', price: 34, currency: 'cash', kind: 'weapon', weapon: 'crossbow', count: 1 },
-  { id: 'rocket', label: 'Ракетница', note: `взрыв ${WEAPONS.rocket.radius} м, ${WEAPONS.rocket.damage} урона`, price: 4, currency: 'crystal', kind: 'weapon', weapon: 'rocket', count: 1 },
-  { id: 'grenade', label: 'Гранаты ×2', price: 14, currency: 'cash', kind: 'weapon', weapon: 'grenade', count: 2 },
+  { id: 'jetpack', label: 'Реактивный ранец', note: 'Пробел в воздухе — полёт (топливо: патроны, 12 с до перегрева)', price: 5, currency: 'crystal', step: 'jetpack', kind: 'tool' },
+  { id: 'armor', label: 'Бронежилет', note: 'при смертельном уроне ломается и мгновенно даёт 50 HP', price: 5, currency: 'crystal', step: 'armor', kind: 'tool' },
+  { id: 'pistol', label: 'Пистолет', note: `магазин ${WEAPONS.pistol.mag}`, price: 20, currency: 'cash', kind: 'weapon', weapon: 'pistol', count: WEAPONS.pistol.mag },
+  { id: 'revolver', label: 'Револьвер', note: 'зажим ЛКМ — выстрел с рикошетом по целям (25→20 ур.), ПКМ — крутить', price: 30, currency: 'cash', kind: 'weapon', weapon: 'revolver', count: WEAPONS.revolver.mag },
+  { id: 'shotgun', label: 'Дробовик', note: `${WEAPONS.shotgun.mag} патронов, дозарядка по патрону`, price: 35, currency: 'cash', kind: 'weapon', weapon: 'shotgun', count: WEAPONS.shotgun.mag },
+  { id: 'rifle', label: 'Автомат', note: `магазин ${WEAPONS.rifle.mag}`, price: 40, currency: 'cash', kind: 'weapon', weapon: 'rifle', count: WEAPONS.rifle.mag },
+  { id: 'crossbow', label: 'Арбалет', note: 'зажим ЛКМ (0–3 ур., 5–60 ур.), ПКМ — зум', price: 75, currency: 'cash', kind: 'weapon', weapon: 'crossbow', count: 1 },
+  { id: 'rocket', label: 'Ракетница', note: `взрыв ${WEAPONS.rocket.radius} м, ${WEAPONS.rocket.damage} урона`, price: 5, currency: 'crystal', kind: 'weapon', weapon: 'rocket', count: 1 },
+  { id: 'grenade', label: 'Гранаты ×2', price: 10, currency: 'cash', kind: 'weapon', weapon: 'grenade', count: 2 },
   { id: 'wood', label: 'Дерево ×16', note: '1 дерево = 1 постройка', price: 4, currency: 'cash', kind: 'blocks', material: 'wood', count: 16 },
   { id: 'stone', label: 'Камень ×8', price: 8, currency: 'cash', kind: 'blocks', material: 'stone', count: 8 },
   { id: 'metal', label: 'Металл ×4', price: 2, currency: 'crystal', kind: 'blocks', material: 'metal', count: 4 },
@@ -389,12 +400,28 @@ export interface ShopOffer { item: ShopItem; state: 'ok' | 'money' }
 export class Economy {
   readonly items: Record<ItemId, number> = { bottle: 0, apple: 0, fish: 0, medkit: 0 };
   readonly done = new Set<Step>(['builder']);
+  /** True in modes like Skirmish where all weapons in shop are free ($0 / 0 crystals). */
+  freeWeapons = false;
+  /** Optional callback when armor is purchased or broken. */
+  onArmorChange?: (hasArmor: boolean) => void;
 
   /** `blocks`: where bought material goes (the player's BlockSystem, or a bot's own pockets). */
   constructor(readonly wallet: Record<Currency, number>, readonly blocks: { inventory: Record<BlockMaterial, number> }, readonly weapons: WeaponState) {}
 
+  priceOf(item: ShopItem): number {
+    if (this.freeWeapons && item.kind === 'weapon') return 0;
+    return effectivePrice(item);
+  }
+
   has(step: Step) {
     return this.done.has(step);
+  }
+
+  /** Break the armor vest when it saves the owner from lethal damage. */
+  breakArmor() {
+    if (!this.done.has('armor')) return;
+    this.done.delete('armor');
+    this.onArmorChange?.(false);
   }
 
   /** Already owned for good: one-off tools and guns leave the shelf once bought. */
@@ -406,18 +433,25 @@ export class Economy {
   /** Items on the shelf now, in shop order. */
   offers(): ShopOffer[] {
     return SHOP.filter((item) => !this.sold(item))
-      .map((item) => ({ item, state: this.wallet[item.currency] >= item.price ? 'ok' as const : 'money' as const }));
+      .map((item) => {
+        const price = this.priceOf(item);
+        return { item: price === item.price ? item : { ...item, price }, state: this.wallet[item.currency] >= price ? 'ok' as const : 'money' as const };
+      });
   }
 
   /** Buy an item. */
   buy(item: ShopItem): BuyResult {
     if (this.sold(item)) return 'full';
-    if (this.wallet[item.currency] < item.price) return 'money';
+    const price = this.priceOf(item);
+    if (this.wallet[item.currency] < price) return 'money';
     const ws = this.weapons;
     if (item.kind === 'weapon' && item.weapon === 'grenade' && ws.ammo.grenade + item.count > WEAPONS.grenade.mag) return 'full';
     if (item.kind === 'item' && item.item === 'medkit' && this.items.medkit + item.count > MAX_MEDKITS) return 'full';
-    this.wallet[item.currency] -= item.price;
-    if (item.step) this.done.add(item.step);
+    this.wallet[item.currency] -= price;
+    if (item.step) {
+      this.done.add(item.step);
+      if (item.step === 'armor') this.onArmorChange?.(true);
+    }
     if (item.kind === 'blocks') this.blocks.inventory[item.material] += item.count;
     else if (item.kind === 'weapon') {
       giveWeapon(ws, item.weapon, item.count);
@@ -433,7 +467,7 @@ export class Economy {
   sell(id: ItemId): number {
     if (!ITEMS[id].sell) return 0;
     const n = this.items[id];
-    const cash = n * ITEMS[id].sell;
+    const cash = Math.max(0, Math.round(n * ITEMS[id].sell * MATCH_RULES.reward));
     this.items[id] = 0;
     this.wallet.cash += cash;
     return cash;
@@ -444,7 +478,7 @@ export class Economy {
   }
 
   get sellValue() {
-    return SELLABLE.reduce((sum, id) => sum + this.items[id] * ITEMS[id].sell, 0);
+    return SELLABLE.reduce((sum, id) => sum + Math.round(this.items[id] * ITEMS[id].sell * MATCH_RULES.reward), 0);
   }
 
   /** Use up one item (eaten, thrown, applied). False if there is none. */
@@ -457,6 +491,39 @@ export class Economy {
   /** Eat an apple. Returns false if there is none. */
   eat(): boolean {
     return this.take('apple');
+  }
+
+  /**
+   * Drop an item, tool, or weapon from the inventory (I screen).
+   * Returns a pickup description to spawn in front of the player, or null if nothing was dropped.
+   */
+  dropFromSlot(holdable: string): { kind: PickupKind; amount: number } | null {
+    if (holdable in this.items) {
+      const id = holdable as ItemId;
+      if (this.items[id] <= 0) return null;
+      this.items[id]--;
+      return { kind: id, amount: 1 };
+    }
+    if (holdable === 'grenade') {
+      if (this.weapons.ammo.grenade <= 0) return null;
+      this.weapons.ammo.grenade--;
+      if (this.weapons.ammo.grenade === 0) this.weapons.owned.grenade = false;
+      return { kind: 'ammo', amount: 1 };
+    }
+    if (holdable === 'hook' || holdable === 'rod') {
+      if (!this.done.has(holdable)) return null;
+      this.done.delete(holdable);
+      return { kind: 'cash', amount: holdable === 'hook' ? 4 : 2 };
+    }
+    if (holdable in this.weapons.owned && holdable !== 'fists') {
+      const w = holdable as WeaponId;
+      if (!this.weapons.owned[w]) return null;
+      this.weapons.owned[w] = false;
+      this.weapons.ammo[w] = 0;
+      if (this.weapons.current === w) this.weapons.current = 'fists';
+      return { kind: 'ammo', amount: 1 };
+    }
+    return null;
   }
 
   /**
@@ -475,7 +542,7 @@ export class Economy {
       out.push({ kind: 'cash', amount: cash });
     }
     const ws = this.weapons;
-    if (ws.owned.pistol || ws.owned.shotgun || ws.owned.rifle || ws.owned.rocket) {
+    if (ws.owned.pistol || ws.owned.revolver || ws.owned.shotgun || ws.owned.rifle || ws.owned.rocket) {
       out.push({ kind: 'ammo', amount: 1 });
     }
     return out;

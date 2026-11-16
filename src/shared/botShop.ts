@@ -7,10 +7,12 @@ export interface Needs {
   raider: boolean;
   /** Wood the bridges on the way still need. */
   wood: number;
-  /** Blocks missing from the fortification around the own crystal (defenders). */
+  /** Blocks for cover / bridges (no longer fortifying near own crystal). */
   fort: number;
   /** Prefers the shotgun to the rifle. */
   shotgun: boolean;
+  /** Prefers the revolver as mid-tier sidearm. */
+  revolver?: boolean;
   /** Earns money with a rod. */
   fisher: boolean;
   /** A whim (a mistake): something cheap and less useful first. */
@@ -19,8 +21,7 @@ export interface Needs {
 
 export interface Wish { item: ShopItem; major: boolean }
 
-const ITEM = new Map(SHOP.map((s) => [s.id, s]));
-const GUNS = ['pistol', 'shotgun', 'rifle', 'crossbow'] as const;
+const GUNS = ['pistol', 'revolver', 'shotgun', 'rifle', 'crossbow', 'rocket'] as const;
 /** Medkits a bot keeps. */
 const MEDKITS = Math.min(2, MAX_MEDKITS);
 /** Apples a bot keeps for healing instead of selling them (once it has a gun and fights). */
@@ -34,8 +35,9 @@ const keepApples = (eco: Economy) => (GUNS.some((w) => eco.weapons.owned[w]) ? M
 export function wishlist(eco: Economy, n: Needs): Wish[] {
   const ws = eco.weapons, inv = eco.blocks.inventory;
   const out: Wish[] = [];
+  const itemById = new Map(SHOP.map((s) => [s.id, s]));
   const add = (id: string, major = false, times = 1) => {
-    const item = ITEM.get(id);
+    const item = itemById.get(id);
     if (!item) return;
     for (let i = 0; i < times; i++) out.push({ item, major });
   };
@@ -45,24 +47,27 @@ export function wishlist(eco: Economy, n: Needs): Wish[] {
     if (eco.items.medkit < 1) add('medkit');
   }
   if (n.fisher && !eco.has('rod')) add('rod', true);
-  if (!hasGun) add('pistol', true);
+  if (!hasGun) add(n.revolver ? 'revolver' : 'pistol', true);
   if (n.raider && n.wood > 0) {
     const lack = n.wood - inv.wood - (eco.has('builder') ? 0 : BUILDER_WOOD);
     if (lack > 0) add('wood', true, Math.ceil(lack / 16));
   }
+  if (n.raider && !eco.has('hook') && hasGun) add('hook', false);
   const main = n.shotgun ? 'shotgun' : 'rifle';
   if (!ws.owned[main]) add(main, true);
+  if (!ws.owned.revolver && (n.revolver || ws.owned[main])) add('revolver', false);
   if (eco.items.medkit < MEDKITS) add('medkit');
   if (n.raider && ws.ammo.grenade < 2) add('grenade');
-  if (n.fort > 0) {
-    if (inv.stone + inv.metal < Math.min(n.fort, 16)) add('stone');
-  }
+  if (!eco.has('hook')) add('hook');
+  if (n.raider && inv.stone < 8) add('stone');
   const second = n.shotgun ? 'rifle' : 'shotgun';
   if (!ws.owned[second]) add(second, true);
   if (!ws.owned.crossbow) add('crossbow', true);
-  // crystals: the rocket launcher (metal for the fort with what is left)
+  // Crystal items: armor vest, rocket launcher, jetpack, metal
+  if (!eco.has('armor')) add('armor', true);
   if (!ws.owned.rocket) add('rocket', true);
-  if (n.fort > 0 && ws.owned.rocket && inv.metal < 4) add('metal');
+  if (!eco.has('jetpack')) add('jetpack', true);
+  if (ws.owned.rocket && inv.metal < 4) add('metal');
   return out;
 }
 
@@ -89,7 +94,8 @@ export function nextBuy(eco: Economy, n: Needs, extra = 0): ShopItem | null {
   for (const w of wishlist(eco, n)) {
     const c = w.item.currency;
     if (blocked.has(c)) continue;
-    if (eco.wallet[c] + (c === 'cash' ? extra : 0) >= w.item.price && canBuy(eco, w.item)) return w.item;
+    const price = eco.priceOf(w.item);
+    if (eco.wallet[c] + (c === 'cash' ? extra : 0) >= price && canBuy(eco, w.item)) return w.item;
     if (w.major) blocked.add(c);
   }
   return null;

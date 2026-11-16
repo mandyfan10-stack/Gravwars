@@ -1,6 +1,7 @@
 import type { Difficulty } from '../bots';
 import type { LobbyConfig } from '../lobby';
 import type { TeamId } from '../teams';
+import type { UserCommand } from './pmove';
 
 export type NetworkRole = 'host' | 'client';
 export type Vec3Tuple = [number, number, number];
@@ -26,10 +27,12 @@ export type LobbyMessage =
   | { type: 'lobby:bot'; team: TeamId; seatIndex: number; difficulty: Difficulty }
   | { type: 'lobby:remove_seat'; team: TeamId; seatIndex: number }
   | { type: 'lobby:rejected'; reason: string }
+  | { type: 'lobby:chat'; senderId: string; sender: string; team?: TeamId; text: string }
   | { type: 'lobby:start'; seed: number; config: LobbyConfig; activeTeams: TeamId[]; mapTeam?: TeamId; skipFortTeams?: TeamId[] };
 
-/** Input vector sent from client to host at fixed tick rate (~64Hz). */
+/** Input packet sent from client to host at fixed tick rate (carries GoldSrc-style `UserCommand`). */
 export interface PlayerInputPacket {
+  cmd?: UserCommand;
   seq?: number;
   tick: number;
   forward: number;
@@ -54,6 +57,7 @@ export type ClientAction =
   | {
       type: 'build_place';
       kind: string;
+      variant?: string;
       center: Vec3Tuple;
       half: Vec3Tuple;
       quat: QuatTuple;
@@ -63,6 +67,8 @@ export type ClientAction =
       level?: number;
     }
   | { type: 'build_remove'; pos: Vec3Tuple }
+  | { type: 'block_door'; pos: Vec3Tuple; open: boolean }
+  | { type: 'drop_item'; holdable: string; dir: Vec3Tuple }
   | { type: 'buy'; itemId: string }
   | { type: 'sell'; kind: string }
   | {
@@ -72,7 +78,8 @@ export type ClientAction =
       pos?: Vec3Tuple;
       dir?: Vec3Tuple;
     }
-  | { type: 'select_slot'; slot: number; weapon?: string };
+  | { type: 'select_slot'; slot: number; weapon?: string }
+  | { type: 'chat'; text: string };
 
 /** Serialized state of a single player in the world snapshot. */
 export interface RemotePlayerSnapshot {
@@ -97,6 +104,15 @@ export interface RemotePlayerSnapshot {
   guard?: boolean;
   out?: boolean;
   ackSeq?: number;
+  ackTick?: number;
+  stamina?: number;
+  exhausted?: boolean;
+  restT?: number;
+  airT?: number;
+  jumpHold?: number;
+  jumpReleased?: boolean;
+  jetpackHeat?: number;
+  jetpackOverheatCd?: number;
 }
 
 /** Serialized state of a crystal on a base. */
@@ -209,6 +225,7 @@ export type WorldEvent =
     | {
       type: 'block:place';
       kind: string;
+      variant?: string;
       center: Vec3Tuple;
       half: Vec3Tuple;
       quat: QuatTuple;
@@ -217,6 +234,7 @@ export type WorldEvent =
       key?: string;
       level?: number;
     }
+  | { type: 'block:door'; pos: Vec3Tuple; open: boolean }
   | { type: 'block:damage'; id: number; hp: number; pos?: Vec3Tuple }
   | { type: 'block:break'; pos: Vec3Tuple }
   | { type: 'prop:break'; idx: number }
@@ -296,7 +314,7 @@ export type WorldEvent =
       blastPos?: Vec3Tuple;
     }
   | { type: 'sound'; name: string; pos: Vec3Tuple; volume?: number }
-  | { type: 'chat'; sender: string; text: string };
+  | { type: 'chat'; sender: string; team?: TeamId; text: string };
 
 /** Envelope for network packets over WebRTC data channels. */
 export type NetPacket =

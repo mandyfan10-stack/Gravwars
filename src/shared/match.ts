@@ -1,8 +1,9 @@
-import { Vector3 } from 'three';
+import { Quaternion, Vector3 } from 'three';
 import { BlockSystem } from './blocks';
 import { Combat, CRYSTAL, MAX_HP } from './combat';
 import type { Currency } from './economy';
-import type { MapData } from './map';
+import { GameMode, MATCH_RULES } from './lobby';
+import { HALL_H, HALL_HALF, MapData } from './map';
 import type { PhysicsWorld, Rapier } from './physics';
 import { TeamId } from './teams';
 
@@ -13,12 +14,16 @@ export const GENERATORS: Record<'crystal', { interval: number; cap: number }> = 
 /** Walk this close (player centre → generator pad) to collect. */
 export const PICKUP_RADIUS = 2.4;
 /**
- * Team crystal: HP (final damage: ~3 s of rifle fire point blank, 2 rockets, a long beating with the fists), healed
- * back at `regen` HP/s once nobody has hit it for `regenDelay` s. Only shots from within CRYSTAL.range hurt it.
+ * Team crystal: 250 HP, healed back at 2.5 HP/s once nobody has hit it for 15 s.
+ * Only shots from within CRYSTAL.range hurt it.
  */
-export const BED_HP = 80;
-export const BED_REGEN = { delay: 5, rate: 10 };
-/** Stage 1 -> Stage 2 transition: 10 s invulnerability, then a 10 m explosion stunning enemies and reviving dead players. */
+export const BED_HP = 250;
+export const BED_REGEN = { delay: 15, rate: 2.5 };
+/** Respawn time for players and bots, s. */
+export const RESPAWN_DELAY = 8;
+/** Passive healing rate inside a team base hall, HP/s. */
+export const BASE_HEAL_RATE = 2;
+/** Stage 1 -> Stage 2 transition: 10 s invulnerability, then a 10 m explosion stunning & hurting enemies (100%) and reviving the crystal's dead team members. */
 export const CRYSTAL_INVULN_TIME = 10;
 export const CRYSTAL_BLAST_RADIUS = 10;
 export const CRYSTAL_STUN_TIME = 3.5;
@@ -27,6 +32,18 @@ export const BED_SIGHT = 40;
 export const SHOP_RADIUS = 4.5;
 /** Money for killing an enemy. */
 export const KILL_REWARD = 3;
+/** Money for killing an enemy in Skirmish mode. */
+export const SKIRMISH_KILL_REWARD = 25;
+/** Wood regenerated per second while standing inside own base hall in Skirmish mode. */
+export const SKIRMISH_WOOD_PER_SEC = 1;
+
+export function killRewardFor(mode?: GameMode): number {
+  return mode === 'skirmish' ? SKIRMISH_KILL_REWARD : KILL_REWARD;
+}
+
+export function maxCrystalHp(): number {
+  return Math.max(10, Math.round(BED_HP * MATCH_RULES.crystalHp));
+}
 
 export interface Generator { currency: 'crystal'; pos: Vector3; up: Vector3; stored: number; timer: number }
 export interface Bed {
@@ -35,6 +52,7 @@ export interface Bed {
   up: Vector3;
   alive: boolean;
   hp: number;
+  maxHp?: number;
   calm: number;
   /** Two-stage crystal: Stage 1 breaks into a 10 s invulnerable shield, then explodes into Stage 2. */
   stage: 1 | 2;
@@ -52,17 +70,29 @@ export type MatchEvent =
   | { type: 'win'; time: number }
   | { type: 'lose' };
 
+interface HallVolume {
+  team: TeamId | null;
+  origin: Vector3;
+  invQ: Quaternion;
+  center: [number, number];
+  half: number;
+}
+
+const _loc = new Vector3();
+
 /**
  * Bedwars rules for one player's team: crystal generators, wallet, beds, win / lose. Shop and items: economy.ts.
  * Enemy beds start fortified with blocks.
  */
 export class Match {
+  readonly mode: GameMode;
   readonly beds: Bed[];
   readonly generators: Generator[] = [];
   readonly wallet: Record<Currency, number> = { cash: 0, crystal: 0 };
   readonly events: MatchEvent[] = [];
   time = 0;
   result: 'win' | 'lose' | null = null;
+  private woodRegenT = 0;
   /** Optional ray filter so that character capsules (bots) do not block crystals. */
   characterFilter?: (collider: { handle: number }) => boolean;
   /** Living members of a team other than the local player (bots + remote humans). */
@@ -71,9 +101,10 @@ export class Match {
   otherHumansAlive: (team: TeamId) => number = () => 0;
   /** True on non-host P2P clients: host owns generators, bed damage, and match win/loss transitions. */
   remoteClientMode = false;
-  /** Callback fired when a crystal finishes its 10 s Stage 1 invulnerability and revives all dead players/bots. */
+  /** Callback fired when a crystal finishes its 10 s Stage 1 invulnerability and revives dead players/bots of `crystalTeam`. */
   onReviveAll?: (crystalTeam: TeamId) => void;
   private combat: Combat | null = null;
+  private readonly halls: HallVolume[] = [];
 
   /** Own shop kiosk, if the team has a base. */
   readonly shop: Vector3 | null;
@@ -85,13 +116,27 @@ export class Match {
     private playerCollider?: ReturnType<PhysicsWorld['createCollider']>,
     /** Teams whose starter crystal forts should be omitted (humans' teams); defaults to `[team]`. */
     fortifySkipTeams?: TeamId[]) {
+    this.mode = map.mode ?? 'standard';
+    blocks.cubeHalfY = map.cube.halfY ?? map.cube.half;
     const base = map.bases.find((b) => b.team === team);
     this.shop = base ? new Vector3(...base.shop) : null;
     this.shops = map.bases.filter((b) => b.team === team || b.team === '').map((b) => new Vector3(...b.shop));
+    const maxHp = maxCrystalHp();
     this.beds = map.statues.map((s) => ({
       team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up),
-      alive: true, hp: BED_HP, calm: 0, stage: 1 as const, invulnT: 0,
+      alive: true, hp: maxHp, maxHp, calm: 0, stage: 1 as const, invulnT: 0,
     }));
+    for (const f of map.faces) {
+      const nav = map.nav[f.id];
+      if (!nav?.hall) continue;
+      this.halls.push({
+        team: (f.team as TeamId) || null,
+        origin: new Vector3(...f.origin),
+        invQ: new Quaternion(...f.quat).invert(),
+        center: nav.hall.c,
+        half: nav.hall.half ?? HALL_HALF,
+      });
+    }
     blocks.crystals = this.beds;
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
     // fortify beds of teams without human players so nobody spawns trapped inside fort blocks
@@ -104,6 +149,20 @@ export class Match {
       }
     }
     blocks.refresh();
+  }
+
+  /** Is `pos` inside any team base hall (or specifically `team`'s hall if passed)? */
+  isInsideBaseHall(pos: Vector3, team?: TeamId | string): boolean {
+    for (const h of this.halls) {
+      if (team && h.team && h.team !== team) continue;
+      _loc.copy(pos).sub(h.origin).applyQuaternion(h.invQ);
+      if (_loc.y >= -0.5 && _loc.y <= HALL_H + 0.5
+        && Math.abs(_loc.x - h.center[0]) <= h.half
+        && Math.abs(_loc.z - h.center[1]) <= h.half) {
+        return true;
+      }
+    }
+    return false;
   }
 
   bed(team: TeamId) {
@@ -120,7 +179,8 @@ export class Match {
   /** A crystal takes `damage` (final HP); Stage 1 breaks into a 10 s invulnerable phase, Stage 2 breaks for good. */
   damageBed(team: TeamId, damage: number, byPlayer = false) {
     const bed = this.bed(team);
-    if (!bed.alive || bed.invulnT > 0 || this.result) return;
+    if (!bed || !bed.alive || bed.invulnT > 0 || this.result) return;
+    const maxHp = bed.maxHp ?? maxCrystalHp();
     bed.hp = Math.max(0, bed.hp - damage);
     bed.calm = 0;
     this.events.push({ type: 'bedHit', team, hp: bed.hp, byPlayer });
@@ -128,7 +188,7 @@ export class Match {
       if (bed.stage === 1) {
         bed.stage = 2;
         bed.invulnT = CRYSTAL_INVULN_TIME;
-        bed.hp = BED_HP;
+        bed.hp = maxHp;
         bed.calm = 0;
         this.events.push({ type: 'bedStage1Broken', team, byPlayer });
       } else {
@@ -138,13 +198,14 @@ export class Match {
   }
 
   get ownBedAlive() {
-    return this.bed(this.team).alive;
+    return this.bed(this.team)?.alive ?? false;
   }
 
   /** A team is out when its bed is gone and nobody of it is alive. */
   isOut(team: TeamId) {
     if (team === this.team) return this.result === 'lose';
-    return !this.bed(team).alive && this.membersAlive(team) === 0;
+    const b = this.bed(team);
+    return (!b || !b.alive) && this.membersAlive(team) === 0;
   }
 
   /** Enemy teams still in the game. */
@@ -167,13 +228,35 @@ export class Match {
     }
   }
 
-  /** Generators + pickup + crystal stage transition. Runs at the simulation tick. */
-  tick(dt: number, playerPos: Vector3) {
+  /** Generators + pickup + crystal stage transition + base hall healing + Skirmish base wood regen. Runs at the simulation tick. */
+  tick(dt: number, playerPos: Vector3, playerAlive = true) {
     if (!this.result) this.time += dt;
     if (this.remoteClientMode) return;
     this.checkWin();
+    // Skirmish mode: 1 wood block per second regenerated while standing inside own base hall
+    if (this.mode === 'skirmish' && playerAlive && this.isInsideBaseHall(playerPos, this.team)) {
+      this.woodRegenT += dt;
+      if (this.woodRegenT >= 1) {
+        const gain = Math.floor(this.woodRegenT);
+        this.woodRegenT -= gain;
+        this.blocks.inventory.wood += gain * SKIRMISH_WOOD_PER_SEC;
+      }
+    } else {
+      this.woodRegenT = 0;
+    }
+    // +2 HP/s to everyone standing inside a base hall
+    if (this.combat) {
+      for (const tg of this.combat.targets) {
+        if (!tg.alive || tg.npc) continue;
+        const maxHp = tg.maxHp ?? MAX_HP * MATCH_RULES.playerHp;
+        if (tg.hp < maxHp && this.isInsideBaseHall(tg.center)) {
+          tg.hp = Math.min(maxHp, tg.hp + BASE_HEAL_RATE * dt);
+        }
+      }
+    }
     for (const b of this.beds) {
       if (!b.alive) continue;
+      const maxHp = b.maxHp ?? maxCrystalHp();
       if (b.invulnT > 0) {
         b.invulnT = Math.max(0, b.invulnT - dt);
         if (b.invulnT === 0) {
@@ -181,9 +264,9 @@ export class Match {
         }
         continue;
       }
-      if (b.hp >= BED_HP) continue;
+      if (b.hp >= maxHp) continue;
       b.calm += dt;
-      if (b.calm >= BED_REGEN.delay) b.hp = Math.min(BED_HP, b.hp + BED_REGEN.rate * dt);
+      if (b.calm >= BED_REGEN.delay) b.hp = Math.min(maxHp, b.hp + BED_REGEN.rate * dt);
     }
     for (const g of this.generators) {
       const def = GENERATORS[g.currency];
@@ -198,8 +281,9 @@ export class Match {
     }
     const n = this.collect(playerPos);
     if (n > 0) {
-      this.wallet.crystal += n;
-      this.events.push({ type: 'pickup', currency: 'crystal', amount: n });
+      const reward = Math.max(1, Math.round(n * MATCH_RULES.reward));
+      this.wallet.crystal += reward;
+      this.events.push({ type: 'pickup', currency: 'crystal', amount: reward });
     }
   }
 
@@ -251,7 +335,7 @@ export class Match {
 
   destroyBed(team: TeamId, byPlayer = false) {
     const bed = this.bed(team);
-    if (!bed.alive) return;
+    if (!bed || !bed.alive) return;
     bed.alive = false;
     bed.hp = 0;
     bed.invulnT = 0;
@@ -259,17 +343,22 @@ export class Match {
     this.checkWin();
   }
 
-  /** Stage 1 invulnerability ended: explode, stun all enemies within 10 m, and revive all dead players/fighters. */
+  /**
+   * Stage 1 invulnerability ended: explode, deal 100% damage + stun to all enemies within 10 m,
+   * and revive ONLY dead fighters belonging to `bed.team`.
+   */
   private triggerCrystalBlast(bed: Bed) {
     this.events.push({ type: 'bedStageBlast', team: bed.team, pos: bed.pos.clone() });
     if (this.combat) {
       this.combat.events.push({ type: 'explode', pos: bed.pos.clone(), radius: CRYSTAL_BLAST_RADIUS });
       for (const tg of this.combat.targets) {
-        if (tg.alive && tg.team !== bed.team && tg.center.distanceTo(bed.pos) <= CRYSTAL_BLAST_RADIUS) {
+        if (tg.alive && tg.team !== bed.team && !tg.npc && tg.center.distanceTo(bed.pos) <= CRYSTAL_BLAST_RADIUS) {
           tg.stun = Math.max(tg.stun ?? 0, CRYSTAL_STUN_TIME);
-        } else if (!tg.npc && !tg.alive) {
+          const lethal = tg.maxHp ?? MAX_HP * MATCH_RULES.playerHp;
+          this.combat.damage(tg, lethal, -1, false, bed.pos, { raw: true, from: bed.pos, weapon: 'crystal', cause: 'crystal' });
+        } else if (!tg.npc && !tg.alive && tg.team === bed.team) {
           tg.alive = true;
-          tg.hp = MAX_HP;
+          tg.hp = tg.maxHp ?? MAX_HP * MATCH_RULES.playerHp;
           tg.respawnIn = -1;
         }
       }

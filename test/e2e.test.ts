@@ -129,7 +129,15 @@ function trackErrors(page: Awaited<ReturnType<BrowserContext['newPage']>>, label
 }
 
 const server = await startStaticServer();
+const chromeCandidates = [
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  chromium.executablePath(),
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+].filter((p): p is string => !!p && existsSync(p));
 const browser = await chromium.launch({
+  executablePath: chromeCandidates[0],
   args: [
     '--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-dev-shm-usage',
     '--disable-features=WebRtcHideLocalIpsWithMdns',
