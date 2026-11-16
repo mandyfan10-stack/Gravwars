@@ -57,14 +57,14 @@ export class MenuBackdrop {
     this.dust.frustumCulled = false;
   }
 
-  /** Build the world for (spawn team, playing teams) and start the camera. */
-  start(assets: GameAssets, spawnTeam: string, teams: readonly string[]) {
-    const map = generateMap(1337, spawnTeam, teams);
+  /** Build the world for (spawn team, playing teams, seed) and start the camera. */
+  start(assets: GameAssets, spawnTeam: string, teams: readonly string[], seed = 1337) {
+    const map = generateMap(seed, spawnTeam, teams);
     const mapView = buildMapView(map);
     const propView = buildPropView(map, assets);
     this.gfx.scene.add(mapView.group, propView, this.dust);
     this.world = { map, mapView, propView };
-    this.key = MenuBackdrop.keyOf(spawnTeam, teams);
+    this.key = MenuBackdrop.keyOf(seed, spawnTeam, teams);
     mapView.cull(this.gfx.camera.position, Infinity);
     this.running = true;
     this.last = performance.now();
@@ -73,10 +73,10 @@ export class MenuBackdrop {
   }
 
   /**
-   * Stop the camera. The world is handed over when it was built for the same teams (it then stays in the scene),
+   * Stop the camera. The world is handed over when it was built for the same teams & seed (it then stays in the scene),
    * else it is removed and freed and null comes back.
    */
-  take(spawnTeam: string, teams: readonly string[]): BuiltWorld | null {
+  take(spawnTeam: string, teams: readonly string[], seed = 1337): BuiltWorld | null {
     this.running = false;
     document.body.classList.remove('backdrop', 'boot');
     this.gfx.scene.remove(this.dust);
@@ -84,14 +84,14 @@ export class MenuBackdrop {
     const w = this.world;
     this.world = null;
     if (!w) return null;
-    if (this.key === MenuBackdrop.keyOf(spawnTeam, teams)) return w;
+    if (this.key === MenuBackdrop.keyOf(seed, spawnTeam, teams)) return w;
     this.gfx.scene.remove(w.mapView.group, w.propView);
     for (const g of [w.mapView.group, w.propView]) free(g);
     return null;
   }
 
-  private static keyOf(spawnTeam: string, teams: readonly string[]) {
-    return `${spawnTeam}|${[...teams].sort().join(',')}`;
+  private static keyOf(seed: number, spawnTeam: string, teams: readonly string[]) {
+    return `${seed}|${spawnTeam}|${[...teams].sort().join(',')}`;
   }
 
   /** The shot (tunable from the console): see `pose`. */

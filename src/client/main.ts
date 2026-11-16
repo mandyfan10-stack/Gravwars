@@ -329,7 +329,7 @@ async function main() {
   // the menu's world when the lobby still matches it (no second build): its last frame stays up while the rest is
   // built and the start flight leaves from the menu's camera; else a black "building" note
   const menuEye = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
-  const built = backdrop.take(isNetworkMatch ? '__net__' : myTeam, isNetworkMatch ? [] : activeTeams(cfg));
+  const built = backdrop.take(isNetworkMatch ? canonicalMapTeam : myTeam, activeTeams(cfg), matchSeed);
   if (!built) document.body.classList.add('building');
   await new Promise((r) => setTimeout(r, 30)); // let the hidden menu / the "building" note paint
 
@@ -603,7 +603,7 @@ async function main() {
   const ambient: Area = { base: 0, forest: 0, park: 0, city: 0, water: 0 };
   const ambience = new Ambience(audio);
   (window as unknown as Record<string, unknown>).__game = {
-    sim, local, input, camera, renderer, scene, gfx, combat, props, deathScreen, weapons: player.weapons, fx, blocks, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, spectator, music, ready: true,
+    sim, local, input, camera, renderer, scene, gfx, combat, props, deathScreen, weapons: player.weapons, fx, blocks, build, match, bots, npcs, map, hud, icon, eco, pockets, pickups, ui, hands, throws, cursor, player, npcView, ambient, ambience, audio, spectator, music, reusedBackdrop: !!built, ready: true,
     shoot(ticks = 1, weapon?: WeaponId) {
       if (weapon) player.pendingSelect = weapon;
       player.forceFire = ticks;

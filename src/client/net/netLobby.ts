@@ -286,7 +286,7 @@ export class NetLobbyController {
   startMatch() {
     if (!this.isHost || this.matchStarted) return;
     this.matchStarted = true;
-    const seed = Math.floor(Math.random() * 1_000_000);
+    const seed = 1337;
     const active = activeTeams(this.lobby.config);
     const mapTeam = playerTeam(this.lobby.config, this.myPlayerId) ?? active[0] ?? 'red';
     const skipFortTeams = humanTeams(this.lobby.config);

@@ -9,6 +9,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "tsx test/sim.test.ts",
+    "test:sim": "tsx test/match.test.ts",
+    "test:e2e": "tsx test/e2e.test.ts",
+    "test:all": "npm test && npm run test:sim && npm run test:e2e",
     "shots": "tsx scripts/shots.ts shots"
   },
   "dependencies": {
