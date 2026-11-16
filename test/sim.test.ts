@@ -5,7 +5,7 @@ import {
 } from '../src/shared/blocks';
 import { wishlist } from '../src/shared/botShop';
 import { applyDifficulty, BOT, BotManager } from '../src/shared/bots';
-import { activeTeams, botRoster, canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, lobbyProblem, parseLobby, playerTeam, seatPlayer } from '../src/shared/lobby';
+import { activeTeams, botRoster, canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, lobbyProblem, parseLobby, playerTeam, sanitizeLocalLobby, seatPlayer } from '../src/shared/lobby';
 import { BED_HP, CRYSTAL_STUN_TIME, GENERATORS, Match } from '../src/shared/match';
 import { APPLE_HEAL, BUILDER_WOOD, Economy, ITEMS, MAX_MEDKITS, Pickups, PICKUPS, SHOP, SHOP_ROWS } from '../src/shared/economy';
 import { holdables, Hotbar } from '../src/shared/inventory';
@@ -1453,6 +1453,11 @@ for (const deg of [20, 37, 45]) {
     steps++;
   }
   check('firstFreeSeat returns null once all seats belong to humans', nextSeat === null && steps === 18);
+
+  const sanitized = sanitizeLocalLobby(lc, 'p1');
+  const remainingPlayers = Object.values(sanitized.seats).flat().filter((s) => s?.kind === 'player');
+  check('sanitizeLocalLobby strips stale remote players and keeps only local player seat without network id',
+    remainingPlayers.length === 1 && sanitized.seats.blue[2]?.kind === 'player' && !sanitized.seats.blue[2].id);
 
   // Match fortifySkipTeams + 2v2 co-op & 1v1 0-bot elimination
   const fw1 = buildPhysicsWorld(R, map);

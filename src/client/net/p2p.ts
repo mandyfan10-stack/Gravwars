@@ -62,6 +62,7 @@ export class P2PTransport {
   private peer: Peer | null = null;
   private connections = new Map<string, DataConnection>();
   private peerRtts = new Map<string, number>();
+  private lastSeen = new Map<string, number>();
   private hostConn: DataConnection | null = null;
   private pingInterval: number | null = null;
   private reconnectTimer: number | null = null;
@@ -249,6 +250,7 @@ export class P2PTransport {
       if (wasOpen) this.connections.delete(conn.peer);
       if (this.hostConn === conn) this.hostConn = null;
       this.peerRtts.delete(conn.peer);
+      this.lastSeen.delete(conn.peer);
       if (wasOpen) this.events.onPeerLeave?.(conn.peer);
       else onClosedBeforeOpen?.();
     };
@@ -276,12 +278,14 @@ export class P2PTransport {
         try { prev.close(); } catch {}
       }
       this.connections.set(conn.peer, conn);
+      this.lastSeen.set(conn.peer, Date.now());
       watchIce();
       this.events.onPeerJoin?.(conn.peer);
       onOpen?.();
     });
 
     conn.on('data', (raw: unknown) => {
+      this.lastSeen.set(conn.peer, Date.now());
       if (!raw || typeof raw !== 'object' || !('kind' in raw)) return;
       const packet = raw as NetPacket;
       if (packet.kind === 'ping') {
@@ -313,6 +317,18 @@ export class P2PTransport {
     if (this.pingInterval !== null) clearInterval(this.pingInterval);
     this.pingInterval = window.setInterval(() => {
       const now = Date.now();
+      for (const [id, conn] of [...this.connections]) {
+        const ice = conn.peerConnection?.iceConnectionState;
+        const last = this.lastSeen.get(id) ?? now;
+        if (ice === 'disconnected' && now - last > 5000) {
+          try { conn.close(); } catch {}
+          this.connections.delete(id);
+          if (this.hostConn === conn) this.hostConn = null;
+          this.peerRtts.delete(id);
+          this.lastSeen.delete(id);
+          this.events.onPeerLeave?.(id);
+        }
+      }
       if (this.isHost) {
         this.broadcast({ kind: 'ping', t: now });
       } else if (this.hostConn?.open) {
@@ -376,6 +392,7 @@ export class P2PTransport {
     }
     this.connections.clear();
     this.peerRtts.clear();
+    this.lastSeen.clear();
     this.hostConn = null;
     this.destroyPeerOnly();
   }

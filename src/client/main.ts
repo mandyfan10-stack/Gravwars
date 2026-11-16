@@ -10,7 +10,7 @@ import { BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { faceByUp, faceOfTeam, generateMap, MapData } from '../shared/map';
-import { activeTeams, botRoster, humanTeams, playerTeam } from '../shared/lobby';
+import { activeTeams, botRoster, humanTeams, playerTeam, sanitizeLocalLobby } from '../shared/lobby';
 import { NpcManager } from '../shared/npcs';
 import { Economy, Pickups } from '../shared/economy';
 import { KILL_REWARD, Match } from '../shared/match';
@@ -209,6 +209,7 @@ async function main() {
   });
 
   function cleanupNetworkRoom(resetUi = true, message?: string, isError = false) {
+    const prevId = myNetworkId;
     netTransport?.close();
     netTransport = null;
     netLobby = null;
@@ -217,12 +218,17 @@ async function main() {
     myNetworkId = '';
     skipFortTeams = [];
     pendingNetStart = false;
+    const cleaned = sanitizeLocalLobby(lobby.config, prevId);
+    lobby.config.seats = cleaned.seats;
     lobby.isNetworkClient = false;
     lobby.localPlayerId = '';
     lobby.onSeatRequest = undefined;
+    lobby.render();
     if (resetUi) menu.resetNetworkUi(message, isError);
     syncStart();
   }
+
+  window.addEventListener('pagehide', () => { netTransport?.close(); });
 
   function attachNetLobby(transport: P2PTransport, name: string) {
     netLobby = new NetLobbyController(transport, lobby, {

@@ -1,15 +1,15 @@
 import { DIFFICULTY_LABEL, type Difficulty } from '../shared/bots';
 import { escapeHtml } from '../shared/escape';
-import { activeTeams, LobbyConfig, lobbyProblem, parseLobby, seatPlayer, TEAM_SEATS } from '../shared/lobby';
+import { activeTeams, LobbyConfig, lobbyProblem, parseLobby, sanitizeLocalLobby, seatPlayer, TEAM_SEATS } from '../shared/lobby';
 import { TeamId, TEAMS } from '../shared/teams';
 
 const KEY = 'gravity-bedwars-lobby';
 const ORDER: Difficulty[] = ['easy', 'normal', 'hard'];
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
 
-/** The saved line-up of the last match (or the default one). */
+/** The saved line-up of the last match (or the default one), stripped of stale network peer seats. */
 export function loadLobby(difficulty: Difficulty): LobbyConfig {
-  return parseLobby(localStorage.getItem(KEY), difficulty);
+  return sanitizeLocalLobby(parseLobby(localStorage.getItem(KEY), difficulty));
 }
 
 /**
@@ -52,7 +52,7 @@ export class Lobby {
   }
 
   save() {
-    localStorage.setItem(KEY, JSON.stringify(this.config));
+    localStorage.setItem(KEY, JSON.stringify(sanitizeLocalLobby(this.config, this.localPlayerId)));
   }
 
   localPlayerId = '';

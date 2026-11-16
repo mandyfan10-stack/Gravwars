@@ -242,6 +242,36 @@ try {
       null, { timeout: 15_000 });
     check('p2p: client joins via ?room= invite link and syncs lobby seat/name with host', true);
 
+    // Leave & recreate room must never leave stale ghost player seats
+    await clientPage.click('#net-leave-btn');
+    await hostPage.waitForFunction(() => !(document.getElementById('menu-lobby')?.textContent ?? '').includes('GuestE2E'),
+      null, { timeout: 15_000 });
+    await hostPage.click('#net-leave-btn');
+    await hostPage.click('#net-create-btn');
+    await hostPage.waitForFunction(() => {
+      const el = document.getElementById('net-room-code');
+      const info = document.getElementById('net-room-info');
+      return !!el && !!info && !info.hidden && (el.textContent?.trim().length ?? 0) >= 4;
+    }, null, { timeout: 20_000 });
+    const roomCode2 = (await hostPage.textContent('#net-room-code'))?.trim() ?? '';
+    const seatCountsAfterRecreate = await hostPage.evaluate(() => ({
+      you: document.querySelectorAll('#menu-lobby .seat.you').length,
+      remote: document.querySelectorAll('#menu-lobby .seat.remote').length,
+    }));
+    check('p2p: leaving and recreating a room clears all stale player seats',
+      seatCountsAfterRecreate.you === 1 && seatCountsAfterRecreate.remote === 0 && roomCode2.length >= 4,
+      JSON.stringify(seatCountsAfterRecreate));
+
+    await clientPage.fill('#net-join-input', roomCode2);
+    await clientPage.click('#net-join-btn');
+    await clientPage.waitForFunction(() => {
+      const lobbyHtml = document.getElementById('menu-lobby')?.textContent ?? '';
+      const start = document.getElementById('start-game') as HTMLButtonElement | null;
+      return lobbyHtml.includes('HostE2E') && !!start && start.disabled && start.textContent?.includes('Ждём хоста');
+    }, null, { timeout: 25_000 });
+    await hostPage.waitForFunction(() => (document.getElementById('menu-lobby')?.textContent ?? '').includes('GuestE2E'),
+      null, { timeout: 15_000 });
+
     await hostPage.waitForFunction(() => {
       const btn = document.getElementById('start-game') as HTMLButtonElement | null;
       return !!btn && !btn.disabled;

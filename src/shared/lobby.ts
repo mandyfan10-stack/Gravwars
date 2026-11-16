@@ -113,6 +113,34 @@ export function removePlayerSeat(c: LobbyConfig, playerId: string) {
   }
 }
 
+/**
+ * Strip remote/stale network player seats so only the local player seat (`{ kind: 'player' }`) and bots remain.
+ * Used when saving/loading `localStorage` and when leaving or closing a P2P room.
+ */
+export function sanitizeLocalLobby(c: LobbyConfig, keepPlayerId = ''): LobbyConfig {
+  const seats = Object.fromEntries(TEAMS.map((t) => [t.id, [...c.seats[t.id]]])) as Record<TeamId, Seat[]>;
+  let keptTeam: TeamId | null = null;
+  let keptIdx = -1;
+  for (const t of TEAMS) {
+    for (let i = 0; i < TEAM_SEATS; i++) {
+      const s = seats[t.id][i];
+      if (s?.kind !== 'player') continue;
+      if (keepPlayerId && s.id === keepPlayerId) {
+        keptTeam = t.id;
+        keptIdx = i;
+      } else if (!keptTeam && !s.id) {
+        keptTeam = t.id;
+        keptIdx = i;
+      }
+      seats[t.id][i] = null;
+    }
+  }
+  const team = keptTeam ?? 'red';
+  const idx = keptIdx >= 0 ? keptIdx : Math.max(0, seats[team].findIndex((s) => s === null));
+  seats[team][idx] = { kind: 'player' };
+  return { seats, ...(c.infiniteMoney ? { infiniteMoney: true } : {}) };
+}
+
 /** Parse a stored config; anything broken → the default. */
 export function parseLobby(raw: string | null, difficulty: Difficulty = 'normal'): LobbyConfig {
   try {

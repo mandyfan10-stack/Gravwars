@@ -68,13 +68,13 @@ export class NetLobbyController {
 
     if (this.isHost) {
       this.myPlayerId = this.net.myId;
-      // Clear any leftover single-player seat without an id from localStorage
+      const hostTeam: TeamId = playerTeam(this.lobby.config, this.myPlayerId) ?? 'red';
+      // Clear ALL previous player seats (stale local/remote seats from prior rooms or reloads)
       for (const t of TEAMS) {
         this.lobby.config.seats[t.id] = this.lobby.config.seats[t.id].map((s) =>
-          s?.kind === 'player' && !s.id ? null : s,
+          s?.kind === 'player' ? null : s,
         );
       }
-      const hostTeam: TeamId = playerTeam(this.lobby.config, this.myPlayerId) ?? 'red';
       const hostLabel = `${this.myName} (Хост)`;
       this.players = [{
         id: this.myPlayerId,
