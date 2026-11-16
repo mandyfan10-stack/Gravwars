@@ -364,11 +364,11 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
   // the crystal on its pedestal + fortification ring (pedestal stays strictly inside ±1.50 so fort blocks at ±2 never clip or Z-fight)
   b.box(h, 0, SW + 0.05, 0, 1.48, 0.05, 1.48, DARK, 'metal', false);
   b.box(h, 0, SW + 0.12, 0, 1.44, 0.02, 1.44, team.color, 'glow', false);
-  b.block(h, 0, SW + 0.14, 0, 1.36, 0.53, 1.36, 0xd8d2c4, 'stone');
-  b.block(h, 0, SW + 1.2, 0, 0.94, 0.4, 0.94, 0xe4dfd2, 'stone');
-  const cy = SW + 4;
+  b.block(h, 0, SW + 0.14, 0, 1.32, 0.25, 1.32, 0xd8d2c4, 'stone');
+  b.block(h, 0, SW + 0.64, 0, 0.90, 0.18, 0.90, 0xe4dfd2, 'stone');
+  const cy = SW + 2.8;
   const fort: StatueDef['fort'] = [];
-  const layers: BlockMaterial[] = ['stone', 'stone', 'metal'];
+  const layers: BlockMaterial[] = ['stone', 'metal'];
   layers.forEach((material, y) => {
     for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++)
       if (Math.abs(i) === 2 || Math.abs(j) === 2) fort.push({ pos: h.p(i, SW + 0.5 + y, j), material });

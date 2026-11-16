@@ -1,5 +1,5 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
-import { PLAYER_HALF_SEGMENT, PLAYER_HEIGHT, PLAYER_RADIUS } from './constants';
+import { PLAYER_HALF_SEGMENT, PLAYER_HEIGHT, PLAYER_RADIUS, WORLD } from './constants';
 import { frameForUp } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
 import type { TeamId } from './teams';
@@ -19,10 +19,12 @@ export const BLOCK_REACH = 7.5;
 /** Material in the inventory at the start (one piece costs PIECE_COST). */
 export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 30, stone: 0, metal: 0 };
 
-/** Build pieces (chosen in the radial menu): wall, floor, ramp. */
+/** Build pieces (macro structures): wall, floor, ramp. */
 export type PieceKind = 'wall' | 'floor' | 'ramp';
 export const PIECE_KINDS: PieceKind[] = ['wall', 'floor', 'ramp'];
-export const PIECE_LABEL: Record<PieceKind, string> = { wall: 'Стена', floor: 'Пол', ramp: 'Лестница' };
+export type BlockKind = 'block' | PieceKind;
+export const BUILD_KINDS: BlockKind[] = ['wall', 'block', 'floor', 'ramp'];
+export const PIECE_LABEL: Record<BlockKind, string> = { block: 'Блок 1×1', wall: 'Стена', floor: 'Пол', ramp: 'Лестница' };
 /** Horizontal grid cell, m (square cells: width = height = 4.5 m, +50% larger, so walls are square and ramps are 45°). */
 export const PIECE_CELL = 4.5;
 /** Height of one building level (wall height, ramp rise), m. */
@@ -34,8 +36,6 @@ export const PIECE_COST = 1;
 export const BRIDGE_COST = PIECE_COST;
 /** Piece HP = material HP × this. */
 export const PIECE_HP_MUL = 2.5;
-
-export type BlockKind = 'block' | PieceKind;
 
 export interface Block {
   id: number;
@@ -58,7 +58,7 @@ export interface Block {
 }
 
 export interface PiecePlan {
-  kind: PieceKind;
+  kind: BlockKind;
   center: Vector3;
   half: Vector3;
   quat: Quaternion;
@@ -66,7 +66,7 @@ export interface PiecePlan {
   level: number;
 }
 
-export type PlaceResult = 'ok' | 'resources' | 'player' | 'occupied';
+export type PlaceResult = 'ok' | 'resources' | 'player' | 'occupied' | 'blocked';
 
 type Collider = ReturnType<PhysicsWorld['createCollider']>;
 const HALF = BLOCK_SIZE / 2;
@@ -159,16 +159,30 @@ export class BlockSystem {
 
   /** Player + bot capsules. They move without a physics step, so they are tested directly, not via the query tree. */
   readonly characters: Collider[] = [];
+  /** Team crystals (optional): prevents placing 1×1 blocks inside a crystal's glowing core. */
+  crystals: readonly { pos: Vector3; up: Vector3; alive?: boolean }[] = [];
   private isCharacter(c: { handle: number }) {
     return this.characters.some((ch) => ch.handle === c.handle);
   }
 
+  private hitsCrystal(center: Vector3): boolean {
+    for (const c of this.crystals) {
+      if (c.alive === false) continue;
+      _l.copy(center).sub(c.pos);
+      const along = _l.dot(c.up);
+      if (along < -1.75 || along > 1.2) continue;
+      _l.addScaledVector(c.up, -along);
+      if (_l.lengthSq() < 0.88 * 0.88) return true;
+    }
+    return false;
+  }
+
   /**
-   * Where a piece of `kind` goes for a player at `pos` looking along `facing`: on a 4 m grid aligned with the gravity,
-   * the first cell boundary in front (wall) or the cell behind it (floor at feet level, ramp rising away).
-   * The level is the ground under the feet; standing on a piece it snaps to that piece's levels, so ramps chain.
+   * Where a build item of `kind` goes: `block` snaps to the 1 m crystal/surface lattice under the crosshair;
+   * macro pieces (`wall`, `floor`, `ramp`) snap onto the 4.5 m grid aligned with gravity.
    */
-  plan(kind: PieceKind, pos: Vector3, up: Vector3, facing: Vector3): PiecePlan | null {
+  plan(kind: BlockKind, pos: Vector3, up: Vector3, facing: Vector3, eye = pos, viewDir = facing): PiecePlan | null {
+    if (kind === 'block') return this.planBlock(eye, viewDir, up);
     const upAxis = axisOf(up);
     const q = frameForUp(upAxis);
     const qi = q.clone().invert();
@@ -187,13 +201,67 @@ export class BlockSystem {
     if (ground) {
       level = lp.y - ground.timeOfImpact;
       const under = this.blocks.get(ground.collider.handle);
-      if (under?.key && under.key.startsWith(`${axisKey(upAxis)}|`))
+      if (under && under.kind !== 'block' && under.key?.startsWith(`${axisKey(upAxis)}|`))
         level = under.level + Math.round((feet - under.level) / PIECE_LEVEL) * PIECE_LEVEL;
     }
     const a = lp[along] * sg;
     const bnd = Math.ceil((a + PLAYER_RADIUS + 0.25) / PIECE_CELL) * PIECE_CELL;
     const b = (Math.floor(lp[side] / PIECE_CELL) + 0.5) * PIECE_CELL;
     return piecePlan(kind, upAxis, along, sg, bnd, b, level);
+  }
+
+  /** Voxel placement for a 1×1×1 fortification cube along the aimed surface or existing block. */
+  private planBlock(eye: Vector3, dir: Vector3, up: Vector3): PiecePlan | null {
+    if (dir.lengthSq() < 1e-6) return null;
+    const d = dir.clone().normalize();
+    const hit = this.world.castRayAndGetNormal(new this.R.Ray(eye, d), BLOCK_REACH, true, undefined, undefined, undefined, undefined,
+      (c) => !this.isCharacter(c));
+    if (!hit) return null;
+    const upAxis = axisOf(up);
+    const q = frameForUp(upAxis);
+    const qi = q.clone().invert();
+    const hitNormal = new Vector3(hit.normal.x, hit.normal.y, hit.normal.z);
+    const hitBlock = this.blocks.get(hit.collider.handle);
+    let center: Vector3;
+    if (hitBlock && hitBlock.kind === 'block') {
+      const bqInv = hitBlock.quat.clone().invert();
+      const step = axisOf(hitNormal.clone().applyQuaternion(bqInv)).applyQuaternion(hitBlock.quat);
+      center = hitBlock.center.clone().addScaledVector(step, BLOCK_SIZE);
+    } else {
+      const hitPos = eye.clone().addScaledVector(d, hit.timeOfImpact);
+      const p = hitPos.clone().addScaledVector(hitNormal, HALF);
+      const lp = p.clone().applyQuaternion(qi);
+      const lx = Math.floor(lp.x + 0.5);
+      const lz = Math.floor(lp.z + 0.5);
+      const nLocal = hitNormal.clone().applyQuaternion(qi);
+      let ly: number;
+      if (Math.abs(nLocal.y) > 0.7) {
+        ly = lp.y;
+      } else {
+        const castTop = lp.y + 0.45;
+        const downOrigin = new Vector3(lx, castTop, lz).applyQuaternion(q);
+        const down = upAxis.clone().negate();
+        const floorHit = this.world.castRayAndGetNormal(new this.R.Ray(downOrigin, down), 6.5, true, undefined, undefined, undefined, undefined,
+          (c) => !this.isCharacter(c));
+        const floorY = floorHit && floorHit.timeOfImpact > 0.01 && (floorHit.normal.x * upAxis.x + floorHit.normal.y * upAxis.y + floorHit.normal.z * upAxis.z) > 0.7
+          ? castTop - floorHit.timeOfImpact
+          : -WORLD.cubeHalf + 0.15;
+        ly = floorY + Math.floor(Math.max(0, lp.y - floorY)) + HALF;
+      }
+      center = new Vector3(lx, ly, lz).applyQuaternion(q);
+      if (!this.isFree(center) && !this.findByPos(center, 0.25)) {
+        const push = axisOf(nLocal).applyQuaternion(q);
+        const alt = center.clone().addScaledVector(push, BLOCK_SIZE);
+        if (this.isFree(alt)) center.copy(alt);
+      }
+    }
+    const r4 = (v: number) => Math.round(v * 10000) / 10000;
+    center.set(r4(center.x), r4(center.y), r4(center.z));
+    const localY = center.clone().applyQuaternion(qi).y;
+    const level = Math.round((localY - HALF) * 1000) / 1000;
+    const r2 = (v: number) => Math.round(v * 100);
+    const key = `${axisKey(upAxis)}|block|${r2(center.x)},${r2(center.y)},${r2(center.z)}`;
+    return { kind: 'block', center, half: new Vector3(HALF, HALF, HALF), quat: q, key, level };
   }
 
   /** Material a piece costs: one unit, whatever the piece (1 wood = 1 piece; bridges too). */
@@ -205,6 +273,10 @@ export class BlockSystem {
   validate(plan: PiecePlan, material: BlockMaterial, free = false): PlaceResult {
     if (!free && this.inventory[material] < this.costOf(plan)) return 'resources';
     for (const b of this.blocks.values()) if (b.key === plan.key) return 'occupied';
+    if (plan.kind === 'block') {
+      if (this.findByPos(plan.center, 0.25)) return 'occupied';
+      if (!this.isFree(plan.center) || this.hitsCrystal(plan.center)) return 'blocked';
+    }
     const shape = new this.R.Cuboid(plan.half.x, plan.half.y, plan.half.z);
     const capsule = new this.R.Capsule(PLAYER_HALF_SEGMENT, PLAYER_RADIUS);
     for (const ch of this.characters)
@@ -217,7 +289,8 @@ export class BlockSystem {
     if (result !== 'ok') return result;
     const cost = this.costOf(plan);
     if (!free) this.inventory[material] -= cost;
-    this.insert(plan.kind, plan.center, plan.half, plan.quat, material, team, free ? 0 : cost, plan.key, plan.level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
+    const hp = plan.kind === 'block' ? BLOCK_MATERIALS[material].hp : BLOCK_MATERIALS[material].hp * PIECE_HP_MUL;
+    this.insert(plan.kind, plan.center, plan.half, plan.quat, material, team, free ? 0 : cost, plan.key, plan.level, hp);
     const placed = this.findByPos(plan.center, 0.05);
     if (placed) this.onPlace?.(placed);
     return 'ok';
@@ -238,7 +311,9 @@ export class BlockSystem {
 
   /** Unchecked 1 m block (map fortifications). Pass refresh = false when adding many, then call `refresh()`. */
   add(center: Vector3, material: BlockMaterial, team: TeamId | null, refresh = true): Block {
-    return this.insert('block', center, new Vector3(HALF, HALF, HALF), IDENTITY, material, team, 1, null, 0, BLOCK_MATERIALS[material].hp, refresh);
+    const block = this.insert('block', center, new Vector3(HALF, HALF, HALF), IDENTITY, material, team, 1, null, 0, BLOCK_MATERIALS[material].hp, refresh);
+    this.onPlace?.(block);
+    return block;
   }
 
   /** Unchecked piece of any shape (tests, map setups, network sync). */
@@ -252,7 +327,8 @@ export class BlockSystem {
     key: string | null = null,
     level = 0,
   ): Block {
-    return this.insert(kind, center, half, quat, material, team, PIECE_COST, key, level, BLOCK_MATERIALS[material].hp * PIECE_HP_MUL);
+    const hp = kind === 'block' ? BLOCK_MATERIALS[material].hp : BLOCK_MATERIALS[material].hp * PIECE_HP_MUL;
+    return this.insert(kind, center, half, quat, material, team, PIECE_COST, key, level, hp);
   }
 
   private insert(kind: BlockKind, center: Vector3, half: Vector3, quat: Quaternion, material: BlockMaterial, team: TeamId | null,

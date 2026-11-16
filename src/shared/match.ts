@@ -92,6 +92,7 @@ export class Match {
       team: s.team as TeamId, pos: new Vector3(...s.bed), up: new Vector3(...s.up),
       alive: true, hp: BED_HP, calm: 0, stage: 1 as const, invulnT: 0,
     }));
+    blocks.crystals = this.beds;
     for (const c of map.crystalSpots) this.generators.push({ currency: 'crystal', pos: new Vector3(...c.pos), up: new Vector3(...c.up), stored: 0, timer: 0 });
     // fortify beds of teams without human players so nobody spawns trapped inside fort blocks
     const skipFort = new Set<TeamId>(fortifySkipTeams ?? [team]);

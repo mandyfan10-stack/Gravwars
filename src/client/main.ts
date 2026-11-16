@@ -355,8 +355,8 @@ async function main() {
   const npcs = new NpcManager(R, world, map, combat, pickups);
   const throws = new Throws(combat, pickups);
   blocks.characters.push(...npcs.colliders);
-  // the build tool and its blocks come from the shop
-  blocks.inventory.wood = 0;
+  // starter wood lets the player immediately fortify around the crystal; extra packs and upgrades come from the shop
+  blocks.inventory.wood = 16;
 
   // --- rendering
   const mapView = built?.mapView ?? buildMapView(map);

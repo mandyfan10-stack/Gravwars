@@ -7,7 +7,7 @@ const icons: Record<string, string> = {};
 for (const [path, svg] of Object.entries(files)) icons[path.slice(8, -4)] = svg.replace('<svg ', '<svg class="ic" aria-hidden="true" ');
 
 export type IconName =
-  | 'heart' | 'coins' | 'crystal' | 'rifle' | 'grenade' | 'shovel' | 'wind' | 'shop' | 'trophy' | 'skull' | 'wall'
+  | 'heart' | 'coins' | 'crystal' | 'rifle' | 'grenade' | 'shovel' | 'wind' | 'shop' | 'trophy' | 'skull' | 'wall' | 'block'
   | 'stairs' | 'wood' | 'stone' | 'metal' | 'swords' | 'fist' | 'pistol' | 'rod' | 'apple' | 'bottle' | 'fish' | 'ammo'
   | 'shotgun' | 'rocket' | 'hook' | 'kick' | 'crossbow';
 

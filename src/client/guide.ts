@@ -40,7 +40,7 @@ export class Guide {
     const face = this.sim.map.faces.find((f) => f.id === loc.face);
     const id = face?.team as TeamId | null;
     if (!id) return ['neutral', 'Нейтральная грань: генераторы кристаллов на площади в центре, магазины на рынках'];
-    if (id === m.team && loc.hall) return ['home-hall', 'Выходи из зала к краю грани: за бордюром щель у ребра куба, через неё строится мост на соседнюю грань'];
+    if (id === m.team && loc.hall) return ['home-hall', 'Защити кристалл: <kbd>B</kbd> и <kbd>Q</kbd> («Блок 1×1»), ресурсы — в магазине (<kbd>E</kbd>). За краем грани строятся мосты'];
     if (id === m.team) return ['home-street', 'Мост: с края грани полом до угла, потом лестницей вверх по стене соседней грани — и шагни на неё'];
     if (!m.bed(id).alive) return [`done-${id}`, `Кристалл ${team(id)} сломан — добей оставшихся бойцов`];
     if (loc.hall) return [`hall-${id}`, 'Пробей стену вокруг кристалла и ломай его выстрелами или кулаками — только ближе 5 м'];

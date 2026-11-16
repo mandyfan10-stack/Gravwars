@@ -1616,6 +1616,71 @@ for (const deg of [20, 37, 45]) {
     && synced.pos.x === 2 && !synced.alive);
 }
 
+// 1×1 fortification block building & explosion crystal shielding
+{
+  const w = buildPhysicsWorld(R, map);
+  const ps = new PlayerSim(R, w, map, 'red');
+  const bs = new BlockSystem(R, w, ps.mover.collider);
+  bs.inventory.metal = 10;
+  const m = new Match(R, w, map, bs, 'red', ps.mover.collider);
+  const redBed = m.bed('red');
+  const rup = redBed.up.clone();
+  const qf = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), rup);
+  const side = new Vector3(1, 0, 0).applyQuaternion(qf);
+  const redFloor = redBed.pos.clone().addScaledVector(rup, -2.8);
+  const eye1 = redFloor.clone().addScaledVector(rup, 1.625).addScaledVector(side, 4.5);
+  const floorAim = redFloor.clone().addScaledVector(side, 2);
+  const dir1 = floorAim.clone().sub(eye1).normalize();
+  const b1 = bs.plan('block', eye1, rup, dir1, eye1, dir1);
+  const exp1 = floorAim.clone().addScaledVector(rup, 0.5);
+  check('1x1 block plans flush on crystal hall fort grid next to pedestal',
+    !!b1 && b1.kind === 'block' && b1.center.distanceTo(exp1) < 0.05 && bs.place(b1, 'metal', 'red') === 'ok',
+    b1 ? `d=${b1.center.distanceTo(exp1).toFixed(3)}` : 'null');
+  const placed1 = b1 && bs.findByPos(b1.center, 0.1);
+  check('1x1 block has exact material HP and spends 1 unit',
+    !!placed1 && placed1.maxHp === BLOCK_MATERIALS.metal.hp && bs.inventory.metal === 9);
+
+  const eye2 = redFloor.clone().addScaledVector(rup, 2.5).addScaledVector(side, 4.5);
+  const topAim = b1!.center.clone().addScaledVector(rup, 0.5);
+  const dir2 = topAim.clone().sub(eye2).normalize();
+  const b2 = bs.plan('block', eye2, rup, dir2, eye2, dir2);
+  const exp2 = b1!.center.clone().addScaledVector(rup, 1);
+  check('1x1 block stacks cleanly on top of existing block',
+    !!b2 && b2.center.distanceTo(exp2) < 0.05 && bs.place(b2, 'metal', 'red') === 'ok');
+  const h2 = bs.findByPos(b2!.center, 0.1)!.collider.handle;
+  check('1x1 block reclaim refunds 1 material',
+    !!bs.reclaim(h2, 'red') && bs.inventory.metal === 9);
+
+  const corePlan = {
+    kind: 'block' as const, center: redBed.pos.clone(), half: new Vector3(0.5, 0.5, 0.5),
+    quat: new Quaternion(), key: 'core|test', level: 0,
+  };
+  check('1x1 block cannot be placed inside the crystal core',
+    bs.validate(corePlan, 'metal', true) === 'blocked');
+
+  // Unbroken fort wall blocks explosion damage to the crystal; broken wall lets it through
+  const ew = new R.World({ x: 0, y: 0, z: 0 });
+  ew.createCollider(R.ColliderDesc.cuboid(20, 1, 20).setTranslation(0, -1, 0));
+  ew.step();
+  const eb = new BlockSystem(R, ew);
+  const ec = new Combat(R, ew, map);
+  ec.onWorldDamage = (h, d) => eb.damageCollider(h, d);
+  ec.onExplosion = (p, r, d) => eb.explosion(p, r, d);
+  const eCrystal = { team: 'blue' as const, pos: new Vector3(0, 1.5, 0), up: new Vector3(0, 1, 0), alive: true };
+  ec.crystals = [eCrystal];
+  let eHits = 0;
+  ec.onCrystal = () => { eHits++; };
+  const shield = eb.add(new Vector3(0, 1.5, 2), 'metal', 'blue');
+  ec.triggerExplosion(new Vector3(0, 1.5, 3), 0, 'red', 5.5, 65, 10, 120, 0.4, false, 'grenade', new Vector3(0, 1.5, 3));
+  const blockedHits = eHits;
+  const shieldHpAfterFirst = shield.hp;
+  eb.damageCollider(shield.collider.handle, shield.hp);
+  ec.triggerExplosion(new Vector3(0, 1.5, 3), 0, 'red', 5.5, 65, 10, 120, 0.4, false, 'grenade', new Vector3(0, 1.5, 3));
+  check('intact fort block shields crystal from outer explosion splash; broken wall exposes it',
+    blockedHits === 0 && eHits === 1 && shieldHpAfterFirst > 0,
+    `blockedHits=${blockedHits} openHits=${eHits} shieldHp=${shieldHpAfterFirst}`);
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall good');
 process.exit(failed ? 1 : 0);
 

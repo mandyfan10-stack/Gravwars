@@ -628,15 +628,21 @@ export class Combat {
     this.noises.push({ pos: pos.clone(), radius: NOISE.grenade, owner });
     this.onExplosion(pos.clone(), radius, blockDamage);
     this.props?.explosion(pos, radius * 1.6, knockback * 0.8, damage);
-    // an enemy crystal in the blast: hurt if the thrower / shooter stands close to it now
+    // an enemy crystal in the blast: intact blocks / walls shield it; hurt if the thrower / shooter stands close to it now
     for (const c of this.crystals) {
       if (!c.alive || c.team === team || !team || team.includes(':')) continue;
       const d = this.crystalDistance(c, pos) - CRYSTAL.radius;
       if (d > radius) continue;
+      const hitPos = this.crystalAxis(c, pos);
+      const axisDist = hitPos.distanceTo(pos);
+      if (axisDist > 1e-4) {
+        const los = this.rayWorld(pos, hitPos);
+        if (los && los.t * axisDist < axisDist - CRYSTAL.radius - 0.25) continue;
+      }
       const k = Math.max(0, 1 - Math.max(0, d) / radius);
       const from = this.target(owner)?.center ?? origin;
       const crystalMul = weapon === 'rocket' ? 0.5 : 1;
-      this.hurtCrystal(c, damage * (0.3 + 0.7 * k) * (raw ? 1 : DAMAGE_SCALE) * crystalMul, owner, from, this.crystalAxis(c, pos));
+      this.hurtCrystal(c, damage * (0.3 + 0.7 * k) * (raw ? 1 : DAMAGE_SCALE) * crystalMul, owner, from, hitPos);
     }
     for (const tg of this.targets) {
       if (!tg.alive || tg.guard || (tg.team === team && tg.id !== owner)) continue;

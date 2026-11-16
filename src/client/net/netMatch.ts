@@ -1,6 +1,6 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
 import {
-  Block, BlockKind, BlockMaterial, BlockSystem, PieceKind, START_BLOCKS,
+  Block, BlockKind, BlockMaterial, BlockSystem, START_BLOCKS,
 } from '../../shared/blocks';
 import { BotManager } from '../../shared/bots';
 import { Combat, CombatEvent, Faction, MAX_HP, SPAWN_GUARD, Target } from '../../shared/combat';
@@ -496,7 +496,7 @@ export class NetMatchController {
 
     const weapons = createWeaponState();
     const wallet = { cash: 0, crystal: 0 };
-    const blocksInv: Record<BlockMaterial, number> = { ...START_BLOCKS, wood: 0 };
+    const blocksInv: Record<BlockMaterial, number> = { ...START_BLOCKS, wood: 16 };
     const eco = new Economy(wallet, { inventory: blocksInv }, weapons);
 
     const rc: RemoteClientSim = {
@@ -598,26 +598,28 @@ export class NetMatchController {
       }, rc.peerId);
     } else if (act.type === 'build_place') {
       const mat = act.material as BlockMaterial;
+      const kind = act.kind as BlockKind;
       const c = new Vector3(...act.center);
       const h = new Vector3(...act.half);
       const q = new Quaternion(...act.quat);
       const plan = {
-        kind: (act.kind === 'block' ? 'wall' : act.kind) as PieceKind,
+        kind,
         center: c,
         half: h,
         quat: q,
-        key: act.key ?? `${act.kind}:${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}`,
+        key: act.key ?? `${kind}:${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}`,
         level: act.level ?? 0,
       };
       const cost = blocks.costOf(plan);
+      const badBlockHalf = kind === 'block' && (Math.abs(h.x - 0.5) > 0.05 || Math.abs(h.y - 0.5) > 0.05 || Math.abs(h.z - 0.5) > 0.05);
       const tooFar = c.distanceTo(rc.sim.state.pos) > 15;
-      if (act.team !== rc.team || tooFar || rc.blocksInv[mat] < cost || blocks.validate(plan, mat, true) !== 'ok') {
+      if (act.team !== rc.team || badBlockHalf || tooFar || rc.blocksInv[mat] < cost || blocks.validate(plan, mat, true) !== 'ok') {
         transport.sendTo(rc.peerId, { kind: 'event', data: { type: 'block:break', pos: act.center } });
         rc.dirtySync = true;
         return;
       }
       rc.blocksInv[mat] -= cost;
-      blocks.insertPiece(act.kind as BlockKind, c, h, q, mat, rc.team, act.key, act.level);
+      blocks.insertPiece(kind, c, h, q, mat, rc.team, act.key, act.level);
       rc.dirtySync = true;
       transport.broadcast({
         kind: 'event',

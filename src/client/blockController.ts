@@ -1,6 +1,6 @@
 import { PerspectiveCamera, Scene, Vector3 } from 'three';
 import {
-  Block, BLOCK_ORDER, BlockMaterial, BlockSystem, PIECE_LABEL, PieceKind, PlaceResult,
+  Block, BLOCK_ORDER, BlockKind, BlockMaterial, BlockSystem, PIECE_LABEL, PlaceResult,
 } from '../shared/blocks';
 import { upOf } from '../shared/math';
 import type { PlayerSim } from '../shared/sim';
@@ -11,35 +11,40 @@ import type { Input } from './input';
 import { icon, IconName } from './icons';
 import { BlockView } from './render/blockView';
 
-const PIECE_ICON: Record<PieceKind, IconName> = { wall: 'wall', floor: 'wood', ramp: 'stairs' };
+const PIECE_ICON: Record<BlockKind, IconName> = { block: 'block', wall: 'wall', floor: 'wood', ramp: 'stairs' };
 
 /** Seconds between pieces while LMB is held. */
 const REPEAT = 0.22;
+const BLOCK_REPEAT = 0.14;
 /** Radial menu (hold Q): sector directions on screen (radians, 0 = right, clockwise as y grows down). */
-const RADIAL: { kind: PieceKind; angle: number }[] = [
+const RADIAL: { kind: BlockKind; angle: number }[] = [
   { kind: 'wall', angle: -Math.PI / 2 },
-  { kind: 'ramp', angle: Math.PI / 6 },
-  { kind: 'floor', angle: (5 * Math.PI) / 6 },
+  { kind: 'block', angle: 0 },
+  { kind: 'floor', angle: Math.PI / 2 },
+  { kind: 'ramp', angle: Math.PI },
 ];
 /** Mouse travel (px) that picks a sector; a shorter Q press is a tap (next hotbar slot). */
 const RADIAL_DEAD = 18;
 const TAP_TIME = 0.2;
 const REJECT: Record<Exclude<PlaceResult, 'ok'>, string> = {
-  resources: 'Не хватает материала: купи в магазине (E)', player: 'Мешает игрок', occupied: 'Здесь уже построено',
+  resources: 'Не хватает материала: купи в магазине (E)',
+  player: 'Мешает игрок',
+  occupied: 'Здесь уже построено',
+  blocked: 'Мешает постройка или кристалл',
 };
 
 /**
- * The shovel: LMB puts the chosen piece — wall, floor or ramp — in front of you on the build grid (the ghost shows
- * where). Hold Q for the radial menu, move the mouse towards a shape and let go; a quick Q tap still switches the
- * hotbar slot. RMB picks up your own piece, Z / wheel switch the material.
+ * The shovel: LMB puts the chosen shape — 1×1 fortification block, wall, floor or ramp — in front of you (the ghost
+ * shows where). Hold Q for the radial menu, move the mouse towards a shape and let go; a quick Q tap still switches
+ * the hotbar slot. RMB picks up your own piece, Z / wheel switch the material.
  */
 export class BlockController {
   active = false;
   material: BlockMaterial = 'wood';
-  /** The piece the next click builds (chosen in the radial menu). */
-  next: PieceKind = 'wall';
+  /** The build item the next click places (chosen in the radial menu). */
+  next: BlockKind = 'block';
   /** Radial menu state: open while Q is held. */
-  private radial = { open: false, t: 0, x: 0, y: 0, hover: null as PieceKind | null };
+  private radial = { open: false, t: 0, x: 0, y: 0, hover: null as BlockKind | null };
   private readonly radialEl = document.getElementById('build-radial')!;
   /** Q was tapped, not held (the key handler moves to the next hotbar slot). */
   tapped = false;
@@ -136,10 +141,10 @@ export class BlockController {
           this.hud.toast(block ? 'Чужая постройка — ломай оружием' : 'Наведи на свою постройку', '#ffb49e', 1);
         }
       }
-      let plan = blocks.plan(this.next, sim.state.pos, up, forward);
+      let plan = blocks.plan(this.next, sim.state.pos, up, forward, camera.position, forward);
       const click = input.take('Mouse0');
       if (plan && this.cooldown <= 0 && (click || input.down('Mouse0'))) {
-        this.cooldown = REPEAT;
+        this.cooldown = this.next === 'block' ? BLOCK_REPEAT : REPEAT;
         const placed = blocks.place(plan, this.material, this.team);
         if (placed === 'ok') {
           for (const b of blocks.blocks.values()) {
@@ -147,7 +152,7 @@ export class BlockController {
           }
           this.audio.place();
           this.onPlace();
-          plan = blocks.plan(this.next, sim.state.pos, up, forward);
+          plan = blocks.plan(this.next, sim.state.pos, up, forward, camera.position, forward);
         } else if (click) {
           this.audio.reject();
           this.hud.toast(REJECT[placed], '#ff8e83', 1.2);
@@ -165,7 +170,7 @@ export class BlockController {
       const mats = BLOCK_ORDER.map((m) =>
         `<span class="mat${m === this.material ? ' on' : ''}">${icon(m)}${blocks.inventory[m]}</span>`).join('');
       this.hudEl.innerHTML = `<span class="next">${icon(PIECE_ICON[this.next])}${PIECE_LABEL[this.next]}</span><span class="mats">${mats}</span>`
-        + `<span class="hint">1 материал = 1 постройка · Q (держать) — форма · колесо/Z — материал · ПКМ — забрать</span>`;
+        + `<span class="hint">1 материал = 1 блок/деталь · Q (держать) — форма · колесо/Z — материал · ПКМ — забрать</span>`;
     }
   }
 }
