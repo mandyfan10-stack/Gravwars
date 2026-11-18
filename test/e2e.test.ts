@@ -328,6 +328,70 @@ try {
     check('p2p: fortifySkipTeams leaves human beds unfortified on both tabs while keeping bot forts',
       hostMatch.redFort === 0 && hostMatch.blueFort === 0 && hostMatch.greenFort >= 12
       && clientMatch.redFort === 0 && clientMatch.blueFort === 0 && clientMatch.greenFort >= 12);
+
+    // Host-side validation: a legit wall from the client goes through, forged packets are dropped without errors
+    const sent = await clientPage.evaluate(() => {
+      type V = { x: number; y: number; z: number; clone(): V; applyQuaternion(q: unknown): V; addScaledVector(v: V, s: number): V };
+      const g = (window as unknown as { __game: any }).__game;
+      g.skipIntro();
+      const st = g.sim.state;
+      const Vec = st.pos.constructor as new (x: number, y: number, z: number) => V;
+      const up = new Vec(0, 1, 0).applyQuaternion(st.frame);
+      let key: string | null = null;
+      let block: any = null;
+      for (const [x, z] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+        const facing = new Vec(x, 0, z).applyQuaternion(st.frame);
+        const plan = g.blocks.plan('wall', st.pos, up, facing);
+        if (!plan || g.blocks.place(plan, 'wood', g.match.team) !== 'ok') continue;
+        block = [...g.blocks.blocks.values()].find((b: any) => b.key === plan.key);
+        if (block) { key = plan.key; break; }
+      }
+      if (!block) return { key: null };
+      g.build.onBlockPlaced(block);
+      const far = block.center.clone().addScaledVector(up, 6);
+      // forged: unknown material used to throw a TypeError on the host; giant wall for 1 wood; NaN shot origin
+      g.build.onBlockPlaced({ ...block, material: 'xxx', key: 'forged-mat', center: far });
+      g.build.onBlockPlaced({ ...block, half: new Vec(40, 40, 40), key: 'forged-huge', center: far });
+      g.player.onFire?.('fists', new Vec(NaN, 0, 0), new Vec(0, 0, 1), 0);
+      g.player.onFire?.('fists', new Vec(st.pos.x + 200, st.pos.y, st.pos.z), new Vec(0, 0, 1), 0);
+      // forged: fish catch without a rod/pond, invalid sell item (used to crash host), unowned hook
+      g.pockets.onFishCatch?.();
+      g.ui.onRemoteSell?.('not_an_item');
+      g.hands.onHook?.(true, st.pos, new Vec(0, 0, 1));
+      return { key };
+    });
+    let hostBlocks = { legit: false, forged: 0 };
+    if (sent.key) {
+      try {
+        await hostPage.waitForFunction((k) => {
+          const g = (window as unknown as { __game: any }).__game;
+          return [...g.blocks.blocks.values()].some((b: any) => b.key === k && b.team === 'blue');
+        }, sent.key, { timeout: 10_000 });
+      } catch { /* reported below */ }
+      await hostPage.waitForTimeout(500);
+      hostBlocks = await hostPage.evaluate((k) => {
+        const g = (window as unknown as { __game: any }).__game;
+        const all = [...g.blocks.blocks.values()] as { key: string | null; team: string | null }[];
+        return {
+          legit: all.some((b) => b.key === k && b.team === 'blue'),
+          forged: all.filter((b) => typeof b.key === 'string' && b.key.startsWith('forged')).length,
+        };
+      }, sent.key);
+    }
+    const forgedState = await clientPage.evaluate(() => {
+      const g = (window as unknown as { __game: any }).__game;
+      return {
+        cash: g.match.wallet.cash,
+        fish: g.eco.items.fish,
+        apple: g.eco.items.apple,
+        bottle: g.eco.items.bottle,
+        hook: !!g.sim.hook,
+      };
+    });
+    check('p2p: host accepts a legit client wall and silently drops forged build / fire / fish / sell / hook packets',
+      !!sent.key && hostBlocks.legit && hostBlocks.forged === 0
+      && forgedState.cash === 0 && forgedState.fish === 0 && forgedState.apple === 0 && forgedState.bottle === 0,
+      `key=${sent.key} host=${JSON.stringify(hostBlocks)} client=${JSON.stringify(forgedState)}`);
     check('p2p: zero console or page errors on host and client tabs',
       hostErrors.length === 0 && clientErrors.length === 0,
       [...hostErrors, ...clientErrors].join(' | '));

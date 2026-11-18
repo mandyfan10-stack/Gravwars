@@ -323,10 +323,10 @@ export class BlockSystem {
     return PIECE_COST;
   }
 
-  /** `free`: bots build without using player's BlockSystem inventory (and are forbidden from building near crystals). */
-  validate(plan: PiecePlan, material: BlockMaterial, free = false): PlaceResult {
+  /** `free`: skip local inventory check (bots, bridges, host validating remote peer); `allowNearCrystal`: human peers use the same crystal clearance rules as local players. */
+  validate(plan: PiecePlan, material: BlockMaterial, free = false, allowNearCrystal = false): PlaceResult {
     if (!free && this.inventory[material] < this.costOf(plan)) return 'resources';
-    if (free && this.nearCrystal(plan.center, 5.2)) return 'blocked';
+    if (free && !allowNearCrystal && this.nearCrystal(plan.center, 5.2)) return 'blocked';
     for (const b of this.blocks.values()) if (b.key === plan.key) return 'occupied';
     if (plan.kind === 'block') {
       if (this.findByPos(plan.center, 0.25)) return 'occupied';

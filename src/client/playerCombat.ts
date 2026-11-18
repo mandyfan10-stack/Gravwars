@@ -263,7 +263,8 @@ export class PlayerCombat {
     }
     const reloadStarted = weapons.reloadT > 0 && weapons.reloadT === weapons.reloadTotal;
     if (reloadStarted) {
-      if (wantReload) this.onReload?.();
+      // Crossbow recharges bolts per shot without a reload packet; manual, empty-trigger, and rocket reloads all sync to host
+      if (weapons.current !== 'crossbow') this.onReload?.();
       const w = weapons.current;
       if (w !== 'crossbow' && w !== 'shotgun') {
         this.audio.reload(w === 'pistol' || w === 'revolver', weapons.reloadTotal, weapons.reloadTotal === WEAPONS[w].reloadEmpty,
