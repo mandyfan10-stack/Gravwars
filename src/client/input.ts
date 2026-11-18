@@ -18,7 +18,7 @@ export class Input {
 
   constructor(private canvas: HTMLCanvasElement, private overlay: HTMLElement) {
     document.getElementById('start-game')!.addEventListener('click', () => this.lock());
-    canvas.addEventListener('click', () => !this.locked && this.armed && canvas.requestPointerLock());
+    canvas.addEventListener('click', () => { if (!this.locked && this.armed) this.requestLock(); });
     document.addEventListener('pointerlockchange', () => this.setLocked(document.pointerLockElement === canvas));
     window.addEventListener('keydown', (e) => {
       if (this.typing) return;
@@ -63,7 +63,16 @@ export class Input {
   }
 
   lock() {
-    if (this.armed) void this.canvas.requestPointerLock();
+    if (this.armed) this.requestLock();
+  }
+
+  private requestLock() {
+    try {
+      const res = this.canvas.requestPointerLock() as unknown;
+      if (res && typeof (res as Promise<unknown>).catch === 'function') {
+        (res as Promise<unknown>).catch(() => {});
+      }
+    } catch {}
   }
 
   /** Pointer lock state (also used by the screenshot script, where headless Chrome has no pointer lock). */
