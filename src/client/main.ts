@@ -217,6 +217,7 @@ async function main() {
     onJoinGame: async (roomCode: string, name: string) => {
       cleanupNetworkRoom(false);
       myNetworkName = name;
+      if (!loaded) await bootReady;
       const transport = new P2PTransport(false);
       try {
         await transport.join(roomCode);
@@ -288,6 +289,8 @@ async function main() {
   }
 
   let loaded = false;
+  let resolveBootReady!: () => void;
+  const bootReady = new Promise<void>((r) => { resolveBootReady = r; });
   const spectateBtn = document.getElementById('spectate-btn') as HTMLButtonElement;
   let startInSpectator = sessionStorage.getItem('gravwars-start-spectate') === '1';
   if (startInSpectator) sessionStorage.removeItem('gravwars-start-spectate');
@@ -318,6 +321,7 @@ async function main() {
   applyToggles();
   (window as unknown as { __menu: MenuBackdrop }).__menu = backdrop;
   loaded = true;
+  resolveBootReady();
   syncStart();
   // «В бой» or «Режим наблюдателя»: the click unlocks the audio and takes the mouse right away
   if (!startInSpectator) {

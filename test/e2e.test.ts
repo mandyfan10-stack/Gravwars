@@ -136,10 +136,13 @@ const chromeCandidates = [
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
 ].filter((p): p is string => !!p && existsSync(p));
+const gpuArgs = process.env.CI
+  ? ['--disable-dev-shm-usage']
+  : ['--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-dev-shm-usage'];
 const browser = await chromium.launch({
   executablePath: chromeCandidates[0],
   args: [
-    '--use-angle=vulkan', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-dev-shm-usage',
+    ...gpuArgs,
     '--disable-features=WebRtcHideLocalIpsWithMdns',
   ],
 });
@@ -230,13 +233,13 @@ try {
     const roomCode = (await hostPage.textContent('#net-room-code'))?.trim() ?? '';
     check('p2p: host creates room with short code', roomCode.length >= 4, `code=${roomCode}`);
 
-    await clientPage.goto(`${server.url}?room=${encodeURIComponent(roomCode)}`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await clientPage.goto(`${server.url}?room=${encodeURIComponent(roomCode)}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     try {
       await clientPage.waitForFunction(() => {
         const lobbyHtml = document.getElementById('menu-lobby')?.textContent ?? '';
         const start = document.getElementById('start-game') as HTMLButtonElement | null;
         return lobbyHtml.includes('HostE2E') && !!start && start.disabled && start.textContent?.includes('Ждём хоста');
-      }, null, { timeout: 25_000 });
+      }, null, { timeout: 60_000 });
     } catch (err) {
       const diag = await Promise.all([
         hostPage.evaluate(() => ({ status: document.getElementById('net-status')?.textContent, lobby: document.getElementById('menu-lobby')?.textContent?.slice(0, 200) })),
@@ -276,7 +279,7 @@ try {
       const lobbyHtml = document.getElementById('menu-lobby')?.textContent ?? '';
       const start = document.getElementById('start-game') as HTMLButtonElement | null;
       return lobbyHtml.includes('HostE2E') && !!start && start.disabled && start.textContent?.includes('Ждём хоста');
-    }, null, { timeout: 25_000 });
+    }, null, { timeout: 60_000 });
     await hostPage.waitForFunction(() => (document.getElementById('menu-lobby')?.textContent ?? '').includes('GuestE2E'),
       null, { timeout: 15_000 });
 

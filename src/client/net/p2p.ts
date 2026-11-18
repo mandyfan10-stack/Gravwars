@@ -28,7 +28,7 @@ const ICE_SERVERS: RTCIceServer[] = [
   },
 ];
 
-const JOIN_TIMEOUT_MS = 12_000;
+const JOIN_TIMEOUT_MS = 20_000;
 const PING_INTERVAL_MS = 2_000;
 const MAX_HOST_RETRIES = 3;
 const MAX_SIGNALING_RECONNECTS = 3;
@@ -159,9 +159,14 @@ export class P2PTransport {
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      let timer: number | null = window.setTimeout(() => {
-        fail(new Error('Таймаут подключения к хосту. Проверьте код комнаты или сеть.'));
-      }, timeoutMs);
+      let timer: number | null = null;
+      const armTimer = () => {
+        if (timer !== null) clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          fail(new Error('Таймаут подключения к хосту. Проверьте код комнаты или сеть.'));
+        }, timeoutMs);
+      };
+      armTimer();
 
       const clearTimer = () => {
         if (timer !== null) {
@@ -190,6 +195,7 @@ export class P2PTransport {
           this.myId = id;
           this.attachSignalingReconnect(peer);
           this.events.onReady?.(id);
+          armTimer();
 
           const conn = peer.connect(targetPeerId, { reliable: true });
           this.hostConn = conn;
