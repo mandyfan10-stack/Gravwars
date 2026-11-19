@@ -9,8 +9,8 @@ import { FISHING, Fishing } from '../../src/shared/fishing';
 import { Hotbar, holdables } from '../../src/shared/inventory';
 import { activeTeams, defaultLobby, lobbyProblem } from '../../src/shared/lobby';
 import { faceOfTeam, generateMap } from '../../src/shared/map';
-import { Builder, Frame } from '../../src/shared/mapgen/core';
-import { fillTile } from '../../src/shared/mapgen/tiles';
+import { BoxDef, Builder, Frame, MapData } from '../../src/shared/mapgen/core';
+import { fillTile, OWN_GROUND, TileKind } from '../../src/shared/mapgen/tiles';
 import { BED_HP, CRYSTAL_STUN_TIME, GENERATORS, Match, killRewardFor } from '../../src/shared/match';
 import { Rng } from '../../src/shared/math';
 import { emptyInput } from '../../src/shared/movement';
@@ -520,5 +520,178 @@ export function runWorldTests(h: SimHarness) {
       && rifleOffer.item.price === 0 && buyRifleFree === 'ok' && woodOffer.item.price > 0
       && swBlocks.inventory.wood === startWood + 2 && killRewardFor('skirmish') === 25 && outsideOk,
       `gap=${gapMeters}m clearance=${minMidClearance.toFixed(1)}m wood=${startWood}->${swBlocks.inventory.wood}`);
+
+    // Geometric Z-fighting & buried-decal regression check across all 19 tile kinds and all 3 game modes
+    type P2 = [number, number];
+    const clipPoly = (poly: P2[], xMin: number, xMax: number, yMin: number, yMax: number): P2[] => {
+      const clip = (pts: P2[], inside: (p: P2) => boolean, isect: (a: P2, b: P2) => P2): P2[] => {
+        const out: P2[] = [];
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i], b = pts[(i + 1) % pts.length];
+          const ia = inside(a), ib = inside(b);
+          if (ia && ib) out.push(b);
+          else if (ia && !ib) out.push(isect(a, b));
+          else if (!ia && ib) { out.push(isect(a, b)); out.push(b); }
+        }
+        return out;
+      };
+      let p = poly;
+      p = clip(p, (q) => q[0] >= xMin, (a, b) => [xMin, a[1] + ((b[1] - a[1]) * (xMin - a[0])) / (b[0] - a[0])]);
+      if (!p.length) return p;
+      p = clip(p, (q) => q[0] <= xMax, (a, b) => [xMax, a[1] + ((b[1] - a[1]) * (xMax - a[0])) / (b[0] - a[0])]);
+      if (!p.length) return p;
+      p = clip(p, (q) => q[1] >= yMin, (a, b) => [a[0] + ((b[0] - a[0]) * (yMin - a[1])) / (b[1] - a[1]), yMin]);
+      if (!p.length) return p;
+      return clip(p, (q) => q[1] <= yMax, (a, b) => [a[0] + ((b[0] - a[0]) * (yMax - a[1])) / (b[1] - a[1]), yMax]);
+    };
+    const scanCoplanar = (boxes: readonly BoxDef[], decals: MapData['decals']) => {
+      const vis = boxes.filter((b) => !b.hidden);
+      const obbs = vis.map((b, id) => {
+        const q = new Quaternion(...b.quat);
+        const rad = Math.hypot(b.half[0], b.half[1], b.half[2]) + 0.05;
+        return {
+          id, pos: new Vector3(...b.pos), rad,
+          axes: [
+            new Vector3(1, 0, 0).applyQuaternion(q),
+            new Vector3(0, 1, 0).applyQuaternion(q),
+            new Vector3(0, 0, 1).applyQuaternion(q),
+          ] as [Vector3, Vector3, Vector3],
+          half: b.half, opaque: b.mat !== 'window' && b.mat !== 'water',
+        };
+      });
+      let buriedDecals = 0;
+      for (const dec of decals) {
+        const c = new Vector3(...dec.pos);
+        for (const o of obbs) {
+          if (!o.opaque) continue;
+          const dx = c.x - o.pos.x, dy = c.y - o.pos.y, dz = c.z - o.pos.z;
+          if (Math.abs(dx) > o.rad || Math.abs(dy) > o.rad || Math.abs(dz) > o.rad) continue;
+          if (Math.abs(dx * o.axes[0].x + dy * o.axes[0].y + dz * o.axes[0].z) < o.half[0] + 0.001
+            && Math.abs(dx * o.axes[1].x + dy * o.axes[1].y + dz * o.axes[1].z) < o.half[1] + 0.001
+            && Math.abs(dx * o.axes[2].x + dy * o.axes[2].y + dz * o.axes[2].z) < o.half[2] + 0.001) {
+            buriedDecals++;
+          }
+        }
+      }
+      interface FacePoly { id: number; mat: string; n: Vector3; u: Vector3; v: Vector3; c: Vector3; hu: number; hv: number; d: number; corners: Vector3[]; offset: boolean }
+      const buckets = new Map<string, FacePoly[]>();
+      const specs: [number, number, number, number][] = [[0, 1, 1, 2], [0, -1, 1, 2], [1, 1, 0, 2], [1, -1, 0, 2], [2, 1, 0, 1], [2, -1, 0, 1]];
+      vis.forEach((b, id) => {
+        const o = obbs[id];
+        for (const [ai, sg, ui, vi] of specs) {
+          const n = o.axes[ai].clone().multiplyScalar(sg);
+          const u = o.axes[ui], v = o.axes[vi];
+          const c = o.pos.clone().addScaledVector(n, b.half[ai]);
+          const hu = b.half[ui], hv = b.half[vi];
+          const key = `${Math.round(n.x * 100)},${Math.round(n.y * 100)},${Math.round(n.z * 100)}`;
+          let list = buckets.get(key);
+          if (!list) { list = []; buckets.set(key, list); }
+          list.push({
+            id, mat: b.mat, n, u, v, c, hu, hv, d: c.dot(n),
+            corners: [
+              c.clone().addScaledVector(u, -hu).addScaledVector(v, -hv),
+              c.clone().addScaledVector(u, hu).addScaledVector(v, -hv),
+              c.clone().addScaledVector(u, hu).addScaledVector(v, hv),
+              c.clone().addScaledVector(u, -hu).addScaledVector(v, hv),
+            ],
+            offset: b.mat === 'paint' || b.mat === 'glow',
+          });
+        }
+      });
+      const isBuried = (pt: Vector3, idA: number, idB: number) => {
+        for (const o of obbs) {
+          if (!o.opaque || o.id === idA || o.id === idB) continue;
+          const dx = pt.x - o.pos.x, dy = pt.y - o.pos.y, dz = pt.z - o.pos.z;
+          if (Math.abs(dx) > o.rad || Math.abs(dy) > o.rad || Math.abs(dz) > o.rad) continue;
+          if (Math.abs(dx * o.axes[0].x + dy * o.axes[0].y + dz * o.axes[0].z) >= o.half[0] - 0.002) continue;
+          if (Math.abs(dx * o.axes[1].x + dy * o.axes[1].y + dz * o.axes[1].z) >= o.half[1] - 0.002) continue;
+          if (Math.abs(dx * o.axes[2].x + dy * o.axes[2].y + dz * o.axes[2].z) >= o.half[2] - 0.002) continue;
+          return true;
+        }
+        return false;
+      };
+      let zFight = 0;
+      const tmp = new Vector3();
+      for (const list of buckets.values()) {
+        list.sort((a, b) => a.d - b.d);
+        for (let i = 0; i < list.length; i++) {
+          const a = list[i];
+          for (let j = i + 1; j < list.length; j++) {
+            const b = list[j];
+            const dist = b.d - a.d;
+            if (dist > 0.015) break;
+            if (a.id === b.id || a.n.dot(b.n) < 0.999) continue;
+            const proj: P2[] = b.corners.map((p) => { const d = p.clone().sub(a.c); return [d.dot(a.u), d.dot(a.v)]; });
+            const pts = clipPoly(proj, -a.hu, a.hu, -a.hv, a.hv);
+            if (pts.length < 3) continue;
+            let area = 0;
+            for (let k = 0; k < pts.length; k++) {
+              const [x0, y0] = pts[k], [x1, y1] = pts[(k + 1) % pts.length];
+              area += x0 * y1 - x1 * y0;
+            }
+            if (Math.abs(area) * 0.5 < 0.005) continue;
+            let cx = 0, cy = 0;
+            for (const [ux, vy] of pts) { cx += ux; cy += vy; }
+            cx /= pts.length; cy /= pts.length;
+            let exposed = false;
+            const samples: P2[] = [[cx, cy], ...pts.map(([ux, vy]): P2 => [cx * 0.35 + ux * 0.65, cy * 0.35 + vy * 0.65])];
+            for (const [su, sv] of samples) {
+              tmp.copy(a.c).addScaledVector(a.u, su).addScaledVector(a.v, sv).addScaledVector(a.n, dist + 0.025);
+              if (!isBuried(tmp, a.id, b.id)) { exposed = true; break; }
+            }
+            if (!exposed) continue;
+            if (a.offset !== b.offset && dist >= 0.004) continue;
+            zFight++;
+          }
+        }
+      }
+      return { zFight, buriedDecals };
+    };
+    const scanMap = (md: MapData) => {
+      const byFace = new Map<string, { boxes: BoxDef[]; decals: MapData['decals'] }>();
+      for (const f of md.faces) byFace.set(f.id, { boxes: [], decals: [] });
+      const nearest = (p: readonly number[]) => {
+        let best = md.faces[0].id, bd = Infinity;
+        for (const f of md.faces) {
+          const d = (f.origin[0] - p[0]) ** 2 + (f.origin[1] - p[1]) ** 2 + (f.origin[2] - p[2]) ** 2;
+          if (d < bd) { bd = d; best = f.id; }
+        }
+        return best;
+      };
+      for (const b of md.boxes) byFace.get(nearest(b.pos))!.boxes.push(b);
+      for (const d of md.decals) byFace.get(nearest(d.pos))!.decals.push(d);
+      let zFight = 0, buriedDecals = 0;
+      for (const g of byFace.values()) {
+        const r = scanCoplanar(g.boxes, g.decals);
+        zFight += r.zFight;
+        buriedDecals += r.buriedDecals;
+      }
+      return { zFight, buriedDecals };
+    };
+    const allKinds: TileKind[] = [
+      'tower', 'office', 'houses', 'parking', 'construction', 'park', 'pond', 'greenpond',
+      'plaza', 'abyss', 'pipes', 'pipeline', 'bar', 'store', 'court', 'museum', 'market', 'square', 'hall',
+    ];
+    let tileHits = 0, tileBuried = 0;
+    for (const kind of allKinds) {
+      const tb = new Builder(1337, { half: 126, face: 90 }, 20, 360);
+      const tf = new Frame(new Vector3(0, 0, 0), new Quaternion());
+      if (!OWN_GROUND.has(kind)) {
+        tb.span(tf, -18, -1.5, -18, 18, 0, 18, 0x77736d, 'asphalt');
+        tb.block(tf, 0, 0, 0, 12, 0.075, 12, 0xcfc4ac, 'paving');
+      }
+      fillTile(tb, tf, new Rng(1337), { i: 1, j: 1, kind }, 0, 0, TEAMS[0], 44);
+      const r = scanCoplanar(tb.data.boxes, tb.data.decals);
+      tileHits += r.zFight;
+      tileBuried += r.buriedDecals;
+    }
+    const stdScan = scanMap(map);
+    const duelScan = scanMap(dm);
+    const skirScan = scanMap(sm);
+    const totalZF = tileHits + stdScan.zFight + duelScan.zFight + skirScan.zFight;
+    const totalBD = tileBuried + stdScan.buriedDecals + duelScan.buriedDecals + skirScan.buriedDecals;
+    check('map geometry has zero exposed coplanar Z-fighting and zero buried decals across all 19 tiles and all modes',
+      totalZF === 0 && totalBD === 0,
+      `tiles=${tileHits}/${tileBuried} std=${stdScan.zFight}/${stdScan.buriedDecals} duel=${duelScan.zFight}/${duelScan.buriedDecals} skir=${skirScan.zFight}/${skirScan.buriedDecals}`);
   }
 }

@@ -135,25 +135,28 @@ export function hydrant(b: Builder, f: Frame, x: number, z: number) {
  */
 export function tileCurbs(b: Builder, f: Frame, cx: number, cz: number, drivewaySide = -1) {
   const segLen = 3.0;
-  const kerbH = 0.14;
-  const kerbY0 = 0.05; // top at 0.19 m (0.04 m proud of 0.15 m sidewalk, 0.19 m above 0 m road; stepHeight is 0.45 m)
+  const kerbH = 0.19; // top at 0.19 m (0.04 m proud of 0.15 m sidewalk, grounded cleanly on 0 m road; stepHeight is 0.45 m)
   const kerbW = 0.15;
+  const cornerClear = kerbW + 0.04; // stops 2 cm clear of the ±(kerbW + 0.02) cornerstone blocks
   const dirs: [number, number][] = [[0, 1], [1, 0], [0, -1], [-1, 0]];
   for (let side = 0; side < 4; side++) {
     const [di, dj] = dirs[side];
     const s = f.sub(cx + di * BLOCK, 0, cz + dj * BLOCK, Math.atan2(di, dj));
     for (let k = -4; k < 4; k++) {
-      const a = (k + 0.5) * segLen;
+      const lo = k === -4 ? -BLOCK + cornerClear : k * segLen + 0.03;
+      const hi = k === 3 ? BLOCK - cornerClear : (k + 1) * segLen - 0.03;
+      const a = (lo + hi) / 2;
+      const halfL = (hi - lo) / 2;
       if (side === drivewaySide && Math.abs(a) < 3.2) {
         // Dropped curb at driveway entrance
-        b.block(s, a, 0, 0, segLen / 2 - 0.03, 0.03, kerbW, 0xa8a090, 'stone');
+        b.block(s, a, 0, 0, halfL, 0.03, kerbW, 0xa8a090, 'stone');
         continue;
       }
       const shade = (k + side) % 2 === 0 ? 0xc4bcab : 0xb2aa99;
-      b.block(s, a, kerbY0, 0, segLen / 2 - 0.03, kerbH / 2, kerbW, shade, 'stone');
+      b.block(s, a, 0, 0, halfL, kerbH / 2, kerbW, shade, 'stone');
     }
-    // Cornerstone block
-    b.block(s, BLOCK, kerbY0, 0, kerbW + 0.02, kerbH / 2 + 0.005, kerbW + 0.02, 0xaba393, 'stone');
+    // Cornerstone block (grounded at y = 0, top at 0.21 m)
+    b.block(s, BLOCK, 0, 0, kerbW + 0.02, (kerbH + 0.02) / 2, kerbW + 0.02, 0xaba393, 'stone');
   }
 }
 

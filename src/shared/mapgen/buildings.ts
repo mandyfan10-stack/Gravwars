@@ -177,7 +177,8 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
   }
 
   // columns: corners (+ mid points on long sides of the open styles)
-  const colTop = roofless ? top - sh : top;
+  // Glazed styles stop columns at the roof soffit (top - SLAB); open styles protrude 2 cm proud of slab edges to avoid coplanar faces.
+  const colTop = roofless ? top - sh + 0.35 : top - SLAB;
   const cols: [number, number, number][] = [
     [-X, -Z, s.style === 'garage' ? top + 1 : colTop],
     [X, -Z, s.style === 'garage' ? top + 1 : colTop],
@@ -185,12 +186,14 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
     [X, Z, s.style === 'garage' ? top + 1 : colTop],
   ];
   if (!glazed) for (const sx of [-1, 1]) for (let z = -Z + 6; z < Z - 1; z += 6) cols.push([sx * X, z, colTop]);
+  const colOff = glazed ? 0.25 : 0.23;
   for (const [x, z, ct] of cols) {
-    const cx = x - Math.sign(x) * 0.25, cz = z === -Z || z === Z ? z - Math.sign(z) * 0.25 : z;
+    const cx = x - Math.sign(x) * colOff, cz = z === -Z || z === Z ? z - Math.sign(z) * colOff : z;
     b.span(f, cx - 0.25, GF, cz - 0.25, cx + 0.25, ct, cz + 0.25, s.style === 'tower' ? 0x5b6168 : s.frame, s.style === 'tower' ? 'metal' : 'concrete');
   }
 
   // facades
+  const tightSlab1 = sh <= DOOR_H + SLAB + 0.05;
   for (let k = 0; k < 4; k++) {
     const yaw = (k * Math.PI) / 2;
     const side = f.sub(0, 0, 0, yaw); // the side's outward normal is its local +z
@@ -203,13 +206,15 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
       const zc = depth - GLASS_T / 2;
       const a0 = -len + 0.5, a1 = len - 0.5;
       if (door) {
-        b.span(side, a0, 0, zc - GLASS_T / 2, dx - DOOR_W / 2, GF + DOOR_H, zc + GLASS_T / 2, s.glass, 'window');
-        b.span(side, dx + DOOR_W / 2, 0, zc - GLASS_T / 2, a1, GF + DOOR_H, zc + GLASS_T / 2, s.glass, 'window');
-        b.span(side, a0, GF + DOOR_H, zc - GLASS_T / 2, a1, top - SLAB, zc + GLASS_T / 2, s.glass, 'window');
+        b.span(side, a0, GF, zc - GLASS_T / 2, dx - DOOR_W / 2 - 0.08, GF + DOOR_H, zc + GLASS_T / 2, s.glass, 'window');
+        b.span(side, dx + DOOR_W / 2 + 0.08, GF, zc - GLASS_T / 2, a1, GF + DOOR_H, zc + GLASS_T / 2, s.glass, 'window');
+        const upperY0 = tightSlab1 ? GF + sh : GF + DOOR_H;
+        b.span(side, a0, upperY0, zc - GLASS_T / 2, a1, top - SLAB, zc + GLASS_T / 2, s.glass, 'window');
         // door frame + canopy
         for (const e of [-1, 1]) b.span(side, dx + e * DOOR_W / 2 - 0.08, GF, zc - 0.1, dx + e * DOOR_W / 2 + 0.08, GF + DOOR_H, zc + 0.1, 0x2f3236, 'metal', false);
-        b.span(side, dx - DOOR_W / 2 - 0.6, GF + DOOR_H + 0.25, depth, dx + DOOR_W / 2 + 0.6, GF + DOOR_H + 0.4, depth + 1.4, 0x3a3d40, 'metal', false);
-      } else b.span(side, a0, 0, zc - GLASS_T / 2, a1, top - SLAB, zc + GLASS_T / 2, s.glass, 'window');
+        const canopyZ0 = tightSlab1 ? depth + edge : depth;
+        b.span(side, dx - DOOR_W / 2 - 0.6, GF + DOOR_H + 0.18, canopyZ0, dx + DOOR_W / 2 + 0.6, GF + DOOR_H + 0.33, depth + 1.4, 0x3a3d40, 'metal', false);
+      } else b.span(side, a0, GF, zc - GLASS_T / 2, a1, top - SLAB, zc + GLASS_T / 2, s.glass, 'window');
     } else {
       // open decks: a parapet on every level above the street (none on the ground floor: you walk in anywhere)
       for (let L = 1; L <= N; L++) {
@@ -235,16 +240,24 @@ export function building(b: Builder, parent: Frame, rng: Rng, s: BuildingSpec) {
         [h[0] - 0.05, far, h[1] + (h[1] < XI - 0.5 ? 0.05 : 0), far],
       ];
       if (h[1] < XI - 0.5) rails.push([h[1] + 0.05, h[2], h[1] + 0.05, h[3]]);
+      const seenPosts = new Set<string>();
+      const postH = 0.042;
       for (const [x0, z0, x1, z1] of rails) {
         const len = Math.hypot(x1 - x0, z1 - z0);
         const steps = Math.max(1, Math.round(len / 2.2));
         for (let i = 0; i <= steps; i++) {
           const px = x0 + ((x1 - x0) * i) / steps, pz = z0 + ((z1 - z0) * i) / steps;
-          b.block(f, px, top, pz, 0.04, 0.48, 0.04, 0x2f3236, 'metal');
+          const pk = `${Math.round(px * 100)},${Math.round(pz * 100)}`;
+          if (seenPosts.has(pk)) continue;
+          seenPosts.add(pk);
+          b.block(f, px, top, pz, postH, 0.48, postH, 0x2f3236, 'metal');
         }
+        // Horizontal bars sit strictly between post faces (narrower than posts, so no coplanar overlap at corners)
+        const dx = Math.abs(x1 - x0), dz = Math.abs(z1 - z0);
         const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-        const hx = Math.abs(x1 - x0) / 2 + 0.04, hz = Math.abs(z1 - z0) / 2 + 0.04;
-        for (const ry of [0.46, 0.92]) b.box(f, cx, top + ry, cz, hx, 0.035, hz, 0x2f3236, 'metal');
+        const hx = dx > dz ? Math.max(0.01, dx / 2 - postH) : 0.025;
+        const hz = dz > dx ? Math.max(0.01, dz / 2 - postH) : 0.025;
+        for (const ry of [0.46, 0.88]) b.box(f, cx, top + ry, cz, hx, 0.028, hz, 0x2f3236, 'metal');
       }
     }
     if (s.style !== 'garage') {
@@ -292,7 +305,8 @@ export function house(b: Builder, parent: Frame, rng: Rng, cx: number, cz: numbe
   const X = w / 2, Z = d / 2, T = 0.25;
   const XI = X - T, ZI = Z - T;
   const top = GF + 2 * STOREY;
-  b.span(f, -X, -0.1, -Z, X, GF, Z, 0xa58a6a, 'wood');
+  // Ground floor sits strictly inside the plaster walls (-XI..XI, -ZI..ZI) so wood never Z-fights with exterior plaster or the doorway sill.
+  b.span(f, -XI, -0.1, -ZI, XI, GF, ZI, 0xa58a6a, 'wood');
   // upper floor with the stair hole; the ramp along the +x wall
   const [hole] = stairs(b, f, XI - 3, -3, 1, 1, GF, 0xb8a888);
   holed(b, f, -XI, XI, -ZI, ZI, GF + STOREY - 0.3, GF + STOREY, hole, 0x9c7e5c, 'wood');

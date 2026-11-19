@@ -185,7 +185,8 @@ function tilePark(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, team: 
   b.span(f, P.x1, 0, P.z0, cx + BLOCK, SW, P.z1, grass, 'grass');
   const px = (P.x0 + P.x1) / 2, pz = (P.z0 + P.z1) / 2, phx = (P.x1 - P.x0) / 2, phz = (P.z1 - P.z0) / 2;
   b.span(f, P.x0, -1, P.z0, P.x1, -0.9, P.z1, 0x5a4a38, 'dirt');
-  b.span(f, P.x0, -0.26, P.z0, P.x1, -0.25, P.z1, 0x3f9fb0, 'water', false);
+  // Water sits strictly inside the 0.30 m stone rim so it never Z-fights with the outer rim faces.
+  b.span(f, P.x0 + 0.3, -0.26, P.z0 + 0.3, P.x1 - 0.3, -0.25, P.z1 - 0.3, 0x3f9fb0, 'water', false);
   for (const s of [-1, 1]) {
     b.block(f, px, -0.9, pz + s * (phz - 0.15), phx, 0.55, 0.15, 0xb8ae98, 'stone');
     b.block(f, px + s * (phx - 0.15), -0.9, pz, 0.15, 0.55, phz - 0.3, 0xb8ae98, 'stone');
@@ -227,8 +228,8 @@ function tilePlaza(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, team:
   }
   // kiosk you can walk into
   const k = f.sub(cx + 8, SW, cz, -Math.PI / 2);
-  b.span(k, -1.6, 0, -1.2, 1.6, 2.6, -1.0, 0xe9e1cc, 'plaster');
-  for (const s of [-1, 1]) b.span(k, s * 1.6 - 0.1, 0, -1.2, s * 1.6 + 0.1, 2.6, 1.2, 0xe9e1cc, 'plaster');
+  b.span(k, -1.7, 0, -1.2, 1.7, 2.6, -1.0, 0xe9e1cc, 'plaster');
+  for (const s of [-1, 1]) b.span(k, s * 1.6 - 0.1, 0, -1.0, s * 1.6 + 0.1, 2.6, 1.2, 0xe9e1cc, 'plaster');
   b.span(k, -1.8, 2.6, -1.4, 1.8, 2.8, 1.5, 0x3a78b8, 'paint');
   b.span(k, -1.5, 0, 0.6, 1.5, 1.0, 0.9, 0x5c5f63, 'metal');
   if (rng.chance(0.6)) busStop(b, f, cx + rng.pick([-4, 4]), cz - BLOCK + 0.9, Math.PI);
@@ -244,7 +245,7 @@ function tileGreenPond(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, t
   b.span(f, P.x1, 0, P.z0, cx + BLOCK, SW, P.z1, moss, 'grass');
   const px = (P.x0 + P.x1) / 2, pz = (P.z0 + P.z1) / 2, phx = (P.x1 - P.x0) / 2, phz = (P.z1 - P.z0) / 2;
   b.span(f, P.x0, -1.05, P.z0, P.x1, -0.95, P.z1, 0x3d4a34, 'dirt');
-  b.span(f, P.x0, -0.24, P.z0, P.x1, -0.22, P.z1, 0x388854, 'water', false); // green water
+  b.span(f, P.x0 + 0.3, -0.24, P.z0 + 0.3, P.x1 - 0.3, -0.22, P.z1 - 0.3, 0x388854, 'water', false); // green water
   for (const s of [-1, 1]) {
     b.block(f, px, -0.95, pz + s * (phz - 0.15), phx, 0.58, 0.15, 0x8d8876, 'stone');
     b.block(f, px + s * (phx - 0.15), -0.95, pz, 0.15, 0.58, phz - 0.3, 0x8d8876, 'stone');
@@ -267,7 +268,23 @@ function tileGreenPond(b: Builder, f: Frame, rng: Rng, cx: number, cz: number, t
   }
   // lily pads & lakeside fishing jetty
   b.span(f, px - 1.5, -0.15, P.z0 - 0.2, px + 1.5, 0.05, P.z0 + 2.5, 0x8a6240, 'wood');
-  for (let k = 0; k < 6; k++) b.box(f, px + rng.range(-6.5, 6.5), -0.18, pz + rng.range(-6.5, 6.5), 0.45, 0.02, 0.45, 0x45924a, 'grass', false);
+  const pads: [number, number][] = [];
+  const padBlocked = (lx: number, lz: number) =>
+    Math.abs(lz) < 2.2 // bridge piers & shadow corridor
+    || (Math.abs(lx) < 2.1 && lz < -6.3) // lakeside wooden jetty
+    || pads.some(([ox, oz]) => Math.abs(lx - ox) < 0.96 && Math.abs(lz - oz) < 0.96);
+  for (let k = 0; k < 6; k++) {
+    let lx = rng.range(-6.5, 6.5);
+    let lz = rng.range(-6.5, 6.5);
+    // Keep lily pads clear of bridge piers, jetty, and each other without extra RNG draws
+    for (let step = 0; step < 16 && padBlocked(lx, lz); step++) {
+      lx = ((lx + 6.5 + 1.75) % 13) - 6.5;
+      lz = ((lz + 6.5 + 2.35) % 13) - 6.5;
+    }
+    if (padBlocked(lx, lz)) continue;
+    pads.push([lx, lz]);
+    b.box(f, px + lx, -0.18, pz + lz, 0.45, 0.02, 0.45, 0x45924a, 'grass', false);
+  }
   for (const sx of [-10.3, 10.3]) for (const sz of [-10.3, 10.3]) b.tree(f, cx + sx, SW, cz + sz, rng.range(0.75, 1.05), 'tree');
   bench(b, f, cx - 5.5, cz - 10.5, 0);
   bench(b, f, cx + 5.5, cz + 10.5, Math.PI);
@@ -294,7 +311,7 @@ function tileAbyss(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
   // crooked narrow steel-and-plank catwalk cutting diagonally from (-9.2, 2.5) to (2.5, -9.2)
   const plank = f.sub(cx - 2.6, SW, cz - 2.6, -Math.PI * 0.25);
   b.span(plank, -0.95, -0.05, -7.8, 0.95, 0.14, 7.8, 0x8d633c, 'wood');
-  for (const sx of [-0.9, 0.9]) b.box(plank, sx, 0.55, 0, 0.04, 0.45, 7.6, 0x3a3d40, 'metal', false);
+  for (const sx of [-0.88, 0.88]) b.box(plank, sx, 0.57, 0, 0.04, 0.43, 7.6, 0x3a3d40, 'metal', false);
   // warning beacons & cones
   for (const [dx, dz] of [[-9.4, -9.2], [9.4, -9.2], [-9.4, 9.2], [9.4, 9.2]]) {
     cone(b, f, cx + dx, cz + dz, SW);
@@ -313,11 +330,11 @@ function tilePipes(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
   b.span(f, A.x1, 0, A.z0, cx + BLOCK, SW + 0.04, A.z1, 0x918c82, 'concrete');
   for (const sz of [-1, 1]) {
     const zb = sz < 0 ? A.z0 : A.z1;
-    b.span(f, A.x0, SW, zb - 0.18, A.x1, SW + 0.35, zb + 0.18, 0xd8a832, 'paint');
+    b.span(f, A.x0 - 0.18, SW, zb - 0.18, A.x1 + 0.18, SW + 0.35, zb + 0.18, 0xd8a832, 'paint');
   }
   for (const sx of [-1, 1]) {
     const xb = sx < 0 ? A.x0 : A.x1;
-    b.span(f, xb - 0.18, SW, A.z0, xb + 0.18, SW + 0.35, A.z1, 0xd8a832, 'paint');
+    b.span(f, xb - 0.18, SW, A.z0 + 0.18, xb + 0.18, SW + 0.35, A.z1 - 0.18, 0xd8a832, 'paint');
   }
   // Approach ramps & tall towers at z = ±9.6 rising up to bridge height y = 4.8 m
   const topY = SW + 4.8;
@@ -341,7 +358,7 @@ function tilePipes(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
 
 /** Industrial pipeline depot with storage tanks, elevated pipe runs, valves and catwalks. */
 function tilePipeline(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
-  b.span(f, cx - BLOCK, SW, cz - BLOCK, cx + BLOCK, SW + 0.06, cz + BLOCK, 0x8e897f, 'concrete', false);
+  b.span(f, cx - BLOCK + 0.2, SW, cz - BLOCK + 0.2, cx + BLOCK - 0.2, SW + 0.06, cz + BLOCK - 0.2, 0x8e897f, 'concrete', false);
   // two chunky cylindrical-ish industrial tanks
   for (const [tx, col] of [[-5.5, 0xd9d4c8], [0.5, 0xb8c2c8]]) {
     b.block(f, cx + tx, SW, cz - 4.5, 2.3, 2.2, 2.3, col, 'metal');
@@ -365,10 +382,14 @@ function tilePipeline(b: Builder, f: Frame, rng: Rng, cx: number, cz: number) {
 function tileBar(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
   const m = f.sub(cx, SW, cz + 1.5, 0);
   const X = 8.2, Z = 6.5, H = 4.6, T = 0.25;
-  b.span(m, -X, -0.05, -Z, X, 0.05, Z, 0x5c422c, 'wood');
+  b.span(m, -X + T, -0.05, -Z + T, X - T, 0.05, Z - T, 0x5c422c, 'wood');
+  b.span(m, -2.1, -0.05, -Z, 2.1, 0.05, -Z + T, 0x5c422c, 'wood'); // entrance threshold
   // front glazed facade with centered wide double entrance
   b.span(m, -X, 0, Z - T, X, H, Z, 0x4b3328, 'plaster'); // back wall
-  for (const sx of [-1, 1]) b.span(m, sx * X - sx * T, 0, -Z, sx * X, H, Z, 0x4b3328, 'plaster');
+  for (const sx of [-1, 1]) {
+    const x0 = sx > 0 ? X - T : -X, x1 = sx > 0 ? X : -X + T;
+    b.span(m, x0, 0, -Z + T, x1, H, Z - T, 0x4b3328, 'plaster');
+  }
   b.span(m, -X, 0, -Z, -2.1, H, -Z + T, 0x4b3328, 'plaster');
   b.span(m, 2.1, 0, -Z, X, H, -Z + T, 0x4b3328, 'plaster');
   b.span(m, -2.1, 3.1, -Z, 2.1, H, -Z + T, 0x4b3328, 'plaster');
@@ -399,14 +420,18 @@ function tileBar(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
 function tileStore(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
   const m = f.sub(cx, SW, cz + 1.5, 0);
   const X = 8.4, Z = 6.6, H = 4.4, T = 0.25;
-  b.span(m, -X, -0.05, -Z, X, 0.05, Z, 0xd8d4c8, 'paving');
-  b.span(m, -X, 0, Z - T, X, H, Z, 0xeae5d8, 'plaster');
-  for (const sx of [-1, 1]) b.span(m, sx * X - sx * T, 0, -Z, sx * X, H, Z, 0xeae5d8, 'plaster');
-  b.span(m, -X, 0, -Z, -2.2, 1.0, -Z + T, 0xeae5d8, 'plaster');
-  b.span(m, 2.2, 0, -Z, X, 1.0, -Z + T, 0xeae5d8, 'plaster');
-  b.span(m, -X, 1.0, -Z + 0.06, -2.2, 3.0, -Z + 0.18, 0x98c4d8, 'window');
-  b.span(m, 2.2, 1.0, -Z + 0.06, X, 3.0, -Z + 0.18, 0x98c4d8, 'window');
-  b.span(m, -X, 3.0, -Z, X, H, -Z + T, 0xeae5d8, 'plaster');
+  b.span(m, -X + T, -0.05, -Z + T, X - T, 0.05, Z - T, 0xd8d4c8, 'paving');
+  b.span(m, -2.2, -0.05, -Z, 2.2, 0.05, -Z + T, 0xd8d4c8, 'paving'); // entrance threshold
+  for (const sx of [-1, 1]) {
+    const x0 = sx > 0 ? X - T : -X, x1 = sx > 0 ? X : -X + T;
+    b.span(m, x0, 0, -Z, x1, H, Z, 0xeae5d8, 'plaster'); // full-depth side walls cover all 4 corners cleanly
+  }
+  b.span(m, -X + T, 0, Z - T, X - T, H, Z, 0xeae5d8, 'plaster');
+  b.span(m, -X + T, 0, -Z, -2.2, 1.0, -Z + T, 0xeae5d8, 'plaster');
+  b.span(m, 2.2, 0, -Z, X - T, 1.0, -Z + T, 0xeae5d8, 'plaster');
+  b.span(m, -X + T, 1.0, -Z + 0.06, -2.2, 3.0, -Z + 0.18, 0x98c4d8, 'window');
+  b.span(m, 2.2, 1.0, -Z + 0.06, X - T, 3.0, -Z + 0.18, 0x98c4d8, 'window');
+  b.span(m, -X + T, 3.0, -Z, X - T, H, -Z + T, 0xeae5d8, 'plaster');
   b.span(m, -X - 0.2, H, -Z - 0.3, X + 0.2, H + 0.32, Z + 0.2, 0x3b72a8, 'paint');
   b.box(m, 0, H + 0.72, -Z - 0.05, 2.3, 0.48, 0.08, 0x2f3236, 'metal', false);
   b.signDecal(m, 0, H + 0.72, -Z - 0.14, 4.3, 0.85, Math.PI, 0x3fd07f, 'МАГАЗИН 24');
@@ -427,10 +452,13 @@ function tileStore(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
 function tileCourt(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
   b.span(f, cx - BLOCK, 0, cz - BLOCK, cx + BLOCK, SW, cz + BLOCK, 0x5c6168, 'concrete');
   b.span(f, cx - 9.4, SW, cz - 10.2, cx + 9.4, SW + 0.04, cz + 10.2, 0xb85a3a, 'paint', false);
-  b.span(f, cx - 2.6, SW + 0.01, cz - 10.2, cx + 2.6, SW + 0.045, cz - 5.2, 0x2f5484, 'paint', false);
-  b.span(f, cx - 2.6, SW + 0.01, cz + 5.2, cx + 2.6, SW + 0.045, cz + 10.2, 0x2f5484, 'paint', false);
-  b.box(f, cx, SW + 0.05, cz, 9.2, 0.008, 0.07, 0xf2f0e8, 'paint', false); // half-court line
-  b.box(f, cx, SW + 0.05, cz, 1.6, 0.008, 1.6, 0xf2f0e8, 'paint', false);
+  // Blue key zones sit cleanly atop the orange court (20 mm raised, inset 2 cm from court ends)
+  b.span(f, cx - 2.6, SW + 0.04, cz - 10.18, cx + 2.6, SW + 0.06, cz - 5.2, 0x2f5484, 'paint', false);
+  b.span(f, cx - 2.6, SW + 0.04, cz + 5.2, cx + 2.6, SW + 0.06, cz + 10.18, 0x2f5484, 'paint', false);
+  // White half-court line split around the center circle so paint boxes never overlap
+  b.span(f, cx - 9.2, SW + 0.04, cz - 0.07, cx - 1.6, SW + 0.056, cz + 0.07, 0xf2f0e8, 'paint', false);
+  b.span(f, cx + 1.6, SW + 0.04, cz - 0.07, cx + 9.2, SW + 0.056, cz + 0.07, 0xf2f0e8, 'paint', false);
+  b.span(f, cx - 1.6, SW + 0.04, cz - 1.6, cx + 1.6, SW + 0.056, cz + 1.6, 0xf2f0e8, 'paint', false);
   // perimeter fence with entrances
   for (const s of [-1, 1]) {
     b.span(f, cx + s * 9.8 - 0.06, SW, cz - 10.5, cx + s * 9.8 + 0.06, SW + 2.6, cz - 2.2, 0x363a40, 'metal');
@@ -468,7 +496,7 @@ export function shopStall(b: Builder, st: Frame, R: number, color: number, team:
     const x = -2.3 + (i + 0.5) * (4.6 / stripes);
     const c = i % 2 ? 0xf4efe4 : color;
     b.box(aw, x, 0, 0, 2.3 / stripes, 0.035, 1.48, c, 'paint', false);
-    b.box(aw, x, -0.18, 1.46, 2.3 / stripes, 0.18, 0.02, c, 'paint', false);
+    b.box(aw, x, -0.195, 1.46, 2.3 / stripes, 0.16, 0.02, c, 'paint', false);
   }
   b.block(st, 0, R, 0.95, 1.5, 0.5, 0.32, 0x5c5f63, 'metal');
   b.box(st, 0, R + 1.04, 0.95, 1.62, 0.05, 0.42, 0x2f3236, 'metal');
@@ -504,8 +532,10 @@ function tileMuseum(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
   const m = f.sub(cx, SW, cz, 0);
   const X = 11.2, Z = 11.2, H = 8.4, T = 0.5;
   const STONE = 0xe8e2d2, TRIM = 0xc9beaa, DARK = 0x2f3236, GOLD = 0xd9a834, BONE = 0xf0ead6;
-  // Travertine marble floor
-  b.span(m, -X, -0.05, -Z, X, 0.08, Z, 0xd6cfc0, 'paving');
+  // Travertine marble floor (inset inside stone walls, plus thresholds in both doorways)
+  b.span(m, -X + T, -0.05, -Z + T, X - T, 0.08, Z - T, 0xd6cfc0, 'paving');
+  b.span(m, -2.4, -0.05, -Z, 2.4, 0.08, -Z + T, 0xd6cfc0, 'paving');
+  b.span(m, -2.4, -0.05, Z - T, 2.4, 0.08, Z, 0xd6cfc0, 'paving');
   // Enclosed side walls (±X) with solid corner piers, lower marble plinth, upper stone entablature & mullioned glass windows
   for (const sx of [-1, 1]) {
     const x0 = sx > 0 ? X - T : -X;
@@ -520,17 +550,17 @@ function tileMuseum(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
     b.span(m, x0 + 0.12, 2.2, -1.65, x1 - 0.12, 6.0, 1.65, 0x9ab3b8, 'window');
     b.span(m, x0 + 0.12, 2.2, 2.35, x1 - 0.12, 6.0, 5.8, 0x9ab3b8, 'window');
   }
-  // Two symmetric framed grand entrances: Front (-Z) and Rear (+Z)
+  // Two symmetric framed grand entrances: Front (-Z) and Rear (+Z), trimmed to ±(X - T) so corners never overlap side walls
   for (const sz of [-1, 1]) {
     const z0 = sz > 0 ? Z - T : -Z;
     const z1 = sz > 0 ? Z : -Z + T;
-    b.span(m, -X, 0, z0, -2.4, H, z1, STONE, 'stone');
-    b.span(m, 2.4, 0, z0, X, H, z1, STONE, 'stone');
+    b.span(m, -X + T, 0, z0, -2.4, H, z1, STONE, 'stone');
+    b.span(m, 2.4, 0, z0, X - T, H, z1, STONE, 'stone');
     b.span(m, -2.4, 4.4, z0, 2.4, H, z1, STONE, 'stone');
     // Portal metal jambs + header frame + classical portico pillars & МУЗЕЙ sign
-    b.box(m, -2.55, 2.2, sz * (Z + 0.04), 0.16, 2.2, 0.34, DARK, 'metal');
-    b.box(m, 2.55, 2.2, sz * (Z + 0.04), 0.16, 2.2, 0.34, DARK, 'metal');
-    b.box(m, 0, 4.52, sz * (Z + 0.04), 2.7, 0.16, 0.34, DARK, 'metal');
+    b.box(m, -2.44, 2.18, sz * (Z + 0.04), 0.16, 2.18, 0.34, DARK, 'metal');
+    b.box(m, 2.44, 2.18, sz * (Z + 0.04), 0.16, 2.18, 0.34, DARK, 'metal');
+    b.box(m, 0, 4.52, sz * (Z + 0.04), 2.6, 0.16, 0.34, DARK, 'metal');
     for (const pxCol of [-8.8, -4.4, 4.4, 8.8]) b.block(m, pxCol, 0, sz * (Z + 0.55), 0.42, H / 2, 0.42, 0xf0ebe0, 'stone');
     b.box(m, 0, 6.1, sz * (Z + 0.12), 2.7, 0.62, 0.08, DARK, 'metal', false);
     b.signDecal(m, 0, 6.1, sz * (Z + 0.21), 5.1, 1.1, sz < 0 ? Math.PI : 0, GOLD, 'МУЗЕЙ');
@@ -549,11 +579,11 @@ function tileMuseum(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
     b.span(m, -RX, H, za, -hx, H + 0.45, zb, STONE, 'stone');
     b.span(m, hx, H, za, RX, H + 0.45, zb, STONE, 'stone');
   }
-  // Decorative circular curb ring framing the open oculus
+  // Decorative circular curb ring framing the open oculus (hz = 0.62 fits cleanly edge-to-edge without segment overlap)
   for (let i = 0; i < 20; i++) {
     const a = (i / 20) * Math.PI * 2;
     const rb = m.sub(Math.cos(a) * R, H + 0.22, Math.sin(a) * R, -a);
-    b.box(rb, 0, 0, 0, 0.28, 0.28, 0.72, TRIM, 'stone', false);
+    b.box(rb, 0, 0, 0, 0.28, 0.28, 0.62, TRIM, 'stone', false);
   }
 
   // --- Exhibit 1: Dinosaur Skeleton (west wing) ---
@@ -572,12 +602,12 @@ function tileMuseum(b: Builder, f: Frame, _rng: Rng, cx: number, cz: number) {
     b.box(m, dx, ySeg, zSeg, 0.22 - i * 0.025, 0.2, 0.32, BONE, 'stone', false); // tail
   }
   for (let i = 0; i < 5; i++) {
-    const zSeg = dz - 0.4 - i * 0.62;
+    const zSeg = dz - 0.55 - i * 0.62;
     const ySeg = 3.7 + i * 0.22;
     b.box(m, dx, ySeg, zSeg, 0.22, 0.22, 0.28, BONE, 'stone', false); // spine
     for (const sx of [-1, 1]) {
-      b.box(m, dx + sx * 0.75, ySeg - 0.45, zSeg, 0.45, 0.09, 0.09, BONE, 'stone', false);
-      b.box(m, dx + sx * 1.1, ySeg - 0.9, zSeg, 0.09, 0.45, 0.09, BONE, 'stone', false);
+      b.box(m, dx + sx * 0.655, ySeg - 0.45, zSeg, 0.355, 0.09, 0.09, BONE, 'stone', false);
+      b.box(m, dx + sx * 1.1, ySeg - 0.81, zSeg, 0.09, 0.45, 0.09, BONE, 'stone', false);
     }
   }
   // T-Rex skull + open jaw + fangs
@@ -658,8 +688,8 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
       b.span(w, dx0, DH, H - T, dx1, RT, H, WALL, 'concrete');
       // Square 4.5 × 4.5 m global-grid portal vestibule protruding cleanly from z = H (12.0) to z = 13.5
       const jambW = 0.36;
-      b.span(w, dx0 - jambW, 0, H, dx0, DH + 0.36, PORTAL_Z, DARK, 'metal');
-      b.span(w, dx1, 0, H, dx1 + jambW, DH + 0.36, PORTAL_Z, DARK, 'metal');
+      b.span(w, dx0 - jambW, 0, H, dx0, DH, PORTAL_Z, DARK, 'metal');
+      b.span(w, dx1, 0, H, dx1 + jambW, DH, PORTAL_Z, DARK, 'metal');
       b.span(w, dx0 - jambW, DH, H, dx1 + jambW, DH + 0.36, PORTAL_Z, DARK, 'metal');
       // Glowing team strip frame strictly outside the clear 4.5 × 4.5 aperture
       b.box(w, dx0 - 0.18, DH * 0.5, PORTAL_Z + 0.03, 0.08, DH * 0.44, 0.03, team.color, 'glow', false);
@@ -687,14 +717,15 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
     const midX = s * ((RX0 + RX1) / 2);
     const slabF = h.tilt(midX, SW + HALL_H / 2, 0, 0, -s * slope);
     b.box(slabF, 0, -0.225, 0, (RX1 - RX0) / 2, 0.225, rampHalfLen, 0xb8b3a8, 'concrete');
-    // Structural steel post supporting the inner edge at the high end (leaving under-ramp space completely walkable)
-    b.block(h, s * (RX0 + 0.14), SW, hi - s * 0.25, 0.14, (HALL_H - 0.45) / 2, 0.14, DARK, 'metal');
-    const rail = h.tilt(s * RX0 - s * 0.05, SW + HALL_H / 2 + 0.85, 0, 0, -s * slope);
-    b.box(rail, 0, 0, 0, 0.04, 0.04, rampHalfLen, DARK, 'metal', false);
+    // Structural steel post supporting the inner edge at the high end (inset 4 cm under ramp soffit)
+    b.block(h, s * (RX0 + 0.18), SW, hi - s * 0.25, 0.14, (HALL_H - 0.55) / 2, 0.14, DARK, 'metal');
+    const railX = s * (RX0 - 0.04);
+    const rail = h.tilt(railX, SW + HALL_H / 2 + 0.84, 0, 0, -s * slope);
+    b.box(rail, 0, 0, 0, 0.02, 0.028, rampHalfLen - 0.04, DARK, 'metal', false);
     for (const t of [0, 0.35, 0.65, 1]) {
       const rz = lo + (hi - lo) * t;
       const ry = SW + HALL_H * t;
-      b.block(h, s * RX0 - s * 0.05, ry, rz, 0.04, 0.425, 0.04, DARK, 'metal', false);
+      b.block(h, railX, ry, rz, 0.032, 0.445, 0.032, DARK, 'metal', false);
     }
     // Warm architectural strip lighting underneath the high ramp soffit
     b.box(h, midX, SW + HALL_H * 0.72, hi * 0.62, 0.2, 0.03, 2.2, 0xfff0cc, 'glow', false);
@@ -708,12 +739,17 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
   roof(-HI, -RX0, -2, HI); roof(-HI, -RX0, -HI, -RZ); roof(-HI, -RX1, -RZ, -2);
   for (const s of [-1, 1]) {
     // Open post-and-rail safety guardrails around each roof stairwell opening (open at z = s * RZ where the ramp arrives)
-    const rx = s * (RX0 - 0.05);
-    for (const z of [s * 2, s * 5]) b.block(h, rx, RT, z, 0.04, 0.445, 0.04, DARK, 'metal');
-    for (const x of [s * ((RX0 + RX1) / 2), s * (RX1 + 0.05)]) b.block(h, x, RT, s * 2, 0.04, 0.445, 0.04, DARK, 'metal');
-    for (const [y, hy] of [[0.44, 0.03], [0.85, 0.04]]) {
-      b.box(h, rx, RT + y, s * 5, hy, hy, 3.0, DARK, 'metal');
-      b.box(h, s * (RX0 + RX1) / 2, RT + y, s * 2, (RX1 - RX0) / 2 + 0.05, hy, hy, DARK, 'metal');
+    const rx = s * (RX0 - 0.12);
+    const postH = 0.042;
+    for (const z of [s * 2, s * 5, s * 8]) b.block(h, rx, RT, z, postH, 0.445, postH, DARK, 'metal');
+    for (const x of [s * ((RX0 + RX1) / 2), s * (RX1 + 0.05)]) b.block(h, x, RT, s * 2, postH, 0.445, postH, DARK, 'metal');
+    const zSpanHalf = 3.0 - postH; // connects z = s*2..s*8 posts cleanly between post faces
+    const xEnd = s * (RX1 + 0.05);
+    const xMid = (rx + xEnd) / 2;
+    const xSpanHalf = Math.abs(xEnd - rx) / 2 - postH;
+    for (const [y, hy] of [[0.44, 0.025], [0.84, 0.028]]) {
+      b.box(h, rx, RT + y, s * 5, 0.022, hy, zSpanHalf, DARK, 'metal');
+      b.box(h, xMid, RT + y, s * 2, xSpanHalf, hy, 0.022, DARK, 'metal');
     }
   }
   for (const x of [-5, 0, 5]) b.box(h, x, RT - 0.45, 0, 0.25, 0.02, H - 3, 0xfff4dc, 'glow', false);
@@ -728,10 +764,11 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
       b.block(w, cc, RT + 1, H - 0.15, clen, 0.04, 0.18, team.color, 'paint', false);
     }
   }
-  b.box(h, 0, SW + 6.0, -H - 0.05, 3.8, 0.58, 0.04, DARK, 'metal', false);
-  b.box(h, 0, SW + 6.0, H + 0.05, 3.8, 0.58, 0.04, DARK, 'metal', false);
-  b.signDecal(h, 0, SW + 6.0, -H - 0.11, 7, 1.1, Math.PI, team.color, team.name.toUpperCase());
-  b.signDecal(h, 0, SW + 6.0, H + 0.11, 7, 1.1, 0, team.color, team.name.toUpperCase());
+  // Sign backing sits proud of outer ribbon glass (z = ±12.05) so metal and glass never share a coplanar plane
+  b.box(h, 0, SW + 6.0, -H - 0.085, 3.8, 0.58, 0.025, DARK, 'metal', false);
+  b.box(h, 0, SW + 6.0, H + 0.085, 3.8, 0.58, 0.025, DARK, 'metal', false);
+  b.signDecal(h, 0, SW + 6.0, -H - 0.13, 7, 1.1, Math.PI, team.color, team.name.toUpperCase());
+  b.signDecal(h, 0, SW + 6.0, H + 0.13, 7, 1.1, 0, team.color, team.name.toUpperCase());
 
   // the crystal on its pedestal + fortification ring (pedestal stays strictly inside ±1.50 so fort blocks at ±2 never clip or Z-fight)
   b.box(h, 0, SW + 0.05, 0, 1.48, 0.05, 1.48, DARK, 'metal', false);
@@ -762,10 +799,10 @@ function genHall(b: Builder, f: Frame, team: TeamDef, cx: number, cz: number) {
     b.block(h, rx, RT + 2.04, rz, 0.38, 0.06, 0.38, DARK, 'metal', false);
   }
 
-  // spawn in the back-right quarter, looking towards the front door
+  // spawn in the back-right quarter, looking towards the front door (floor slab top is SW + 0.04)
   const [spx, spz] = [5, 6];
-  b.floorDecal(h, 'spawn', spx, SW, spz, 3.2, 3.2, 0, team.color);
-  b.floorDecal(h, 'text', spx, SW, spz - 3.6, 4.2, 1.05, 0, team.color, team.name);
+  b.floorDecal(h, 'spawn', spx, SW + 0.04, spz, 3.2, 3.2, 0, team.color);
+  b.floorDecal(h, 'text', spx, SW + 0.04, spz - 3.6, 4.2, 1.05, 0, team.color, team.name);
   b.data.spawns[team.id] = { pos: h.p(spx, SW + PLAYER_HEIGHT / 2 + 0.05, spz), quat: f.rot(0), yaw: 0 };
 
   // Shop neatly housed in the spacious open arcade underneath the west ramp (opening towards +X into the hall)

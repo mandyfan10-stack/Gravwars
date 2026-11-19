@@ -239,22 +239,32 @@ function faceGround(b: Builder, p: FacePlan, outerRimCheck = true) {
       // side frame: local +z points out of the tile through this side, x runs along it
       const s = f.sub(cx + di * H, 0, cz + dj * H, Math.atan2(di, dj));
       if (!rim) {
-        // shared road: dashed centre line (drawn once, from the tile with the smaller index, skipped over road pits)
+        // shared road: dashed centre line (drawn once, from the tile with the smaller index, skipped over road pits & hazard stripes)
         if (di + dj > 0) for (let a = -H + 7; a <= H - 7; a += 3.6) {
           const l = f.local(new Vector3(...s.p(a, 0, 0)));
-          if (allTileHoles.some((h) => l.x >= h.x0 - 0.8 && l.x <= h.x1 + 0.8 && l.z >= h.z0 - 0.8 && l.z <= h.z1 + 0.8)) continue;
+          if (allTileHoles.some((h) => l.x >= h.x0 - 1.4 && l.x <= h.x1 + 1.4 && l.z >= h.z0 - 1.4 && l.z <= h.z1 + 1.4)) continue;
           b.box(s, a, 0.015, 0, 0.9, 0.012, 0.08, 0xece6d6, 'paint', false);
         }
         continue;
       }
-      // If this rim is an internal indentation (where an outer tile is missing), keep a 4 m road apron so corner road nodes stay walkable
+      // If this rim is an internal indentation (where an outer tile is missing), keep a 4 m road apron so corner road nodes stay walkable.
+      // At concave inner corners where two perpendicular tiles border the same missing slot, trim the ±X apron so aprons never overlap.
       const outerFaceRim = outerRimCheck ? (Math.abs(t.i + di) > N || Math.abs(t.j + dj) > N) : true;
+      const mi = t.i + di, mj = t.j + dj;
+      const cornerLo = has.has(key(mi - dj, mj + di));
+      const cornerHi = has.has(key(mi + dj, mj - di));
       if (!outerFaceRim) {
-        b.box(s, 0, -0.75, 2.0, H, 0.75, 2.0, 0x77736d, 'asphalt');
-        b.box(s, 0, -2.1, 1.7, H, 0.6, 1.7, 0x8f8a80, 'concrete');
+        const trimA = di !== 0 ? 4.0 : 0;
+        const a0 = -H + (cornerLo ? trimA : 0), a1 = H - (cornerHi ? trimA : 0);
+        if (a1 > a0 + 0.1) b.box(s, (a0 + a1) / 2, -0.75, 2.0, (a1 - a0) / 2, 0.75, 2.0, 0x77736d, 'asphalt');
+        const trimC = di !== 0 ? 3.4 : 0;
+        const c0 = -H + (cornerLo ? trimC : 0), c1 = H - (cornerHi ? trimC : 0);
+        if (c1 > c0 + 0.1) b.box(s, (c0 + c1) / 2, -2.1, 1.7, (c1 - c0) / 2, 0.6, 1.7, 0x8f8a80, 'concrete');
       }
       // Ruined / broken border: jagged concrete & asphalt ledges, gaps, rubble chunks and exposed rebar instead of a straight wall
       const zOff = outerFaceRim ? 0 : 4.0;
+      const subZStart = outerFaceRim ? -0.3 : 3.4; // concrete sub-slab / sub-apron outer edge
+      const cornerMargin = outerFaceRim ? 4.5 : 8.5; // keep jagged teeth/shelves clear of perpendicular rim teeth in concave nooks
       for (let a = -H; a < H; a += PIECE_CELL) {
         const m = a + PIECE_CELL / 2;
         const w = new Vector3(...s.p(m, 0, -0.3));
@@ -264,23 +274,27 @@ function faceGround(b: Builder, p: FacePlan, outerRimCheck = true) {
           for (let k = 0; k < 3; k++) b.box(s, m, 0.015, -1.2 - k * 1.4, 1.4, 0.012, 0.25, p.team ? p.team.color : 0xe8e2d0, 'paint', false);
           continue;
         }
-        // jagged broken slab teeth sticking out into the void
-        if (brng.chance(0.72)) {
+        const inConcaveCorner = (cornerLo && a < -H + cornerMargin) || (cornerHi && a + PIECE_CELL > H - cornerMargin);
+        // jagged broken slab teeth sticking out into the void (kept strictly within y ∈ [-1.46, 0] and within their cell so they never overlap shelves or neighbors)
+        if (!inConcaveCorner && brng.chance(0.72)) {
           const jut = brng.range(0.45, 1.85);
           const drop = brng.range(0.04, 0.32);
-          const thick = brng.range(0.45, 0.95);
-          b.box(s, m + brng.range(-0.25, 0.25), -drop - thick, zOff + jut, PIECE_CELL * brng.range(0.32, 0.52), thick, jut,
+          const thick = Math.min(brng.range(0.42, 0.70), (1.46 - drop) / 2);
+          const jx = brng.range(-0.2, 0.2);
+          const hx = Math.min(PIECE_CELL * brng.range(0.32, 0.45), PIECE_CELL * 0.48 - Math.abs(jx));
+          b.box(s, m + jx, -drop - thick, zOff + jut, hx, thick, jut,
             brng.chance(0.5) ? 0x77736d : 0x8f8a80, brng.chance(0.5) ? 'asphalt' : 'concrete', false);
         }
-        // lower broken under-slab shelf & sticking-out rebar
-        if (brng.chance(0.55)) {
+        // lower broken under-slab shelf & sticking-out rebar (anchored to concrete sub-slab edge so back face is never exposed or coplanar with upper teeth)
+        if (!inConcaveCorner && brng.chance(0.55)) {
           const jut2 = brng.range(0.8, 2.6);
-          b.box(s, m, -2.1, zOff + jut2 * 0.7, PIECE_CELL * 0.42, 0.55, jut2 * 0.7, 0x847e74, 'concrete', false);
-          b.box(s, m + brng.range(-0.5, 0.5), -1.35, zOff + jut2 + 0.4, 0.06, 0.06, 0.9, 0x3b3530, 'metal', false);
+          const shelfHalfZ = jut2 * 0.7;
+          b.box(s, m, -2.1, subZStart + shelfHalfZ, PIECE_CELL * 0.42, 0.55, shelfHalfZ, 0x847e74, 'concrete', false);
+          b.box(s, m + brng.range(-0.5, 0.5), di !== 0 ? -1.85 : -2.05, subZStart + shelfHalfZ * 2 + 0.45, 0.06, 0.06, 0.45, 0x3b3530, 'metal', false);
         }
         // broken kerb / rubble fragments along the edge (kept clear of the road x = TILE/2 so tests can walk off cleanly)
         const onMainRoad = Math.abs(l.x - H) < 3.5 || Math.abs(l.x + H) < 3.5 || Math.abs(l.z - H) < 3.5 || Math.abs(l.z + H) < 3.5;
-        if (!onMainRoad && brng.chance(0.48)) {
+        if (!inConcaveCorner && !onMainRoad && brng.chance(0.48)) {
           const rh = brng.range(0.14, 0.36);
           b.box(s, m + brng.range(-0.4, 0.4), rh, zOff - brng.range(0.2, 0.7), brng.range(0.4, 0.95), rh, brng.range(0.28, 0.55),
             brng.chance(0.6) ? 0x9e9789 : 0x6f6b65, 'stone', false);
@@ -323,9 +337,11 @@ function faceStreets(b: Builder, p: FacePlan, rng: Rng) {
       const skipSide = (t.kind === 'plaza' && dj === -1) || ((t.kind === 'museum' || t.kind === 'bar' || t.kind === 'store') && dj === -1);
       if (furnished.has(t.kind) && !skipSide) {
         const s = f.sub(cx + di * (BLOCK - 1), 0, cz + dj * (BLOCK - 1), Math.atan2(di, dj));
-        if (rng.chance(0.5)) bench(b, s, rng.range(-3.5, 3.5), 0.25, 0);
-        if (rng.chance(0.5)) bin(b, s, rng.pick([-6.8, 6.8]), 0.4);
-        if (rng.chance(0.3)) hydrant(b, s, rng.pick([-8.8, 8.8]), 0.55);
+        // Keep RNG consumption identical while suppressing street props where museum walls/portals or court bleachers occupy the edge
+        const blocked = t.kind === 'museum' || (t.kind === 'court' && di === -1);
+        if (rng.chance(0.5)) { const x = rng.range(-3.5, 3.5); if (!blocked) bench(b, s, x, 0.25, 0); }
+        if (rng.chance(0.5)) { const x = rng.pick([-6.8, 6.8]); if (!blocked) bin(b, s, x, 0.4); }
+        if (rng.chance(0.3)) { const x = rng.pick([-8.8, 8.8]); if (!blocked) hydrant(b, s, x, 0.55); }
       }
       const s = f.sub(cx + di * H, 0, cz + dj * H, Math.atan2(di, dj));
       const toFace = (a: number, z: number) => f.local(new Vector3(...s.p(a, 0, z)));
