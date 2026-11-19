@@ -34,6 +34,7 @@ export class MenuBackdrop {
   private world: BuiltWorld | null = null;
   private key = '';
   private running = false;
+  private rafId = 0;
   private time = 0;
   private last = 0;
   /** Starting angle: the first frame already looks at something (see `pose`). */
@@ -66,7 +67,7 @@ export class MenuBackdrop {
     const propView = buildPropView(map, assets);
     this.gfx.scene.add(mapView.group, propView, this.dust);
     this.world = { map, mapView, propView };
-    this.key = MenuBackdrop.keyOf(seed, spawnTeam, teams, mode);
+    this.key = backdropKey(seed, spawnTeam, teams, mode);
     mapView.cull(this.gfx.camera.position, Infinity);
     this.running = true;
     this.last = performance.now();
@@ -80,32 +81,31 @@ export class MenuBackdrop {
    */
   take(spawnTeam: string, teams: readonly string[], seed = 1337, mode: GameMode = 'standard'): BuiltWorld | null {
     this.running = false;
+    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
     document.body.classList.remove('backdrop', 'boot');
     this.gfx.scene.remove(this.dust);
     const w = this.world;
     this.world = null;
-    if (!w) { this.dust.geometry.dispose(); return null; }
-    if (this.key === MenuBackdrop.keyOf(seed, spawnTeam, teams, mode)) return w;
-    this.dust.geometry.dispose();
+    if (!w) return null;
+    if (this.key === backdropKey(seed, spawnTeam, teams, mode)) return w;
     this.gfx.scene.remove(w.mapView.group, w.propView);
-    for (const g of [w.mapView.group, w.propView]) free(g);
+    for (const g of [w.mapView.group, w.propView]) freeSceneObject(g);
+    this.key = '';
     return null;
   }
 
   /** Resume the scenic rotating menu camera over an already built world when exiting a match back to the menu. */
-  resumeExisting(world: BuiltWorld) {
+  resumeExisting(world: BuiltWorld, key = '') {
+    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
     this.world = world;
+    this.key = key;
     this.gfx.setSunVisible(world.map.cube.halfY === undefined);
-    this.gfx.scene.add(this.dust);
+    if (this.dust.parent !== this.gfx.scene) this.gfx.scene.add(this.dust);
     world.mapView.cull(this.gfx.camera.position, Infinity);
     this.running = true;
     this.last = performance.now();
     this.frame();
     document.body.classList.add('backdrop');
-  }
-
-  private static keyOf(seed: number, spawnTeam: string, teams: readonly string[], mode = 'standard') {
-    return `${seed}|${mode}|${spawnTeam}|${[...teams].sort().join(',')}`;
   }
 
   /** The shot (tunable from the console): see `pose`. */
@@ -143,7 +143,7 @@ export class MenuBackdrop {
     this.world.mapView.update(this.time, dt);
     gfx.overlay.enabled = false;
     gfx.render(dt);
-    requestAnimationFrame(this.frame);
+    this.rafId = requestAnimationFrame(this.frame);
     // the first frame is up: fade the world in from black
     document.body.classList.remove('boot');
   };
@@ -169,8 +169,12 @@ export class MenuBackdrop {
   }
 }
 
-/** Free the GPU buffers of a removed group (materials and textures are shared with the match build: left alone). */
-function free(root: Object3D) {
+export function backdropKey(seed: number, spawnTeam: string, teams: readonly string[], mode = 'standard') {
+  return `${seed}|${mode}|${spawnTeam}|${[...teams].sort().join(',')}`;
+}
+
+/** Free the GPU buffers of a removed group (shared materials and textures are left alone). */
+export function freeSceneObject(root: Object3D) {
   root.traverse((o) => {
     if ((o as InstancedMesh).isInstancedMesh) (o as InstancedMesh).dispose();
     if ((o as Mesh).isMesh) ((o as Mesh).geometry as BufferGeometry).dispose();

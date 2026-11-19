@@ -48,4 +48,17 @@ export class GravityGizmo {
     renderer.setViewport(0, 0, full.x, full.y);
     renderer.autoClear = true;
   }
+
+  dispose() {
+    this.scene.traverse((o) => {
+      const m = o as Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        if (Array.isArray(m.material)) m.material.forEach((mt) => mt.dispose());
+        else m.material.dispose();
+      }
+    });
+    this.scene.clear();
+    this.arrows.length = 0;
+  }
 }

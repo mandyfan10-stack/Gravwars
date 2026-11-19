@@ -1,26 +1,35 @@
 import { Quaternion, Vector3 } from 'three';
+import { HostSnapshotBuilder } from '../../src/client/net/netHostSnapshot';
+import { playRemoteGunAudio } from '../../src/client/net/netTypes';
 import { PMoveClient } from '../../src/client/net/pmoveClient';
 import { EntitySnapshotEntry, INTERP_DELAY_MS, sampleEntityInterpolation } from '../../src/client/net/remotePlayerManager';
 import { BlockSystem, piecePlan } from '../../src/shared/blocks';
 import { Combat, MAX_HP, Target } from '../../src/shared/combat';
 import { TICK_DT, WORLD } from '../../src/shared/constants';
-import { Pickups } from '../../src/shared/economy';
+import { Economy, Pickups, SHOP } from '../../src/shared/economy';
 import {
   canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, sanitizeLocalLobby, seatPlayer,
 } from '../../src/shared/lobby';
 import { Match } from '../../src/shared/match';
 import {
+  applyRemoteClientJetpackEvents, syncRemoteClientJetpack, wireRemoteClientArmor,
+} from '../../src/shared/net/hostGear';
+import {
   capturePMoveState, IN_DUCK, IN_JUMP, IN_SPEED, sanitizeUserCommand, SimulateMovement,
 } from '../../src/shared/net/pmove';
 import { peerIdToRoom, roomToPeerId } from '../../src/shared/net/protocol';
+import {
+  ENTITY_FAR_STRIDE, ENTITY_FULL_RESYNC_TICKS, ENTITY_NEAR_DIST, ENTITY_NEAR_STRIDE,
+  q1, q3, qQuat, qVec3, SnapshotScheduler,
+} from '../../src/shared/net/snapshot';
 import {
   clampNum, cleanBuildPlace, EYE_SLACK, eyeNear, fireInterval, isDir, isItemId, isPieceVariant, isQuat, isVec3,
   isWeaponId, MIN_FISH_INTERVAL, nearPond, RateLimiter,
 } from '../../src/shared/net/validate';
 import { buildPhysicsWorld } from '../../src/shared/physics';
-import { PlayerSim } from '../../src/shared/sim';
+import { JETPACK, PlayerSim } from '../../src/shared/sim';
 import { TEAMS } from '../../src/shared/teams';
-import { WEAPONS } from '../../src/shared/weapons';
+import { createWeaponState, giveWeapon, totalFuelAmmo, WEAPONS } from '../../src/shared/weapons';
 import type { SimHarness } from '../harness';
 
 export function runNetTests(h: SimHarness) {
@@ -284,5 +293,138 @@ export function runNetTests(h: SimHarness) {
     const atPond = new Vector3(...pond.pos);
     check('validate: a fish catch only counts near a pond and no faster than a full cast cycle',
       nearPond(atPond, map.ponds) && !nearPond(new Vector3(0, 400, 0), map.ponds) && MIN_FISH_INTERVAL >= 2.5);
+  }
+
+  // P2P v0.3 regressions: remote client armor, jetpack flight/fuel/overheat, revolver audio, maxHp & snapshot optimization
+  {
+    const w = buildPhysicsWorld(R, map);
+    const sim = new PlayerSim(R, w, map, 'blue');
+    const combat = new Combat(R, w, map, [sim.mover.collider]);
+    const weapons = createWeaponState();
+    const wallet = { cash: 100, crystal: 50 };
+    const inv = { wood: 16, stone: 0, metal: 0 };
+    const eco = new Economy(wallet, { inventory: inv }, weapons);
+    const target: Target = {
+      id: 2001, team: 'blue', center: sim.state.pos, up: new Vector3(0, 1, 0),
+      vel: sim.state.vel, hp: 180, maxHp: 180, alive: true, respawnIn: -1, isHuman: true,
+    };
+    combat.targets.push(target);
+    const rc = {
+      sim, target, weapons, eco, team: 'blue' as const,
+      dirtySync: false,
+      pendingNotice: undefined as { text: string; color: string } | undefined,
+    };
+    wireRemoteClientArmor(rc);
+
+    const armorItem = SHOP.find((s) => s.id === 'armor')!;
+    const buyArmorRes = eco.buy(armorItem);
+    const armorActiveAfterBuy = target.armor === true && rc.dirtySync;
+    rc.dirtySync = false;
+    combat.damage(target, 999, 0, false, sim.state.pos, { raw: true, noPush: true });
+    check('p2p host: remote client armor activates on purchase and saves from lethal damage',
+      buyArmorRes === 'ok' && armorActiveAfterBuy && target.alive && target.hp === 90
+      && !target.armor && !eco.has('armor') && rc.dirtySync && !!rc.pendingNotice,
+      `hp=${target.hp} armor=${target.armor}`);
+
+    // Jetpack flight, fuel drain, and overheat explosion on host remote client sim
+    const jpItem = SHOP.find((s) => s.id === 'jetpack')!;
+    eco.buy(jpItem);
+    giveWeapon(weapons, 'pistol', 15);
+    weapons.reserve.pistol = 60; // enough fuel for >12s continuous flight (48 rounds)
+    const fuelBefore = totalFuelAmmo(weapons);
+    sim.surfaces = false;
+    sim.state.pos.set(0, -110, 0);
+    sim.state.vel.set(0, 0, 0);
+    sim.state.onGround = false;
+    sim.state.jumpHold = 0;
+    sim.mover.place(sim.state);
+    let fuelEvents = 0;
+    let exploded = false;
+    const cmd = { tick: 1, forwardmove: 0, sidemove: 0, upmove: 0, viewangles: [0, 0.8] as [number, number], buttons: IN_JUMP };
+    for (let k = 0; k < Math.ceil((JETPACK.maxFlight + 0.5) / TICK_DT); k++) {
+      cmd.tick = k + 1;
+      syncRemoteClientJetpack(rc);
+      SimulateMovement(sim, cmd, TICK_DT);
+      for (const ev of sim.events.splice(0)) {
+        if (ev.type === 'jetpackFuel') fuelEvents++;
+        if (ev.type === 'jetpackExplode') exploded = true;
+        applyRemoteClientJetpackEvents(rc, ev, combat);
+      }
+      if (exploded) break;
+    }
+    const fuelAfter = totalFuelAmmo(weapons);
+    check('p2p host: remote client jetpack flies, consumes fuel, and triggers overheat explosion',
+      fuelEvents >= 40 && fuelAfter < fuelBefore && exploded && target.hp < 90
+      && combat.events.some((e) => e.type === 'explode'),
+      `fuel=${fuelBefore}->${fuelAfter} hp=${target.hp}`);
+
+    // Remote gun audio includes revolver and forwards crossbow charge
+    const calls: string[] = [];
+    const fakeDeps = {
+      camera: { position: new Vector3(0, 0, 0) } as never,
+      audio: {
+        shotgun: (d: number) => calls.push(`shotgun:${d.toFixed(0)}`),
+        revolver: (d: number) => calls.push(`revolver:${d.toFixed(0)}`),
+        rocket: (d: number) => calls.push(`rocket:${d.toFixed(0)}`),
+        crossbowShot: (c: number, d: number) => calls.push(`crossbow:${c.toFixed(1)}:${d.toFixed(0)}`),
+        shot: (p: boolean, d: number) => calls.push(`${p ? 'pistol' : 'rifle'}:${d.toFixed(0)}`),
+      } as never,
+    };
+    playRemoteGunAudio('revolver', new Vector3(10, 0, 0), fakeDeps);
+    playRemoteGunAudio('crossbow', new Vector3(5, 0, 0), fakeDeps, 2.5);
+    check('p2p audio: playRemoteGunAudio plays revolver and forwards crossbow charge level',
+      calls[0] === 'revolver:10' && calls[1] === 'crossbow:2.5:5', calls.join(', '));
+
+    // Snapshot quantization & SnapshotScheduler relevancy / rate throttling
+    const qv = qVec3(1.2345678, -9.8765432, NaN);
+    const qq = qQuat(0.123456, 0, 0, 0.992351);
+    check('snapshot quantization rounds vectors, quaternions, and scalars safely',
+      qv[0] === 1.235 && qv[1] === -9.877 && qv[2] === 0 && qq[0] === 0.1235 && qq[3] === 0.9924
+      && q1(99.94) === 99.9 && q3(0.1234) === 0.123);
+
+    const sched = new SnapshotScheduler();
+    const obs: [number, number, number][] = [[0, 0, 0]];
+    let nearCount = 0, farCount = 0, deadCount = 0, urgentCount = 0;
+    for (let tick = 1; tick <= ENTITY_FULL_RESYNC_TICKS; tick++) {
+      if (sched.shouldSend('npc', 1, true, false, [10, 0, 0], obs, tick)) nearCount++;
+      if (sched.shouldSend('npc', 2, true, false, [ENTITY_NEAR_DIST + 50, 0, 0], obs, tick)) farCount++;
+      if (sched.shouldSend('npc', 3, tick <= 2, false, [10, 0, 0], obs, tick)) deadCount++;
+      if (sched.shouldSend('car', 4, true, true, [ENTITY_NEAR_DIST + 80, 0, 0], obs, tick)) urgentCount++;
+    }
+    check('SnapshotScheduler throttles near/far entities, suppresses dead repeats, and keeps urgent entities at full rate',
+      nearCount < ENTITY_FULL_RESYNC_TICKS && farCount < nearCount
+      && nearCount <= Math.ceil(ENTITY_FULL_RESYNC_TICKS / ENTITY_NEAR_STRIDE) + 2
+      && farCount <= Math.ceil(ENTITY_FULL_RESYNC_TICKS / ENTITY_FAR_STRIDE) + 2
+      && deadCount <= 4 && urgentCount === ENTITY_FULL_RESYNC_TICKS,
+      `near=${nearCount} far=${farCount} dead=${deadCount} urgent=${urgentCount}`);
+
+    // HostSnapshotBuilder preserves scaled maxHp and marks routine snapshots as unreliable/fast
+    const sb = new HostSnapshotBuilder();
+    const bs = new BlockSystem(R, w);
+    const m = new Match(R, w, map, bs, 'red');
+    const pk = new Pickups(R, w, map);
+    const dummyDeps = {
+      sim,
+      player: { me: { hp: 160, maxHp: 200, alive: true }, weapons },
+      match: m,
+      map,
+      bots: { bots: [] },
+      npcs: { npcs: [], cars: [] },
+      pickups: pk,
+      props: { consumeNetDirty: () => [] },
+      combat,
+    } as never;
+    const rcMap = new Map([['peer-1', {
+      peerId: 'peer-1', name: 'Guest', team: 'blue' as const, sim, target, weapons,
+      yaw: 0, pitch: 0, firing: false, out: false, disconnected: false, lastSeq: 1, lastTick: 1,
+    } as never]]);
+    const first = sb.build(dummyDeps, 'host', 'red', false, new Map(), rcMap);
+    const second = sb.build(dummyDeps, 'host', 'red', false, new Map(), rcMap);
+    pk.version++;
+    const third = sb.build(dummyDeps, 'host', 'red', false, new Map(), rcMap);
+    check('HostSnapshotBuilder preserves custom maxHp and routes routine snapshots over fast channel',
+      first.reliable === true && second.reliable === false && third.reliable === true
+      && first.players[0].maxHp === 200 && first.players[1].maxHp === 180,
+      `rel=${first.reliable},${second.reliable},${third.reliable} maxHp=${first.players[0].maxHp}/${first.players[1].maxHp}`);
   }
 }

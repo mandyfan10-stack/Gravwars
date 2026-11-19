@@ -32,6 +32,9 @@ const JOIN_TIMEOUT_MS = 20_000;
 const PING_INTERVAL_MS = 2_000;
 const MAX_HOST_RETRIES = 3;
 const MAX_SIGNALING_RECONNECTS = 3;
+const FAST_CHANNEL_LABEL = 'fast';
+/** Drop ephemeral unordered packets when the DataChannel send buffer exceeds this (bytes) to avoid bufferbloat. */
+const FAST_MAX_BUFFERED = 65_536;
 
 /** Human-readable Russian description for common PeerJS / WebRTC errors. */
 export function formatPeerError(err: unknown): string {
@@ -61,9 +64,11 @@ export function formatPeerError(err: unknown): string {
 export class P2PTransport {
   private peer: Peer | null = null;
   private connections = new Map<string, DataConnection>();
+  private fastConnections = new Map<string, DataConnection>();
   private peerRtts = new Map<string, number>();
   private lastSeen = new Map<string, number>();
   private hostConn: DataConnection | null = null;
+  private hostFastConn: DataConnection | null = null;
   private pingInterval: number | null = null;
   private reconnectTimer: number | null = null;
   private closed = false;
@@ -132,7 +137,11 @@ export class P2PTransport {
             try { conn.close(); } catch {}
             return;
           }
-          this.setupConnection(conn);
+          if (conn.label === FAST_CHANNEL_LABEL) {
+            this.setupFastConnection(conn);
+          } else {
+            this.setupConnection(conn);
+          }
         });
 
         peer.on('error', (err) => {
@@ -206,6 +215,7 @@ export class P2PTransport {
               settled = true;
               clearTimer();
               this.startPingLoop();
+              this.openFastChannelToHost(peer, targetPeerId);
               resolve();
             },
             () => {
@@ -247,6 +257,55 @@ export class P2PTransport {
     });
   }
 
+  private handleIncomingData(conn: DataConnection, raw: unknown, viaFast: boolean) {
+    this.lastSeen.set(conn.peer, Date.now());
+    if (!raw || typeof raw !== 'object' || !('kind' in raw)) return;
+    const packet = raw as NetPacket;
+    if (packet.kind === 'ping') {
+      if (viaFast) this.sendFastTo(conn.peer, { kind: 'pong', t: packet.t });
+      else this.sendTo(conn.peer, { kind: 'pong', t: packet.t });
+      return;
+    }
+    if (packet.kind === 'pong') {
+      const rtt = Math.max(1, Date.now() - packet.t);
+      this.peerRtts.set(conn.peer, rtt);
+      if (!this.isHost && (conn === this.hostConn || conn === this.hostFastConn)) this.rttMs = rtt;
+      this.events.onPeerRtt?.(conn.peer, rtt);
+      return;
+    }
+    this.events.onMessage?.(conn.peer, packet);
+  }
+
+  private openFastChannelToHost(peer: Peer, targetPeerId: string) {
+    if (this.closed || peer.destroyed || this.peer !== peer) return;
+    try {
+      const fastConn = peer.connect(targetPeerId, { reliable: false, label: FAST_CHANNEL_LABEL });
+      this.setupFastConnection(fastConn);
+    } catch { /* fallback to primary reliable channel */ }
+  }
+
+  private setupFastConnection(conn: DataConnection) {
+    const cleanup = () => {
+      if (this.fastConnections.get(conn.peer) === conn) this.fastConnections.delete(conn.peer);
+      if (this.hostFastConn === conn) this.hostFastConn = null;
+    };
+    conn.on('open', () => {
+      if (this.closed || !this.connections.has(conn.peer)) {
+        try { conn.close(); } catch {}
+        return;
+      }
+      const prev = this.fastConnections.get(conn.peer);
+      if (prev && prev !== conn) {
+        try { prev.close(); } catch {}
+      }
+      this.fastConnections.set(conn.peer, conn);
+      if (!this.isHost) this.hostFastConn = conn;
+    });
+    conn.on('data', (raw: unknown) => this.handleIncomingData(conn, raw, true));
+    conn.on('close', cleanup);
+    conn.on('error', cleanup);
+  }
+
   private setupConnection(conn: DataConnection, onOpen?: () => void, onClosedBeforeOpen?: () => void) {
     let leftFired = false;
     const handleLeave = () => {
@@ -255,6 +314,12 @@ export class P2PTransport {
       const wasOpen = this.connections.get(conn.peer) === conn;
       if (wasOpen) this.connections.delete(conn.peer);
       if (this.hostConn === conn) this.hostConn = null;
+      const fast = this.fastConnections.get(conn.peer);
+      if (fast) {
+        this.fastConnections.delete(conn.peer);
+        if (this.hostFastConn === fast) this.hostFastConn = null;
+        try { fast.close(); } catch {}
+      }
       this.peerRtts.delete(conn.peer);
       this.lastSeen.delete(conn.peer);
       if (wasOpen) this.events.onPeerLeave?.(conn.peer);
@@ -290,23 +355,7 @@ export class P2PTransport {
       onOpen?.();
     });
 
-    conn.on('data', (raw: unknown) => {
-      this.lastSeen.set(conn.peer, Date.now());
-      if (!raw || typeof raw !== 'object' || !('kind' in raw)) return;
-      const packet = raw as NetPacket;
-      if (packet.kind === 'ping') {
-        this.sendTo(conn.peer, { kind: 'pong', t: packet.t });
-        return;
-      }
-      if (packet.kind === 'pong') {
-        const rtt = Math.max(1, Date.now() - packet.t);
-        this.peerRtts.set(conn.peer, rtt);
-        if (!this.isHost && conn === this.hostConn) this.rttMs = rtt;
-        this.events.onPeerRtt?.(conn.peer, rtt);
-        return;
-      }
-      this.events.onMessage?.(conn.peer, packet);
-    });
+    conn.on('data', (raw: unknown) => this.handleIncomingData(conn, raw, false));
 
     conn.on('close', handleLeave);
     conn.on('iceStateChanged', (state) => {
@@ -330,27 +379,50 @@ export class P2PTransport {
           try { conn.close(); } catch {}
           this.connections.delete(id);
           if (this.hostConn === conn) this.hostConn = null;
+          const fast = this.fastConnections.get(id);
+          if (fast) {
+            this.fastConnections.delete(id);
+            if (this.hostFastConn === fast) this.hostFastConn = null;
+            try { fast.close(); } catch {}
+          }
           this.peerRtts.delete(id);
           this.lastSeen.delete(id);
           this.events.onPeerLeave?.(id);
         }
       }
       if (this.isHost) {
-        this.broadcast({ kind: 'ping', t: now });
+        this.broadcastFast({ kind: 'ping', t: now });
       } else if (this.hostConn?.open) {
-        this.sendToHost({ kind: 'ping', t: now });
+        this.sendFastToHost({ kind: 'ping', t: now });
       }
     }, PING_INTERVAL_MS);
   }
 
-  /** Send a packet directly to the host (from client). */
+  private sendUnorderedOrFallback(fastConn: DataConnection | null | undefined, relConn: DataConnection | null | undefined, packet: NetPacket) {
+    if (fastConn && fastConn.open) {
+      if ((fastConn.dataChannel?.bufferedAmount ?? 0) <= FAST_MAX_BUFFERED) {
+        fastConn.send(packet);
+      }
+      return;
+    }
+    if (relConn && relConn.open && (relConn.dataChannel?.bufferedAmount ?? 0) <= FAST_MAX_BUFFERED * 4) {
+      relConn.send(packet);
+    }
+  }
+
+  /** Send a reliable packet directly to the host (from client). */
   sendToHost(packet: NetPacket) {
     if (this.hostConn && this.hostConn.open) {
       this.hostConn.send(packet);
     }
   }
 
-  /** Send a packet to a specific peer by ID (from host or client). */
+  /** Send an ephemeral high-frequency packet (input/ping) over the unordered channel when available. */
+  sendFastToHost(packet: NetPacket) {
+    this.sendUnorderedOrFallback(this.hostFastConn, this.hostConn, packet);
+  }
+
+  /** Send a reliable packet to a specific peer by ID (from host or client). */
   sendTo(peerId: string, packet: NetPacket) {
     const conn = this.connections.get(peerId);
     if (conn && conn.open) {
@@ -358,13 +430,34 @@ export class P2PTransport {
     }
   }
 
-  /** Broadcast a packet to all connected peers (from host). */
+  /** Send an ephemeral packet to a specific peer over its unordered channel when available. */
+  sendFastTo(peerId: string, packet: NetPacket) {
+    this.sendUnorderedOrFallback(this.fastConnections.get(peerId), this.connections.get(peerId), packet);
+  }
+
+  /** Broadcast a reliable packet to all connected peers (from host). */
   broadcast(packet: NetPacket, exceptPeerId?: string) {
     for (const [id, conn] of this.connections) {
       if (id !== exceptPeerId && conn.open) {
         conn.send(packet);
       }
     }
+  }
+
+  /** Broadcast an ephemeral high-frequency packet (snapshot/ping) over unordered channels when available. */
+  broadcastFast(packet: NetPacket, exceptPeerId?: string) {
+    for (const [id, conn] of this.connections) {
+      if (id !== exceptPeerId) {
+        this.sendUnorderedOrFallback(this.fastConnections.get(id), conn, packet);
+      }
+    }
+  }
+
+  /** True if at least one peer has an open unordered fast DataChannel. */
+  get hasFastChannel(): boolean {
+    if (!this.isHost) return !!this.hostFastConn?.open;
+    for (const conn of this.fastConnections.values()) if (conn.open) return true;
+    return false;
   }
 
   getPeerRtt(peerId: string): number {
@@ -393,6 +486,11 @@ export class P2PTransport {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+    for (const conn of this.fastConnections.values()) {
+      try { conn.close(); } catch {}
+    }
+    this.fastConnections.clear();
+    this.hostFastConn = null;
     for (const conn of this.connections.values()) {
       try { conn.close(); } catch {}
     }

@@ -33,12 +33,17 @@ export interface KeyContext {
   onOpenChat?: () => void;
 }
 
-/** Edge-triggered keyboard shortcuts (hotbar, items, shop, inventory, debug). Call once per frame. */
-export function createKeyHandler(ctx: KeyContext): () => void {
-  const { input, sim, local, build, player, ui, hud, toggles, gui, hands, pockets } = ctx;
+export interface KeyHandler {
+  update: () => void;
+  dispose: () => void;
+}
+
+/** Edge-triggered keyboard shortcuts (hotbar, items, shop, inventory, debug). Call `update()` once per frame. */
+export function createKeyHandler(ctx: KeyContext): KeyHandler {
+  const { input, sim, local, build, player, ui, hud, gui, hands, pockets } = ctx;
   let guiVisible = false;
   // debug panel on ` — a plain listener, so that it also closes once the panel has taken the mouse (no pointer lock)
-  window.addEventListener('keydown', (e) => {
+  const onBackquote = (e: KeyboardEvent) => {
     if (e.code !== 'Backquote') return;
     guiVisible = !guiVisible;
     document.body.classList.toggle('debug', guiVisible);
@@ -46,10 +51,11 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       gui.show();
       document.exitPointerLock();
     } else gui.hide();
-  });
+  };
+  window.addEventListener('keydown', onBackquote);
 
   let tCount = 0;
-  return () => {
+  const update = () => {
     if (!input.locked) return;
     const shift = input.down('ShiftLeft') || input.down('ShiftRight');
     // debug: Shift+1–6 = the gravity of that cube face (Shift is also the sprint, so only while standing still)
@@ -110,5 +116,13 @@ export function createKeyHandler(ctx: KeyContext): () => void {
       local.snap();
     }
     local.drainEvents();
+  };
+
+  return {
+    update,
+    dispose() {
+      window.removeEventListener('keydown', onBackquote);
+      document.body.classList.remove('debug');
+    },
   };
 }

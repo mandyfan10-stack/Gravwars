@@ -32,6 +32,8 @@ export class ClientMatchSession {
   private nextClientTargetId = 2000;
   private clientOut = false;
   private latestSnapshot: WorldSnapshot | null = null;
+  private lastSnapshotTick = 0;
+  private lastPickupsVersion = -1;
   private readonly botTargets = new Map<number, RemoteBotSnapshot>();
   private readonly npcTargets = new Map<number, RemoteNpcSnapshot>();
   private readonly carTargets = new Map<number, RemoteCarSnapshot>();
@@ -162,7 +164,7 @@ export class ClientMatchSession {
     const { local, player, hands, transport } = this.deps;
     const cmd = cloneUserCommand(local.lastCmd);
 
-    transport.sendToHost({
+    transport.sendFastToHost({
       kind: 'input',
       data: {
         cmd,
@@ -193,6 +195,7 @@ export class ClientMatchSession {
         up: upOf(new Quaternion(...snap.frame)),
         vel: new Vector3(...snap.vel),
         hp: snap.hp,
+        maxHp: snap.maxHp,
         alive: snap.alive,
         respawnIn: -1,
         isHuman: true,
@@ -206,14 +209,31 @@ export class ClientMatchSession {
     t.vel?.set(...snap.vel);
     upOf(_tmpQ.set(...snap.frame), t.up);
     t.hp = snap.hp;
+    t.maxHp = snap.maxHp;
     t.alive = snap.alive;
     t.crouched = snap.crouching;
     return t;
   }
 
   private handleClientSnapshot(snap: WorldSnapshot) {
-    this.latestSnapshot = snap;
     const { match, combat, pickups, props, mapView, remotePlayers, bots, npcs } = this.deps;
+    // Apply discrete / versioned payloads even if an older reliable snapshot arrives behind a newer unordered one
+    if (snap.pickups && (snap.pickupsVersion === undefined || snap.pickupsVersion >= this.lastPickupsVersion)) {
+      if (snap.pickupsVersion !== undefined) this.lastPickupsVersion = snap.pickupsVersion;
+      pickups.applySync(snap.pickups);
+    }
+    if (snap.props?.length) props.applySync(snap.props);
+    if (snap.winnerTeam && !match.result) {
+      const won = snap.winnerTeam === match.team;
+      match.result = won ? 'win' : 'lose';
+      match.events.push(won ? { type: 'win', time: match.time } : { type: 'lose' });
+    }
+
+    // Drop stale out-of-order kinematic snapshots from unordered channel
+    if (snap.tick <= this.lastSnapshotTick) return;
+    this.lastSnapshotTick = snap.tick;
+    this.latestSnapshot = snap;
+
     if (snap.matchTime !== undefined) match.time = snap.matchTime;
     if (snap.windTime !== undefined) combat.time = snap.windTime;
 
@@ -232,17 +252,6 @@ export class ClientMatchSession {
       for (let i = 0; i < snap.generators.length && i < match.generators.length; i++) {
         match.generators[i].stored = snap.generators[i];
       }
-    }
-
-    if (snap.pickups) {
-      pickups.applySync(snap.pickups);
-    }
-    if (snap.props?.length) props.applySync(snap.props);
-
-    if (snap.winnerTeam && !match.result) {
-      const won = snap.winnerTeam === match.team;
-      match.result = won ? 'win' : 'lose';
-      match.events.push(won ? { type: 'win', time: match.time } : { type: 'lose' });
     }
 
     if (snap.bots) {
@@ -302,7 +311,8 @@ export class ClientMatchSession {
   private reconcileLocalPlayer(ps: RemotePlayerSnapshot) {
     const { sim, local, player, match, hud } = this.deps;
     player.me.hp = ps.hp;
-    hud.setHp(ps.hp);
+    player.me.maxHp = ps.maxHp;
+    hud.setHp(ps.hp, ps.maxHp);
     player.me.guard = ps.guard ? { t: SPAWN_GUARD.time, from: sim.state.pos } : undefined;
     player.me.stun = ps.stun ? ps.stun : undefined;
 
@@ -367,7 +377,7 @@ export class ClientMatchSession {
         const d = new Vector3(...e.dir);
         const faction = e.attackerTeam ?? resolveEntityFaction(e.ownerId, this.myId, this.deps, this.humansById);
         combat.use(w, -1, o, d, new Vector3(), sim.gravityDown(), e.chargeT ?? 0, faction);
-        playRemoteGunAudio(w, o, this.deps);
+        playRemoteGunAudio(w, o, this.deps, e.chargeT ?? 0);
         if (!e.ownerId.startsWith('bot:') && !e.ownerId.startsWith('npc:')) {
           this.deps.remotePlayers.triggerFire(e.ownerId);
         }

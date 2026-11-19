@@ -11,6 +11,10 @@ export interface MenuHooks {
   onToggles: () => void;
   /** The match summary (teams table + personal numbers) for the side panel. */
   statsHtml: () => string;
+  /** Start a new match from the main menu / lobby (in-process, no page reload). */
+  onStartMatch?: (spectate: boolean) => void;
+  /** Restart the current match cleanly in-process (no page reload). */
+  onRestartMatch?: () => void;
   /** Toggle or enter spectator mode during a match. */
   onToggleSpectate?: () => boolean;
   /** User exited back to the main menu lobby from a match. */
@@ -230,19 +234,20 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     }
   });
 
-  // If the user returned to the main menu lobby during/after a match and clicks "В бой", start a fresh match
+  // Pre-match (initial or after returning to lobby): launch a fresh match in-process without page reload
   start.addEventListener('click', (e) => {
-    if (returnedToLobby) {
+    if (!started || returnedToLobby) {
+      if ((start as HTMLButtonElement).disabled) return;
       e.stopImmediatePropagation();
-      location.reload();
+      hooks.onStartMatch?.(false);
     }
   }, true);
 
   spectateBtn.addEventListener('click', () => {
     audio.unlock();
-    if (returnedToLobby) {
-      sessionStorage.setItem('gravwars-start-spectate', '1');
-      location.reload();
+    if (!started || returnedToLobby) {
+      if ((spectateBtn as HTMLButtonElement).disabled) return;
+      hooks.onStartMatch?.(true);
       return;
     }
     if (started && hooks.onToggleSpectate) {
@@ -252,10 +257,16 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
     }
   });
 
-  // new match: a reload is the honest full reset; mid-match it asks twice
+  // new match: cleanly disposes and starts a fresh MatchSession in-process; mid-match it asks twice
   let confirmT = 0;
   newMatch.addEventListener('click', () => {
-    if (over || performance.now() < confirmT) { location.reload(); return; }
+    if (over || performance.now() < confirmT) {
+      confirmT = 0;
+      setBtnLabel(newMatch, 'Новый матч');
+      setBtnLabel(matchNewBtn, 'Новый матч');
+      hooks.onRestartMatch?.();
+      return;
+    }
     confirmT = performance.now() + 3000;
     setBtnLabel(newMatch, 'Точно? Матч начнётся заново');
     setBtnLabel(matchNewBtn, 'Точно? Начать заново');
@@ -572,6 +583,23 @@ export function setupMenu(input: Input, audio: GameAudio, camera: PerspectiveCam
       start.textContent = 'Осмотреться';
       syncMenuMode();
       openPage('match');
+    },
+    /** Notify menu state when a MatchSession starts (solo, spectator, or P2P auto-start). */
+    markMatchStarted(inNet: boolean, spectating = false) {
+      started = true;
+      returnedToLobby = false;
+      over = false;
+      inNetMatch = inNet;
+      $('menu-state').hidden = true;
+      $('menu-state').classList.remove('over');
+      $('menu-state').textContent = 'Матч идёт';
+      start.textContent = 'Продолжить';
+      start.classList.add('btn-play');
+      newMatch.classList.remove('btn-play');
+      setBtnLabel(spectateBtn, spectating ? 'Вернуться в тело игрока' : 'Режим наблюдателя');
+      setBtnLabel(newMatch, 'Новый матч');
+      setBtnLabel(matchNewBtn, 'Новый матч');
+      syncMenuMode();
     },
     /** Refresh the summary when settings sliders etc. are not the reason (e.g. the match ended while paused). */
     refresh: showMatch,

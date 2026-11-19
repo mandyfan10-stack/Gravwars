@@ -90,6 +90,11 @@ export class GameChat {
     if (!on) this.closeMatchInput();
   }
 
+  clearMatch() {
+    this.setMatchEnabled(false);
+    if (this.logEl) this.logEl.innerHTML = '';
+  }
+
   openMatchInput() {
     if (!this.boxEl || !this.inputRowEl || !this.inputEl) return;
     this.boxEl.hidden = false;

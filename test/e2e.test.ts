@@ -200,6 +200,35 @@ try {
       soloState.woodBefore === 16 && soloState.woodAfter === 15 && soloState.buildNext === 'block'
       && soloState.placeRes === 'ok' && soloState.totalBlocks > 0, JSON.stringify(soloState));
 
+    // Exit to main menu and launch a fresh match in-process (without page reload)
+    await page.evaluate(() => {
+      const w = window as unknown as { __noReloadCheck?: number; __game: { input: { setLocked(on: boolean): void } } };
+      w.__noReloadCheck = 42;
+      w.__game.input.setLocked(false);
+    });
+    await page.evaluate(() => (document.getElementById('exit-menu') as HTMLButtonElement).click());
+    await page.waitForFunction(() => {
+      const w = window as unknown as { __game?: unknown };
+      const btn = document.getElementById('start-game') as HTMLButtonElement | null;
+      return w.__game === undefined && !!btn && !btn.disabled && btn.textContent?.includes('В бой');
+    }, null, { timeout: 15_000 });
+    await page.click('#start-game');
+    await page.waitForFunction(() => Boolean((window as unknown as { __game?: { ready?: boolean } }).__game?.ready), null, { timeout: 60_000 });
+    const relaunchState = await page.evaluate(() => {
+      const w = window as unknown as {
+        __noReloadCheck?: number;
+        __game: { blocks: { inventory: { wood: number } }; reusedBackdrop: boolean };
+      };
+      return {
+        marker: w.__noReloadCheck,
+        wood: w.__game.blocks.inventory.wood,
+        reusedBackdrop: w.__game.reusedBackdrop,
+      };
+    });
+    check('solo: exit to main menu and relaunch disposes cleanly in-process without page reload',
+      relaunchState.marker === 42 && relaunchState.wood === 16 && !relaunchState.reusedBackdrop && errors.length === 0,
+      `${JSON.stringify(relaunchState)} ${errors.join(' | ')}`.trim());
+
     await ctx.close();
   }
 

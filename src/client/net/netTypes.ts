@@ -1,41 +1,42 @@
 import { PerspectiveCamera, Quaternion, Vector3 } from 'three';
-import { BlockMaterial, BlockSystem } from '../../shared/blocks';
-import { BotManager } from '../../shared/bots';
-import { Combat, Faction, Target } from '../../shared/combat';
-import { Economy } from '../../shared/economy';
-import { Pickups } from '../../shared/economy';
+import type { BlockMaterial, BlockSystem } from '../../shared/blocks';
+import type { BotManager } from '../../shared/bots';
+import type { Combat, Faction, Target } from '../../shared/combat';
+import type { Economy, Pickups } from '../../shared/economy';
 import { escapeHtml } from '../../shared/escape';
-import { Holdable } from '../../shared/inventory';
-import { LobbyConfig } from '../../shared/lobby';
-import { MapData } from '../../shared/map';
-import { Match } from '../../shared/match';
-import { MoveInput } from '../../shared/movement';
+import type { Holdable } from '../../shared/inventory';
+import type { LobbyConfig } from '../../shared/lobby';
+import type { MapData } from '../../shared/map';
+import type { Match } from '../../shared/match';
+import type { MoveInput } from '../../shared/movement';
 import type { UserCommand } from '../../shared/net/pmove';
-import { RateLimiter } from '../../shared/net/validate';
-import { NpcManager } from '../../shared/npcs';
-import { PhysicsWorld, Rapier } from '../../shared/physics';
-import { Props } from '../../shared/props';
-import { PlayerSim } from '../../shared/sim';
+import { PICKUP_RESYNC_TICKS, SNAPSHOT_INTERVAL } from '../../shared/net/snapshot';
+import type { RateLimiter } from '../../shared/net/validate';
+import type { NpcManager } from '../../shared/npcs';
+import type { PhysicsWorld, Rapier } from '../../shared/physics';
+import type { Props } from '../../shared/props';
+import type { PlayerSim } from '../../shared/sim';
 import { TeamId, getTeam } from '../../shared/teams';
-import { Throws } from '../../shared/throwables';
-import { WeaponId, WeaponState } from '../../shared/weapons';
-import { GameAudio } from '../audio';
-import { BlockController } from '../blockController';
-import { Hands } from '../hands';
-import { Hud, teamHex } from '../hud';
+import type { Throws } from '../../shared/throwables';
+import type { WeaponId, WeaponState } from '../../shared/weapons';
+import type { GameAudio } from '../audio';
+import type { BlockController } from '../blockController';
+import type { Hands } from '../hands';
+import type { Hud } from '../hud';
 import type { InventoryUi } from '../inventoryUi';
-import { LocalPlayer } from '../localPlayer';
-import { MatchUi } from '../matchUi';
-import { PlayerCombat } from '../playerCombat';
-import { Pockets } from '../pockets';
-import { Fx } from '../render/fx';
-import { MapView } from '../render/mapView';
-import { MatchStats } from '../stats';
-import { P2PTransport } from './p2p';
-import { RemotePlayerManager } from './remotePlayerManager';
+import type { LocalPlayer } from '../localPlayer';
+import type { MatchUi } from '../matchUi';
+import type { PlayerCombat } from '../playerCombat';
+import type { Pockets } from '../pockets';
+import type { Fx } from '../render/fx';
+import type { MapView } from '../render/mapView';
+import type { MatchStats } from '../stats';
+import type { P2PTransport } from './p2p';
+import type { RemotePlayerManager } from './remotePlayerManager';
 
-export const SNAPSHOT_INTERVAL = 0.04; // 25 Hz authoritative snapshots
-export const PICKUP_RESYNC_TICKS = 25;
+export { PICKUP_RESYNC_TICKS, SNAPSHOT_INTERVAL };
+
+const teamHex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
 
 export interface HumanLobbySeat {
   id: string;
@@ -214,10 +215,11 @@ export function teamBadge(team: TeamId, label: string): string {
   return `<b style="color:${teamHex(t.color)}">${escapeHtml(label)}</b>`;
 }
 
-export function playRemoteGunAudio(weapon: WeaponId, pos: Vector3, deps: NetMatchDeps) {
+export function playRemoteGunAudio(weapon: WeaponId, pos: Vector3, deps: Pick<NetMatchDeps, 'camera' | 'audio'>, chargeT = 0) {
   const d = pos.distanceTo(deps.camera.position);
   if (weapon === 'shotgun') deps.audio.shotgun(d, false);
+  else if (weapon === 'revolver') deps.audio.revolver(d);
   else if (weapon === 'rocket') deps.audio.rocket(d);
-  else if (weapon === 'crossbow') deps.audio.crossbowShot(0, d);
+  else if (weapon === 'crossbow') deps.audio.crossbowShot(chargeT, d);
   else if (weapon === 'pistol' || weapon === 'rifle') deps.audio.shot(weapon === 'pistol', d);
 }
