@@ -61,6 +61,7 @@ export class ClientMatchSession {
       pitch: rp.pitch,
       alive: rp.alive,
       hp: rp.hp,
+      maxHp: rp.maxHp,
       weapon: rp.weapon,
     }));
   }

@@ -7,6 +7,16 @@ export function trackTexture<T extends Texture>(t: T): T {
   return t;
 }
 
+/** Remove a disposed texture from the tracked set so old worlds can be garbage collected. */
+export function untrackTexture(t: Texture) {
+  extra.delete(t);
+}
+
+/** Current count of hidden shader textures tracked for filter updates (diagnostics / tests). */
+export function trackedTextureCount(): number {
+  return extra.size;
+}
+
 const SLOTS = ['map', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'normalMap', 'aoMap', 'alphaMap'] as const;
 
 /**

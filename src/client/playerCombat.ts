@@ -110,7 +110,7 @@ export class PlayerCombat {
 
   constructor(private sim: PlayerSim, private combat: Combat, private hud: Hud, private fx: Fx,
     private audio: GameAudio, private viewModel: ViewModel) {
-    const startHp = Math.round(MAX_HP * MATCH_RULES.playerHp);
+    const startHp = Math.max(10, Math.round(MAX_HP * MATCH_RULES.playerHp));
     this.me = {
       id: 0, team: sim.team.id, center: sim.state.pos, up: new Vector3(0, 1, 0), hp: startHp, maxHp: startHp, alive: true, respawnIn: -1, regen: true,
       airborne: () => !sim.state.onGround,
@@ -124,7 +124,7 @@ export class PlayerCombat {
   reset() {
     const wasDead = this.death !== null;
     this.death = null;
-    const maxHp = Math.round(MAX_HP * MATCH_RULES.playerHp);
+    const maxHp = Math.max(10, Math.round(MAX_HP * MATCH_RULES.playerHp));
     this.me.maxHp = maxHp;
     this.me.hp = maxHp;
     this.me.alive = true;
@@ -133,16 +133,16 @@ export class PlayerCombat {
     this.weapons.cooldown = 0;
     this.weapons.chargeT = 0;
     this.weapons.lastChargeT = 0;
-    this.hud.setHp(this.me.hp);
+    this.hud.setHp(this.me.hp, maxHp);
     if (wasDead) this.onRespawn();
   }
 
   /** Heal by `amount` (medkit: to full). False if already full. */
-  heal(amount = MAX_HP): boolean {
+  heal(amount?: number): boolean {
     const maxHp = this.me.maxHp ?? MAX_HP;
     if (!this.me.alive || this.me.hp >= maxHp) return false;
-    this.me.hp = Math.min(maxHp, this.me.hp + amount);
-    this.hud.setHp(this.me.hp);
+    this.me.hp = Math.min(maxHp, this.me.hp + (amount ?? maxHp));
+    this.hud.setHp(this.me.hp, maxHp);
     return true;
   }
 

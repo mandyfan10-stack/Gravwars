@@ -1,6 +1,6 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { MAX_HP } from '../shared/combat';
-import { EAT_COOLDOWN, Economy, ItemId, ITEMS, Pickup, PickupKind, Pickups } from '../shared/economy';
+import { EAT_COOLDOWN, Economy, healAmountForItem, ItemId, ITEMS, Pickup, PickupKind, Pickups } from '../shared/economy';
 import { Fishing, FISHING } from '../shared/fishing';
 import type { PlayerSim } from '../shared/sim';
 import { refillAmmo } from '../shared/weapons';
@@ -113,13 +113,14 @@ export class Pockets {
   /** Eat / apply one item that heals (apple, fish, medkit). False if it did nothing. */
   consume(id: ItemId): boolean {
     if (this.eatT > 0 || !ITEMS[id].heal || this.eco.items[id] <= 0) return false;
-    if (this.player.me.hp >= MAX_HP) { this.audio.reject(); this.hud.toast('Здоровье и так полное', '#ffb49e', 0.8); return false; }
+    const maxHp = this.player.me.maxHp ?? MAX_HP;
+    if (this.player.me.hp >= maxHp) { this.audio.reject(); this.hud.toast('Здоровье и так полное', '#ffb49e', 0.8); return false; }
     if (this.remoteAuthoritative) {
       this.eco.items[id]--;
       this.onConsume?.(id);
     } else {
       this.eco.take(id);
-      this.player.heal(ITEMS[id].heal);
+      this.player.heal(healAmountForItem(id, maxHp));
     }
     if (id === 'medkit') this.audio.patch();
     else this.audio.eat();

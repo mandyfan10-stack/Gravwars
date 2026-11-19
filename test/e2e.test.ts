@@ -165,6 +165,7 @@ try {
       const g = (window as unknown as {
         __game: {
           reusedBackdrop: boolean;
+          map: { seed: number };
           blocks: { inventory: { wood: number }; blocks: Map<number, unknown>; plan: Function; place: Function };
           build: { next: string };
           sim: { state: { pos: unknown; frame: unknown } };
@@ -186,6 +187,7 @@ try {
       const placeRes = plan ? g.blocks.place(plan, 'wood', g.match.team) : 'null';
       return {
         reusedBackdrop: g.reusedBackdrop,
+        seed: g.map.seed as number,
         woodBefore,
         woodAfter: g.blocks.inventory.wood,
         buildNext: g.build.next,
@@ -195,7 +197,8 @@ try {
     });
 
     check('solo: client loads without console or page errors', errors.length === 0, errors.join(' | '));
-    check('solo: reuses pre-built MenuBackdrop world', soloState.reusedBackdrop === true);
+    check('solo: reuses pre-built MenuBackdrop world with live random seed',
+      soloState.reusedBackdrop === true && soloState.seed >= 100_000, `seed=${soloState.seed}`);
     check('solo: player starts with 16 wood, "block" tool selected, and places 1x1 block',
       soloState.woodBefore === 16 && soloState.woodAfter === 15 && soloState.buildNext === 'block'
       && soloState.placeRes === 'ok' && soloState.totalBlocks > 0, JSON.stringify(soloState));
@@ -217,16 +220,18 @@ try {
     const relaunchState = await page.evaluate(() => {
       const w = window as unknown as {
         __noReloadCheck?: number;
-        __game: { blocks: { inventory: { wood: number } }; reusedBackdrop: boolean };
+        __game: { blocks: { inventory: { wood: number } }; map: { seed: number }; reusedBackdrop: boolean };
       };
       return {
         marker: w.__noReloadCheck,
         wood: w.__game.blocks.inventory.wood,
+        seed: w.__game.map.seed,
         reusedBackdrop: w.__game.reusedBackdrop,
       };
     });
-    check('solo: exit to main menu and relaunch disposes cleanly in-process without page reload',
-      relaunchState.marker === 42 && relaunchState.wood === 16 && !relaunchState.reusedBackdrop && errors.length === 0,
+    check('solo: exit to main menu and relaunch disposes cleanly in-process with a fresh random seed',
+      relaunchState.marker === 42 && relaunchState.wood === 16 && !relaunchState.reusedBackdrop
+      && relaunchState.seed >= 100_000 && relaunchState.seed !== soloState.seed && errors.length === 0,
       `${JSON.stringify(relaunchState)} ${errors.join(' | ')}`.trim());
 
     await ctx.close();
@@ -326,6 +331,7 @@ try {
 
     type ClientGame = {
       reusedBackdrop: boolean;
+      map: { seed: number };
       match: { team: string; remoteClientMode: boolean };
       blocks: { inventory: { wood: number }; blocks: Map<number, { team: string | null }> };
     };
@@ -340,6 +346,7 @@ try {
       }
       return {
         reusedBackdrop: g.reusedBackdrop,
+        seed: g.map.seed,
         team: g.match.team,
         remoteClientMode: g.match.remoteClientMode,
         wood: g.blocks.inventory.wood,
@@ -356,8 +363,9 @@ try {
       hostMatch.team === 'red' && !hostMatch.remoteClientMode && clientMatch.team === 'blue' && clientMatch.remoteClientMode
       && hostMatch.wood === 16 && clientMatch.wood === 16,
       `host=${JSON.stringify(hostMatch)} client=${JSON.stringify(clientMatch)}`);
-    check('p2p: both host and client reuse cached MenuBackdrop world',
-      hostMatch.reusedBackdrop && clientMatch.reusedBackdrop);
+    check('p2p: host reuses cached MenuBackdrop and both tabs synchronize the same live random seed',
+      hostMatch.reusedBackdrop && hostMatch.seed >= 100_000 && hostMatch.seed === clientMatch.seed,
+      `host=${hostMatch.seed} client=${clientMatch.seed}`);
     check('p2p: fortifySkipTeams leaves human beds unfortified on both tabs while keeping bot forts',
       hostMatch.redFort === 0 && hostMatch.blueFort === 0 && hostMatch.greenFort >= 12
       && clientMatch.redFort === 0 && clientMatch.blueFort === 0 && clientMatch.greenFort >= 12);
@@ -382,9 +390,10 @@ try {
       if (!block) return { key: null };
       g.build.onBlockPlaced(block);
       const far = block.center.clone().addScaledVector(up, 6);
-      // forged: unknown material used to throw a TypeError on the host; giant wall for 1 wood; NaN shot origin
+      // forged: unknown material used to throw a TypeError on the host; giant wall for 1 wood; non-grid tilted quat; NaN shot origin
       g.build.onBlockPlaced({ ...block, material: 'xxx', key: 'forged-mat', center: far });
       g.build.onBlockPlaced({ ...block, half: new Vec(40, 40, 40), key: 'forged-huge', center: far });
+      g.build.onBlockPlaced({ ...block, quat: { x: 0, y: 0.258819, z: 0, w: 0.965926 }, key: 'forged-tilt', center: far });
       g.player.onFire?.('fists', new Vec(NaN, 0, 0), new Vec(0, 0, 1), 0);
       g.player.onFire?.('fists', new Vec(st.pos.x + 200, st.pos.y, st.pos.z), new Vec(0, 0, 1), 0);
       // forged: fish catch without a rod/pond, invalid sell item (used to crash host), unowned hook

@@ -200,7 +200,8 @@ export class Hands {
     const pressed = fire && !this.fireWas;
     if (h === 'apple' && fire && this.player.me.alive && this.eco.items.apple > 0) {
       if (this.useT <= 0) {
-        if (this.player.me.hp >= MAX_HP) {
+        const maxHp = this.player.me.maxHp ?? MAX_HP;
+        if (this.player.me.hp >= maxHp) {
           if (pressed) {
             this.audio.reject();
             this.hud.toast('Здоровье и так полное', '#ffb49e', 0.8);

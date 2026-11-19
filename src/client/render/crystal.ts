@@ -37,7 +37,13 @@ export function crystalGeometry(radius: number, height: number, rng: Rng, sides 
 }
 
 let sparkTex: CanvasTexture | null = null;
-const sparkTexture = () => (sparkTex ??= pixelDot(8));
+const sparkTexture = () => {
+  if (!sparkTex) {
+    sparkTex = pixelDot(8);
+    sparkTex.userData.shared = true;
+  }
+  return sparkTex;
+};
 
 /** Animated plasma & Fresnel energy shader material for crystals. */
 function makePlasmaMat(color: number) {

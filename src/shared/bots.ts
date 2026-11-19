@@ -11,7 +11,7 @@ import { EYE_OFFSET } from './constants';
 import { Economy, Pickups } from './economy';
 import { MATCH_RULES } from './lobby';
 import { MapData } from './map';
-import { killRewardFor, Match } from './match';
+import { killRewardFor, Match, scaleReward } from './match';
 import { Rng, upOf } from './math';
 import type { PhysicsWorld, Rapier } from './physics';
 import { JETPACK, PlayerSim } from './sim';
@@ -95,7 +95,7 @@ export class BotManager {
       prevKill(victim, owner);
       const b = this.byId.get(owner);
       if (b && !victim.npc && victim.team !== b.team) {
-        const reward = Math.max(1, Math.round(killRewardFor(map.mode) * MATCH_RULES.reward));
+        const reward = scaleReward(killRewardFor(map.mode));
         b.wallet.cash += reward;
         b.earned += reward;
       }

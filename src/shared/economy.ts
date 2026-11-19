@@ -23,6 +23,10 @@ export const ITEMS: Record<ItemId, { name: string; plural: string; sell: number;
 };
 export const SELLABLE = ITEM_ORDER.filter((i) => ITEMS[i].sell > 0);
 export const APPLE_HEAL = ITEMS.apple.heal;
+/** HP restored by consuming `id` (medkit always restores up to full `maxHp`). */
+export function healAmountForItem(id: ItemId, maxHp: number): number {
+  return id === 'medkit' ? maxHp : ITEMS[id].heal;
+}
 /** Medkits carried at most. */
 export const MAX_MEDKITS = 3;
 /** Seconds between two apples eaten (0.1 s cooldown). */

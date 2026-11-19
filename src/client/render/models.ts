@@ -196,7 +196,14 @@ let cache: Partial<Record<DecorKind, DecorModel>> | null = null;
 /** The model of a decor kind (built once). */
 export function decorModel(kind: DecorKind): DecorModel {
   cache ??= {};
-  return (cache[kind] ??= kind === 'bus' ? busModel() : kind === 'lamp' ? lampModel() : carModel(kind));
+  let model = cache[kind];
+  if (!model) {
+    model = kind === 'bus' ? busModel() : kind === 'lamp' ? lampModel() : carModel(kind);
+    if (model.paint) model.paint.userData.shared = true;
+    model.detail.userData.shared = true;
+    cache[kind] = model;
+  }
+  return model;
 }
 
 // --- trees -----------------------------------------------------------------------------------------

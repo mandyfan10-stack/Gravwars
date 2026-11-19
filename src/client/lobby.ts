@@ -1,8 +1,8 @@
 import { DIFFICULTY_LABEL, type Difficulty } from '../shared/bots';
 import { escapeHtml } from '../shared/escape';
 import {
-  activeTeams, DEFAULT_MULTIPLIERS, type GameMode, LobbyConfig, type LobbyMultipliers, lobbyProblem, MAX_TEAM_SEATS, parseLobby,
-  sanitizeLocalLobby, seatPlayer, seatsPerTeam, setSeatsPerTeam, TEAM_SEATS,
+  activeTeams, DEFAULT_MULTIPLIERS, type GameMode, LobbyConfig, type LobbyMultipliers, lobbyProblem, MAX_TEAM_SEATS,
+  normalizeSeed, parseLobby, randomMapSeed, sanitizeLocalLobby, seatPlayer, seatsPerTeam, setSeatsPerTeam, TEAM_SEATS,
 } from '../shared/lobby';
 import { TeamId, TEAMS } from '../shared/teams';
 
@@ -55,12 +55,29 @@ export class Lobby {
         setSeatsPerTeam(this.config, val);
         this.save();
         this.render();
+        return;
+      }
+      if (s.dataset.act === 'seed') {
+        const digits = s.value.replace(/\D/g, '').slice(0, 9);
+        if (s.value !== digits) s.value = digits;
+        this.config.seed = normalizeSeed(digits);
+        this.save();
+        this.onChange(this.problem);
       }
     });
     this.el.addEventListener('change', (e) => {
       if (this.isNetworkClient) return;
       const s = e.target as HTMLSelectElement;
       if (s.dataset.act === 'money') { this.config.infiniteMoney = (e.target as HTMLInputElement).checked; this.save(); this.onChange(this.problem); return; }
+      if (s.dataset.act === 'seed') {
+        const inp = e.target as HTMLInputElement;
+        const parsed = normalizeSeed(inp.value);
+        this.config.seed = parsed;
+        inp.value = parsed !== undefined ? String(parsed) : '';
+        this.save();
+        this.render();
+        return;
+      }
       if (s.dataset.act === 'level') { this.difficulty = s.value as Difficulty; this.onLevel(this.difficulty); }
     });
     this.render();
@@ -95,6 +112,18 @@ export class Lobby {
       return;
     }
     if (this.isNetworkClient && act !== 'sit') return;
+    if (act === 'roll-seed') {
+      this.config.seed = randomMapSeed();
+      this.save();
+      this.render();
+      return;
+    }
+    if (act === 'clear-seed') {
+      this.config.seed = undefined;
+      this.save();
+      this.render();
+      return;
+    }
     if (act === 'mode') {
       const m = (team as unknown as string) as GameMode;
       if (m === 'standard' || m === 'duel' || m === 'skirmish' || m === 'sandbox') {
@@ -231,10 +260,18 @@ export class Lobby {
       + multDefs.map(([k, lbl, lo, hi, st]) => `<label class="ext-item"><span>${lbl}<b>${m[k].toFixed(2)}×</b></span><input type="range" data-mult="${k}" min="${lo}" max="${hi}" step="${st}" value="${m[k]}"${dis}></label>`).join('')
       + `</div></div>`;
 
+    const seedVal = normalizeSeed(this.config.seed);
+    const seedCtrl = `<label class="seed-field">Сид `
+      + `<input type="text" inputmode="numeric" maxlength="9" data-act="seed" placeholder="случайный" value="${seedVal !== undefined ? seedVal : ''}"${dis}>`
+      + (!client ? `<button type="button" class="seed-btn" data-act="roll-seed" title="Случайный фиксированный сид">🎲</button>` : '')
+      + (!client && seedVal !== undefined ? `<button type="button" class="seed-btn" data-act="clear-seed" title="Случайный каждый матч">×</button>` : '')
+      + `</label>`;
+
     this.el.innerHTML = `<header><h2>Состав матча</h2><p>${headerNote}</p></header>`
       + modesHtml
       + `<div class="teams">${teams}</div>`
       + `<footer>${quickBtns}`
+      + seedCtrl
       + `<label>Новые боты <select data-act="level"${dis}>${ORDER.map((d) => `<option value="${d}"${d === this.difficulty ? ' selected' : ''}>${DIFFICULTY_LABEL[d]}</option>`).join('')}</select></label>`
       + `<label class="money"><input type="checkbox" data-act="money"${this.config.infiniteMoney ? ' checked' : ''}${dis}> Бесконечные деньги</label></footer>`
       + extremePanel

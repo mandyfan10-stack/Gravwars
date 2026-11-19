@@ -18,7 +18,7 @@ export const BLOCK_SIZE = 1;
 /** How far from the eye a piece / block can be aimed at (pick-up with RMB), m. */
 export const BLOCK_REACH = 7.5;
 /** Material in the inventory at the start (one piece costs PIECE_COST). */
-export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 30, stone: 0, metal: 0 };
+export const START_BLOCKS: Record<BlockMaterial, number> = { wood: 16, stone: 0, metal: 0 };
 
 /** Build pieces (macro structures): wall, floor, ramp. */
 export type PieceKind = 'wall' | 'floor' | 'ramp';

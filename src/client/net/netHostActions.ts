@@ -1,7 +1,8 @@
 import { Vector3 } from 'three';
 import { MAX_HP } from '../../shared/combat';
-import { EAT_COOLDOWN, ITEMS, ItemId, Pickups, PickupKind, SHOP } from '../../shared/economy';
+import { EAT_COOLDOWN, healAmountForItem, ItemId, Pickups, PickupKind, SHOP } from '../../shared/economy';
 import { MATCH_RULES } from '../../shared/lobby';
+import { scaleReward } from '../../shared/match';
 import { upOf } from '../../shared/math';
 import {
   commandToMoveInput, IN_DUCK, IN_JUMP, IN_SPEED, sanitizeUserCommand, type UserCommand,
@@ -64,12 +65,6 @@ export function applyClientInput(rc: RemoteClientSim, inp: PlayerInputPacket) {
   commandToMoveInput(rc.cmd, rc.input);
   rc.yaw = rc.cmd.viewangles[0];
   rc.pitch = rc.cmd.viewangles[1];
-  if (isWeaponId(inp.weapon) && (inp.weapon === 'fists' || rc.weapons.owned[inp.weapon])) {
-    if (rc.weapons.current !== inp.weapon) {
-      rc.weapons.current = inp.weapon;
-      clearReloadState(rc);
-    }
-  }
 }
 
 function applyPickupReward(rc: RemoteClientSim, kind: PickupKind, amount: number) {
@@ -125,7 +120,7 @@ function handleClientInteract(
       rc.dirtySync = true;
       return;
     }
-    const heal = ITEMS[itemId].heal;
+    const heal = healAmountForItem(itemId, maxHp);
     rc.target.hp = Math.min(maxHp, rc.target.hp + heal);
     rc.pendingNotice = { text: itemId === 'medkit' ? 'Здоровье восстановлено' : `+${heal} HP`, color: '#9dff9e' };
     rc.pendingSound = itemId === 'medkit' ? 'patch' : 'eat';
@@ -150,8 +145,9 @@ function handleClientInteract(
       rc.pendingNotice = { text: 'Выловлена бутылка', color: '#9dff9e' };
       rc.pendingSound = 'pickup';
     } else {
-      rc.wallet.cash += 3;
-      rc.pendingNotice = { text: 'Кошелёк: +3$', color: '#ffd966' };
+      const cash = scaleReward(3);
+      rc.wallet.cash += cash;
+      rc.pendingNotice = { text: `Кошелёк: +${cash}$`, color: '#ffd966' };
       rc.pendingSound = 'coins';
     }
     rc.dirtySync = true;
@@ -185,7 +181,7 @@ export function handleClientAction(deps: NetMatchDeps, rc: RemoteClientSim, act:
 
   if (act.type === 'fire') {
     const w = act.weapon;
-    if (!isWeaponId(w) || (w !== 'fists' && !rc.weapons.owned[w])) { rc.dirtySync = true; return; }
+    if (!isWeaponId(w) || (w !== 'fists' && !rc.weapons.owned[w]) || w !== rc.weapons.current) { rc.dirtySync = true; return; }
     if (!plausibleEye(act.origin) || !isDir(act.dir)) { rc.dirtySync = true; return; }
     const chargeT = w === 'crossbow' ? clampNum(act.chargeT, 0, MAX_CHARGE_T) : 0;
     if (w === 'crossbow') {

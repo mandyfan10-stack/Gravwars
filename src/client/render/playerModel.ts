@@ -15,7 +15,13 @@ const AY = new Vector3(0, 1, 0);
 
 /** A hard little star of light: the glint of a raised gun barrel (shared by every model). */
 let glintTex: CanvasTexture | null = null;
-const glintTexture = () => (glintTex ??= pixelGlint(15));
+const glintTexture = () => {
+  if (!glintTex) {
+    glintTex = pixelGlint(15);
+    glintTex.userData.shared = true;
+  }
+  return glintTex;
+};
 
 /** Hand grenade for the third-person models (metres). */
 function grenadeMesh() {
@@ -35,6 +41,7 @@ function grenadeMesh() {
  */
 export function teamMaterial(src: MeshStandardMaterial, team: number, grime = 0) {
   const m = src.clone();
+  delete m.userData.shared;
   m.roughness = 0.75;
   m.metalness = 0;
   m.userData.flash = { value: 0 };
@@ -118,7 +125,13 @@ const smooth = (x: number) => x * x * (3 - 2 * x);
 const KICK_TIME = 0.45;
 /** Shared by every third-person gun and grenade (vertex colours carry the parts' colours). */
 let gunMat: MeshStandardMaterial | null = null;
-const gunMaterial = () => (gunMat ??= new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.45 }));
+const gunMaterial = () => {
+  if (!gunMat) {
+    gunMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.45 });
+    gunMat.userData.shared = true;
+  }
+  return gunMat;
+};
 
 /**
  * A person (see human.ts) animated procedurally: walk / run cycle from the speed, jump and fall poses, arms on the

@@ -693,4 +693,28 @@ export class Fx {
     void time;
     void NormalBlending;
   }
+
+  /** Free pooled meshes/materials/textures that may not currently be attached to `group`. */
+  dispose() {
+    this.grenadeGeo.dispose();
+    this.grenadeMat.dispose();
+    this.puffTex.dispose();
+    for (const g of this.rocketPool) {
+      g.traverse((o) => {
+        const mesh = o as Mesh;
+        if (!mesh.isMesh) return;
+        mesh.geometry.dispose();
+        if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+        else mesh.material.dispose();
+      });
+    }
+    this.grenadePool.length = 0;
+    this.rocketPool.length = 0;
+    this.grenades.clear();
+    this.rockets.clear();
+    this.blasts.length = 0;
+    this.lights.length = 0;
+    this.puffs.length = 0;
+    this.splats.length = 0;
+  }
 }

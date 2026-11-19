@@ -285,4 +285,25 @@ export class OutlineSystem {
     }
     this.hideRest(this.poolCar, carCount);
   }
+
+  /** Free all outline geometries and ShaderMaterials (including pools that were never borrowed). */
+  dispose() {
+    this.charGeo.dispose();
+    this.crystalGeo.dispose();
+    this.itemGeo.dispose();
+    this.carGeo.dispose();
+    this.matAlly.dispose();
+    this.matEnemy.dispose();
+    this.matItem.dispose();
+    this.matNpc.dispose();
+    for (const m of this.crystalMats.values()) m.dispose();
+    this.crystalMats.clear();
+    this.crystalMeshes.clear();
+    this.poolAlly.length = 0;
+    this.poolEnemy.length = 0;
+    this.poolItem.length = 0;
+    this.poolNpc.length = 0;
+    this.poolCar.length = 0;
+    this.holder.clear();
+  }
 }

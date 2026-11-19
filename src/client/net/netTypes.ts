@@ -69,6 +69,7 @@ export interface RemoteClientSim {
   reloadEmpty: boolean;
   respawnT: number;
   woodRegenT: number;
+  crystalAmmoT: number;
   out: boolean;
   disconnected: boolean;
   dirtySync: boolean;
@@ -93,6 +94,7 @@ export interface SpectatorTarget {
   pitch: number;
   alive: boolean;
   hp: number;
+  maxHp?: number;
   weapon: string;
 }
 

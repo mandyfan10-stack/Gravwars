@@ -1,6 +1,7 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { PLAYER_HEIGHT } from '../shared/constants';
 import { HOTBAR_SIZE } from '../shared/inventory';
+import type { GameMode } from '../shared/lobby';
 import type { PlayerSim } from '../shared/sim';
 import type { BlockController } from './blockController';
 import type { createDebugGui, DebugToggles } from './debugGui';
@@ -30,6 +31,8 @@ export interface KeyContext {
   toggles: DebugToggles;
   applyToggles: () => void;
   gui: ReturnType<typeof createDebugGui>;
+  /** Enable debug shortcuts (lil-gui, noclip, neutral teleport, manual respawn, gravity switch). */
+  allowDebug?: boolean;
   onOpenChat?: () => void;
 }
 
@@ -38,13 +41,25 @@ export interface KeyHandler {
   dispose: () => void;
 }
 
+/** Debug controls are disabled in network matches and restricted to Sandbox or dev builds locally. */
+export function canUseDebugControls(mode: GameMode | undefined, isNetworkMatch: boolean, isDev: boolean): boolean {
+  return !isNetworkMatch && (mode === 'sandbox' || isDev);
+}
+
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
+}
+
 /** Edge-triggered keyboard shortcuts (hotbar, items, shop, inventory, debug). Call `update()` once per frame. */
 export function createKeyHandler(ctx: KeyContext): KeyHandler {
   const { input, sim, local, build, player, ui, hud, gui, hands, pockets } = ctx;
+  const allowDebug = ctx.allowDebug === true;
   let guiVisible = false;
   // debug panel on ` — a plain listener, so that it also closes once the panel has taken the mouse (no pointer lock)
   const onBackquote = (e: KeyboardEvent) => {
-    if (e.code !== 'Backquote') return;
+    if (!allowDebug || e.code !== 'Backquote' || input.typing || isEditableEventTarget(e.target)) return;
     guiVisible = !guiVisible;
     document.body.classList.toggle('debug', guiVisible);
     if (guiVisible) {
@@ -59,7 +74,7 @@ export function createKeyHandler(ctx: KeyContext): KeyHandler {
     if (!input.locked) return;
     const shift = input.down('ShiftLeft') || input.down('ShiftRight');
     // debug: Shift+1–6 = the gravity of that cube face (Shift is also the sprint, so only while standing still)
-    if (shift && local.input.forward === 0 && local.input.right === 0) {
+    if (allowDebug && shift && local.input.forward === 0 && local.input.right === 0) {
       sim.map.faces.forEach((f, i) => { if (input.take(`Digit${i + 1}`)) sim.setGravity(new Vector3(...f.up).negate()); });
     }
     // I: inventory (bar + backpack, stats, drop)
@@ -95,25 +110,27 @@ export function createKeyHandler(ctx: KeyContext): KeyHandler {
       else player.pendingReload = true;
     }
     if (input.take('KeyV')) player.kick();
-    // eliminated players stay out: K is a debug respawn for the living only
-    if (input.take('KeyK') && player.me.alive) sim.respawn('manual');
-    if (input.take('KeyN')) {
-      sim.state.noclip = !sim.state.noclip;
-      hud.toast(sim.state.noclip ? 'Noclip: вкл' : 'Noclip: выкл', '#8af5ff', 1);
-    }
     if (input.take('KeyT') && !ui.shopOpen && !ctx.inv?.open) {
       ctx.onOpenChat?.();
     }
-    if (input.take('KeyY')) {
-      // debug: onto the square of a neutral face (the next one each press)
-      const faces = sim.map.faces.filter((f) => !f.team);
-      const f = faces[(tCount++) % Math.max(1, faces.length)] ?? sim.map.faces[0];
-      const up = new Vector3(...f.up);
-      sim.setGravity(up.clone().negate());
-      sim.state.pos.set(...f.origin).addScaledVector(up, PLAYER_HEIGHT / 2 + 0.5);
-      sim.state.vel.set(0, 0, 0);
-      sim.mover.place(sim.state);
-      local.snap();
+    if (allowDebug) {
+      // eliminated players stay out: K is a debug respawn for the living only
+      if (input.take('KeyK') && player.me.alive) sim.respawn('manual');
+      if (input.take('KeyN')) {
+        sim.state.noclip = !sim.state.noclip;
+        hud.toast(sim.state.noclip ? 'Noclip: вкл' : 'Noclip: выкл', '#8af5ff', 1);
+      }
+      if (input.take('KeyY')) {
+        // debug: onto the square of a neutral face (the next one each press)
+        const faces = sim.map.faces.filter((f) => !f.team);
+        const f = faces[(tCount++) % Math.max(1, faces.length)] ?? sim.map.faces[0];
+        const up = new Vector3(...f.up);
+        sim.setGravity(up.clone().negate());
+        sim.state.pos.set(...f.origin).addScaledVector(up, PLAYER_HEIGHT / 2 + 0.5);
+        sim.state.vel.set(0, 0, 0);
+        sim.mover.place(sim.state);
+        local.snap();
+      }
     }
     local.drainEvents();
   };

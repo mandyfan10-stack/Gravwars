@@ -37,7 +37,11 @@ const HAIR = [0x2a211b, 0x4a3727, 0x1b1714, 0x6b4c32, 0x9a8670];
 const geoCache = new Map<string, BufferGeometry>();
 function cached(key: string, make: () => BufferGeometry) {
   let g = geoCache.get(key);
-  if (!g) { g = make(); geoCache.set(key, g); }
+  if (!g) {
+    g = make();
+    g.userData.shared = true;
+    geoCache.set(key, g);
+  }
   return g;
 }
 /** Surface of revolution from [radius, y] points listed bottom to top. */

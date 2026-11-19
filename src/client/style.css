@@ -591,12 +591,16 @@ body.spectating #crosshair, body.spectating #hotbar, body.spectating #weapon, bo
 .lobby .seat.bot .lvl.easy { color: rgba(255, 255, 255, .6); }
 .lobby .seat.bot .lvl.hard { color: #f0c27a; }
 .lobby .seat .x { padding: 0 10px; font-size: 15px; }
-.lobby footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.lobby footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .lobby .quick { display: flex; gap: 4px; }
 .lobby .quick button { all: unset; cursor: pointer; padding: 6px 10px; border-radius: 3px; background: rgba(255, 255, 255, .06); font-size: 12px; font-weight: 500; }
 .lobby .quick button:hover { background: rgba(255, 255, 255, .12); color: #fff; }
 .lobby footer label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .lobby footer select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: rgba(0, 0, 0, .35); color: #fff; font: inherit; }
+.lobby .seed-field input { width: 92px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; background: rgba(0, 0, 0, .35); color: #fff; font: inherit; }
+.lobby .seed-field input::placeholder { color: rgba(255, 255, 255, .38); }
+.lobby .seed-btn { all: unset; cursor: pointer; padding: 4px 7px; border-radius: 3px; background: rgba(255, 255, 255, .07); color: #fff; font-size: 12px; line-height: 1.2; }
+.lobby .seed-btn:hover { background: rgba(255, 255, 255, .16); }
 .lobby .problem { margin: 10px 0 0; color: #f0a07a; font-size: 12px; }
 .lobby .extreme-wrap { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .lobby .extreme-toggle { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 4px;

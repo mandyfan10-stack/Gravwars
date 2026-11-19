@@ -58,8 +58,12 @@ function triplanar(mat: MeshStandardMaterial, map: Texture, metersPerTile: numbe
 
 /** Albedo map whose tinted part (mask = white) is multiplied by vertex color, the rest (frames, glass) is not. */
 function tintMasked(mat: MeshStandardMaterial, mask: Texture): MeshStandardMaterial {
+  const trackedMask = trackTexture(mask);
+  const extra = (mat.userData.extraTextures as Texture[] | undefined) ?? [];
+  extra.push(trackedMask);
+  mat.userData.extraTextures = extra;
   mat.onBeforeCompile = (sh) => {
-    sh.uniforms.tintMask = { value: trackTexture(mask) };
+    sh.uniforms.tintMask = { value: trackedMask };
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform sampler2D tintMask;')
       .replace('#include <color_fragment>', '')

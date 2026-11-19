@@ -2,17 +2,19 @@ import { Block, BlockMaterial, START_BLOCKS } from '../../shared/blocks';
 import { CombatEvent, MAX_HP, SPAWN_GUARD, Target } from '../../shared/combat';
 import { Economy } from '../../shared/economy';
 import { MATCH_RULES } from '../../shared/lobby';
-import { killRewardFor, MatchEvent, SKIRMISH_WOOD_PER_SEC } from '../../shared/match';
+import { MatchEvent, SKIRMISH_WOOD_PER_SEC } from '../../shared/match';
 import { upOf } from '../../shared/math';
 import {
-  applyRemoteClientJetpackEvents, syncRemoteClientJetpack, wireRemoteClientArmor,
+  INFINITE_MONEY_BALANCE, applyRemoteClientInfiniteMoney, applyRemoteClientJetpackEvents, awardRemoteClientKill,
+  collectRemoteClientCrystals, spillRemoteClientLoot, syncRemoteClientJetpack, tickRemoteClientCrystalZone,
+  wireRemoteClientArmor,
 } from '../../shared/net/hostGear';
 import { emptyUserCommand, SimulateMovement } from '../../shared/net/pmove';
 import { emptyInput } from '../../shared/movement';
 import { RateLimiter } from '../../shared/net/validate';
 import { PlayerSim } from '../../shared/sim';
 import { TeamId } from '../../shared/teams';
-import { WEAPON_ORDER, createWeaponState, refillAmmo } from '../../shared/weapons';
+import { WEAPON_ORDER, createWeaponState } from '../../shared/weapons';
 import { DEATH_TIME } from '../playerCombat';
 import { applyClientInput, clearReloadState, finishRemoteReload, handleClientAction } from './netHostActions';
 import { HostSnapshotBuilder } from './netHostSnapshot';
@@ -56,6 +58,7 @@ export class HostMatchSession {
         pitch: rc.pitch,
         alive: rc.target.alive && !rc.out,
         hp: rc.target.hp,
+        maxHp: rc.target.maxHp ?? MAX_HP,
         weapon: rc.weapons.current,
       });
     }
@@ -102,13 +105,7 @@ export class HostMatchSession {
       prevOnKill(victim, owner);
       const rc = this.targetToClient.get(owner);
       if (rc && !victim.npc && victim.team !== rc.team) {
-        const reward = killRewardFor(this.deps.map.mode);
-        rc.wallet.cash += reward;
-        if (this.deps.map.mode === 'skirmish') {
-          rc.pendingNotice = { text: `+${reward}$`, color: '#ffd966' };
-          rc.pendingSound = 'coins';
-        }
-        rc.dirtySync = true;
+        awardRemoteClientKill(rc, this.deps.map.mode);
       }
     };
 
@@ -289,8 +286,9 @@ export class HostMatchSession {
     combat.targets.push(target);
 
     const weapons = createWeaponState();
-    const wallet = { cash: 0, crystal: 0 };
-    const blocksInv: Record<BlockMaterial, number> = { ...START_BLOCKS, wood: 16 };
+    const inf = !!this.deps.lobby.infiniteMoney;
+    const wallet = { cash: inf ? INFINITE_MONEY_BALANCE : 0, crystal: inf ? INFINITE_MONEY_BALANCE : 0 };
+    const blocksInv: Record<BlockMaterial, number> = { ...START_BLOCKS };
     const eco = new Economy(wallet, { inventory: blocksInv }, weapons);
     eco.freeWeapons = map.mode === 'skirmish';
 
@@ -318,6 +316,7 @@ export class HostMatchSession {
       reloadEmpty: false,
       respawnT: 0,
       woodRegenT: 0,
+      crystalAmmoT: 0,
       out: false,
       disconnected: false,
       dirtySync: true,
@@ -439,10 +438,7 @@ export class HostMatchSession {
     rc.respawnT = final ? 0 : DEATH_TIME;
     rc.out = final;
     rc.deathInfo = { cause, killerId, weapon, head, final };
-    const dropPos = rc.sim.state.pos.clone();
-    const dropUp = upOf(rc.sim.state.frame).clone();
-    const lost = rc.eco.spill();
-    for (const p of lost) this.deps.pickups.drop(p.kind, dropPos, dropUp, p.amount);
+    spillRemoteClientLoot(rc, this.deps.pickups, cause === 'void');
     rc.dirtySync = true;
   }
 
@@ -466,6 +462,7 @@ export class HostMatchSession {
 
     for (const rc of this.remoteClients.values()) {
       if (rc.disconnected) continue;
+      applyRemoteClientInfiniteMoney(rc, !!this.deps.lobby.infiniteMoney);
       if (!rc.out && !rc.target.alive) {
         rc.respawnT -= dt;
         if (rc.respawnT <= 0) {
@@ -508,17 +505,8 @@ export class HostMatchSession {
         const planar = Math.sqrt(Math.max(0, rc.sim.state.vel.lengthSq() - vUp * vUp));
         rc.target.quiet = rc.input.crouch || (!rc.input.sprint && planar < 4.5);
 
-        const crystalCount = match.collect(rc.sim.state.pos);
-        if (crystalCount > 0) {
-          rc.wallet.crystal += crystalCount;
-          rc.pendingNotice = { text: `+${crystalCount} крист.`, color: '#7ce8ff' };
-          rc.pendingSound = 'pickup';
-          rc.dirtySync = true;
-        }
-        const ownBed = match.bed(rc.team);
-        if (ownBed.alive && rc.sim.state.pos.distanceToSquared(ownBed.pos) < 64 && refillAmmo(rc.weapons, 2)) {
-          rc.dirtySync = true;
-        }
+        collectRemoteClientCrystals(rc, match);
+        tickRemoteClientCrystalZone(rc, match.bed(rc.team), dt);
         if (this.deps.map.mode === 'skirmish' && match.isInsideBaseHall(rc.sim.state.pos, rc.team)) {
           rc.woodRegenT += dt;
           if (rc.woodRegenT >= 1) {

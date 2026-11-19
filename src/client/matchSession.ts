@@ -4,11 +4,12 @@ import { BotManager, DIFFICULTY_LABEL } from '../shared/bots';
 import { Combat, MAX_HP } from '../shared/combat';
 import { TICK_DT } from '../shared/constants';
 import { Economy, Pickups } from '../shared/economy';
-import { activeTeams, applyMatchRules, botRoster, humanTeams, LobbyConfig, MATCH_RULES, playerTeam } from '../shared/lobby';
+import { activeTeams, applyMatchRules, botRoster, humanTeams, LobbyConfig, playerTeam } from '../shared/lobby';
 import { faceByUp, faceOfTeam, generateMap, MapData } from '../shared/map';
-import { killRewardFor, Match } from '../shared/match';
+import { CRYSTAL_AMMO_FRAC, CRYSTAL_AMMO_INTERVAL, CRYSTAL_ZONE_RADIUS, killRewardFor, Match, scaleReward } from '../shared/match';
 import { upOf } from '../shared/math';
 import { moveBasis, viewQuat } from '../shared/movement';
+import { INFINITE_MONEY_BALANCE } from '../shared/net/hostGear';
 import { NpcManager } from '../shared/npcs';
 import { buildPhysicsWorld, PhysicsWorld, Rapier } from '../shared/physics';
 import { Props } from '../shared/props';
@@ -31,7 +32,7 @@ import { icon } from './icons';
 import { Input } from './input';
 import { Intro } from './intro';
 import { InventoryUi } from './inventoryUi';
-import { createKeyHandler, KeyHandler } from './keybinds';
+import { canUseDebugControls, createKeyHandler, KeyHandler } from './keybinds';
 import { LocalPlayer } from './localPlayer';
 import { gameLog } from './logger';
 import { MatchUi } from './matchUi';
@@ -119,6 +120,7 @@ export class MatchSession {
   private readonly map: MapData;
   private readonly mapView: MapView;
   private readonly propView: Object3D;
+  private readonly fx: Fx;
   private readonly outline: OutlineSystem;
   private readonly gizmo: GravityGizmo;
   private readonly gui: ReturnType<typeof createDebugGui>;
@@ -167,7 +169,6 @@ export class MatchSession {
     const npcs = new NpcManager(R, world, map, combat, pickups);
     const throws = new Throws(combat, pickups);
     blocks.characters.push(...npcs.colliders);
-    blocks.inventory.wood = 16;
 
     // --- rendering
     const mapView = (this.mapView = built?.mapView ?? buildMapView(map));
@@ -176,7 +177,7 @@ export class MatchSession {
     mapView.group.visible = true;
     propView.visible = true;
 
-    const fx = new Fx(scene);
+    const fx = (this.fx = new Fx(scene));
     fx.ground = (pos, down) => {
       const hit = combat.rayWorld(pos, pos.clone().addScaledVector(down, 4));
       return hit ? { pos: pos.clone().addScaledVector(down, 4 * hit.t), normal: hit.normal } : null;
@@ -292,7 +293,7 @@ export class MatchSession {
     player.onKill = (tg) => {
       if (tg.npc) return;
       if (isNetworkMatch && !isHostPlayer) return;
-      const reward = Math.max(1, Math.round(killRewardFor(map.mode) * MATCH_RULES.reward));
+      const reward = scaleReward(killRewardFor(map.mode));
       match.wallet.cash += reward;
       if (map.mode === 'skirmish') hud.toast(`+${reward}$ за убийство`, '#ffd966', 1.2);
     };
@@ -367,8 +368,8 @@ export class MatchSession {
       sim.hasJetpack = eco.has('jetpack');
       sim.hasJetpackFuel = totalFuelAmmo(player.weapons) > 0;
       if (cfg.infiniteMoney && (!isNetworkMatch || isHostPlayer)) {
-        match.wallet.cash = 99999;
-        match.wallet.crystal = 99999;
+        match.wallet.cash = INFINITE_MONEY_BALANCE;
+        match.wallet.crystal = INFINITE_MONEY_BALANCE;
       }
       if (!match.result) {
         if (!isNetworkMatch || isHostPlayer) {
@@ -398,9 +399,9 @@ export class MatchSession {
         crystalAmmoT -= TICK_DT;
         if (crystalAmmoT <= 0 && player.me.alive) {
           const ownBed = match.bed(sim.team.id);
-          if (ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < 8.5) {
-            crystalAmmoT = 1.4;
-            if (refillAmmo(player.weapons, 0.35)) {
+          if (ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < CRYSTAL_ZONE_RADIUS) {
+            crystalAmmoT = CRYSTAL_AMMO_INTERVAL;
+            if (refillAmmo(player.weapons, CRYSTAL_AMMO_FRAC)) {
               audio.pickup();
               hud.toast('Патроны пополнены у кристалла', '#ffe082', 0.9);
             }
@@ -449,6 +450,7 @@ export class MatchSession {
     const keys = (this.keys = createKeyHandler({
       input, sim, local, build, player, ui, inv: invUi, hands, pockets,
       nearShop: () => match.nearShop(sim.state.pos), camera, hud, toggles, applyToggles, gui,
+      allowDebug: canUseDebugControls(mode, isNetworkMatch, import.meta.env.DEV),
       onOpenChat: () => chat.openMatchInput(),
     }));
 
@@ -771,7 +773,7 @@ export class MatchSession {
         hud.setHp(player.me.hp, player.me.maxHp ?? MAX_HP);
         hud.setArmor(eco.has('armor'));
         const ownBed = match.bed(sim.team.id);
-        hud.setCrystalZone(!specActive && !dead && player.me.alive && ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < 8.5);
+        hud.setCrystalZone(!specActive && !dead && player.me.alive && ownBed.alive && sim.state.pos.distanceTo(ownBed.pos) < CRYSTAL_ZONE_RADIUS);
         const jetpackFlying = !specActive && !dead && player.me.alive && sim.jetpackActive;
         hud.setJetpack(eco.has('jetpack'), jetpackFlying, sim.jetpackHeat / JETPACK.maxFlight, totalFuelAmmo(player.weapons), sim.jetpackOverheatCd);
         hud.update(dt, sim, `${(Math.hypot(...sim.state.pos.toArray())).toFixed(0)} м от центра`);
@@ -867,15 +869,16 @@ export class MatchSession {
     gfx.xray.camera = null;
     (gfx.scene.fog as FogExp2).density = this.baseFogDensity;
 
-    // Free Three.js GPU buffers for match-owned objects
+    // Free Three.js GPU buffers, per-match materials, and textures
     for (const child of [...gfx.scene.children]) {
       if (baseSceneChildren.has(child)) continue;
       if (preserveWorld && (child === this.mapView.group || child === this.propView)) continue;
       gfx.scene.remove(child);
       freeSceneObject(child);
     }
+    this.fx.dispose();
     freeSceneObject(this.viewModel.scene);
-    freeSceneObject(this.outline.scene);
+    this.outline.dispose();
     this.gizmo.dispose();
 
     // Free Rapier WASM physics world

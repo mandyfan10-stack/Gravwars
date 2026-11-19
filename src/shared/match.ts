@@ -23,6 +23,12 @@ export const BED_REGEN = { delay: 15, rate: 2.5 };
 export const RESPAWN_DELAY = 8;
 /** Passive healing rate inside a team base hall, HP/s. */
 export const BASE_HEAL_RATE = 2;
+/** Distance from own live crystal within which passive ammo refill & zone badge activate, m. */
+export const CRYSTAL_ZONE_RADIUS = 8.5;
+/** Seconds between ammo refills inside own crystal zone. */
+export const CRYSTAL_AMMO_INTERVAL = 1.4;
+/** Fraction of a magazine refilled per crystal zone pulse. */
+export const CRYSTAL_AMMO_FRAC = 0.35;
 /** Stage 1 -> Stage 2 transition: 10 s invulnerability, then a 10 m explosion stunning & hurting enemies (100%) and reviving the crystal's dead team members. */
 export const CRYSTAL_INVULN_TIME = 10;
 export const CRYSTAL_BLAST_RADIUS = 10;
@@ -39,6 +45,11 @@ export const SKIRMISH_WOOD_PER_SEC = 1;
 
 export function killRewardFor(mode?: GameMode): number {
   return mode === 'skirmish' ? SKIRMISH_KILL_REWARD : KILL_REWARD;
+}
+
+/** Scale a positive match reward (kill cash, crystal pickup, fishing pouch) by `MATCH_RULES.reward`. */
+export function scaleReward(base: number): number {
+  return base > 0 ? Math.max(1, Math.round(base * MATCH_RULES.reward)) : 0;
 }
 
 export function maxCrystalHp(): number {
@@ -281,7 +292,7 @@ export class Match {
     }
     const n = this.collect(playerPos);
     if (n > 0) {
-      const reward = Math.max(1, Math.round(n * MATCH_RULES.reward));
+      const reward = scaleReward(n);
       this.wallet.crystal += reward;
       this.events.push({ type: 'pickup', currency: 'crystal', amount: reward });
     }

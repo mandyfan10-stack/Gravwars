@@ -110,8 +110,12 @@ const GLSL_MAIN = /* glsl */ `
 export function withRooms(mat: MeshStandardMaterial, o: RoomsOptions): MeshStandardMaterial {
   const prev = mat.onBeforeCompile;
   const prevKey = Object.prototype.hasOwnProperty.call(mat, 'customProgramCacheKey') ? mat.customProgramCacheKey.bind(mat) : () => '';
+  const trackedMask = trackTexture(o.mask);
+  const extra = (mat.userData.extraTextures as Texture[] | undefined) ?? [];
+  extra.push(trackedMask);
+  mat.userData.extraTextures = extra;
   const uniforms = {
-    roomMask: { value: trackTexture(o.mask) },
+    roomMask: { value: trackedMask },
     roomCells: { value: new Vector2(...o.cells) },
     roomMetres: { value: o.metres },
     roomDepth: { value: o.depth },

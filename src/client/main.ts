@@ -1,11 +1,7 @@
-import '@fontsource/inter/400.css';
-import '@fontsource/inter/500.css';
-import '@fontsource/inter/600.css';
-import '@fontsource/inter/700.css';
-import '@fontsource/inter/800.css';
+import './fonts.css';
 import './style.css';
 import type { Object3D } from 'three';
-import { activeTeams, playerTeam, sanitizeLocalLobby } from '../shared/lobby';
+import { activeTeams, normalizeSeed, playerTeam, randomMapSeed, sanitizeLocalLobby } from '../shared/lobby';
 import { initRapier, type Rapier } from '../shared/physics';
 import type { TeamId } from '../shared/teams';
 import { GameAudio } from './audio';
@@ -88,7 +84,7 @@ async function main() {
   let isHostPlayer = true;
   let myNetworkId = '';
   let myNetworkName = '';
-  let matchSeed = 1337;
+  let matchSeed = 0;
   let canonicalMapTeam: TeamId = 'red';
   let skipFortTeams: TeamId[] = [];
   let pendingNetStart = false;
@@ -130,6 +126,10 @@ async function main() {
       const mode = cfg.mode ?? 'standard';
       const myTeam = playerTeam(cfg, myNetworkId) || playerTeam(cfg) || 'red';
       const mapTeam = isNetworkMatch ? canonicalMapTeam : myTeam;
+      if (!isNetworkMatch) {
+        const explicitSeed = normalizeSeed(cfg.seed);
+        matchSeed = explicitSeed ?? (backdrop.hasFreshKey ? backdrop.seed : randomMapSeed());
+      }
       const menuEye = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
       const built = backdrop.take(mapTeam, activeTeams(cfg), matchSeed, mode);
       if (!built) document.body.classList.add('building');
@@ -187,7 +187,8 @@ async function main() {
       // Empty key forces the next match to build a fresh, undamaged map while reusing the arena visually in menu
       backdrop.resumeExisting(preserved, '');
     } else if (loadedAssets) {
-      backdrop.start(loadedAssets, playerTeam(lobby.config) ?? 'red', activeTeams(lobby.config), 1337, lobby.config.mode ?? 'standard');
+      const nextSeed = normalizeSeed(lobby.config.seed) ?? randomMapSeed();
+      backdrop.start(loadedAssets, playerTeam(lobby.config) ?? 'red', activeTeams(lobby.config), nextSeed, lobby.config.mode ?? 'standard');
     }
     if (isNetworkMatch || netTransport) {
       cleanupNetworkRoom(true, disconnectMsg ?? 'Вы отключились от сетевой игры');
@@ -220,7 +221,7 @@ async function main() {
     isNetworkMatch = false;
     isHostPlayer = true;
     myNetworkId = '';
-    matchSeed = 1337;
+    matchSeed = 0;
     canonicalMapTeam = 'red';
     skipFortTeams = [];
     pendingNetStart = false;
@@ -263,7 +264,7 @@ async function main() {
     onStartMatch: (spectate) => {
       if (!loaded || launching || activeSession) return;
       if (!spectate && isNetworkMatch && isHostPlayer && netLobby) {
-        netLobby.startMatch();
+        netLobby.startMatch(backdrop.hasFreshKey ? backdrop.seed : undefined);
         return;
       }
       void launchMatch(spectate);
@@ -331,7 +332,9 @@ async function main() {
   const [R, assets] = await loading;
   rapier = R;
   loadedAssets = assets;
-  backdrop.start(assets, playerTeam(lobby.config) ?? 'red', activeTeams(lobby.config), 1337, lobby.config.mode ?? 'standard');
+  const bootSeed = normalizeSeed(lobby.config.seed) ?? randomMapSeed();
+  matchSeed = bootSeed;
+  backdrop.start(assets, playerTeam(lobby.config) ?? 'red', activeTeams(lobby.config), bootSeed, lobby.config.mode ?? 'standard');
   applyToggles();
   (window as unknown as { __menu: MenuBackdrop }).__menu = backdrop;
   loaded = true;

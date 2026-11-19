@@ -6,6 +6,29 @@ export type Seat = { kind: 'player'; id?: string; name?: string } | { kind: 'bot
 export type GameMode = 'standard' | 'sandbox' | 'duel' | 'skirmish';
 export const TEAM_SEATS = 5;
 export const MAX_TEAM_SEATS = 10;
+export const DEFAULT_SEED = 1337;
+export const MAX_MAP_SEED = 999_999_999;
+
+/** Parse a user/network map seed into a positive integer in [1, MAX_MAP_SEED], or undefined (= random). */
+export function normalizeSeed(raw: unknown): number | undefined {
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return undefined;
+    const n = Math.floor(raw);
+    return n >= 1 && n <= MAX_MAP_SEED ? n : undefined;
+  }
+  if (typeof raw === 'string') {
+    const clean = raw.trim();
+    if (!/^\d+$/.test(clean)) return undefined;
+    const n = Number.parseInt(clean, 10);
+    return Number.isFinite(n) && n >= 1 && n <= MAX_MAP_SEED ? n : undefined;
+  }
+  return undefined;
+}
+
+/** Generate a readable 6..9-digit random map seed. */
+export function randomMapSeed(): number {
+  return 100_000 + Math.floor(Math.random() * (MAX_MAP_SEED - 100_000));
+}
 
 export interface LobbyMultipliers {
   reward: number;
@@ -213,10 +236,12 @@ export function sanitizeLocalLobby(c: LobbyConfig, keepPlayerId = ''): LobbyConf
   const team = keptTeam ?? 'red';
   const idx = keptIdx >= 0 ? keptIdx : Math.max(0, seats[team].findIndex((s) => s === null));
   seats[team][idx] = { kind: 'player' };
+  const seed = normalizeSeed(c.seed);
   return {
     seats,
     mode: c.mode === 'sandbox' || c.mode === 'duel' || c.mode === 'skirmish' ? c.mode : 'standard',
     seatCount: n,
+    ...(seed !== undefined ? { seed } : {}),
     ...(c.infiniteMoney ? { infiniteMoney: true } : {}),
     ...(c.multipliers ? { multipliers: { ...DEFAULT_MULTIPLIERS, ...c.multipliers } } : {}),
   };
@@ -237,10 +262,12 @@ export function parseLobby(raw: string | null, difficulty: Difficulty = 'normal'
       && c.seats[t.id].every((s) => s === null || s.kind === 'player' || (s.kind === 'bot' && ['easy', 'normal', 'hard'].includes(s.difficulty))));
     const players = TEAMS.reduce((sum, t) => sum + c.seats[t.id].filter((s) => s?.kind === 'player').length, 0);
     if (ok && players <= n * TEAMS.length) {
+      const seed = normalizeSeed(c.seed);
       return {
         ...c,
         mode: c.mode === 'sandbox' || c.mode === 'duel' || c.mode === 'skirmish' ? c.mode : 'standard',
         seatCount: n,
+        ...(seed !== undefined ? { seed } : { seed: undefined }),
         infiniteMoney: c.infiniteMoney === true,
         multipliers: { ...DEFAULT_MULTIPLIERS, ...(c.multipliers ?? {}) },
       };

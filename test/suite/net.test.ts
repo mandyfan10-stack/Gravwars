@@ -1,18 +1,28 @@
-import { Quaternion, Vector3 } from 'three';
+import {
+  BoxGeometry, BufferGeometry, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, MeshStandardMaterial,
+  Points, PointsMaterial, Quaternion, Texture, Vector3,
+} from 'three';
+import { canUseDebugControls } from '../../src/client/keybinds';
+import { freeSceneObject } from '../../src/client/menuBackdrop';
+import { applyClientInput, handleClientAction } from '../../src/client/net/netHostActions';
 import { HostSnapshotBuilder } from '../../src/client/net/netHostSnapshot';
 import { playRemoteGunAudio } from '../../src/client/net/netTypes';
 import { PMoveClient } from '../../src/client/net/pmoveClient';
 import { EntitySnapshotEntry, INTERP_DELAY_MS, sampleEntityInterpolation } from '../../src/client/net/remotePlayerManager';
-import { BlockSystem, piecePlan } from '../../src/shared/blocks';
+import { trackedTextureCount, trackTexture } from '../../src/client/render/texFilter';
+import { BlockSystem, piecePlan, START_BLOCKS } from '../../src/shared/blocks';
 import { Combat, MAX_HP, Target } from '../../src/shared/combat';
 import { TICK_DT, WORLD } from '../../src/shared/constants';
-import { Economy, Pickups, SHOP } from '../../src/shared/economy';
+import { Economy, healAmountForItem, Pickups, SHOP } from '../../src/shared/economy';
 import {
-  canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, sanitizeLocalLobby, seatPlayer,
+  applyMatchRules, canSeatPlayer, defaultLobby, firstFreeSeat, humanTeams, MAX_MAP_SEED, normalizeSeed, parseLobby,
+  randomMapSeed, sanitizeLocalLobby, seatPlayer,
 } from '../../src/shared/lobby';
-import { Match } from '../../src/shared/match';
+import { CRYSTAL_AMMO_INTERVAL, CRYSTAL_ZONE_RADIUS, Match, scaleReward } from '../../src/shared/match';
 import {
-  applyRemoteClientJetpackEvents, syncRemoteClientJetpack, wireRemoteClientArmor,
+  INFINITE_MONEY_BALANCE, applyRemoteClientInfiniteMoney, applyRemoteClientJetpackEvents, awardRemoteClientKill,
+  collectRemoteClientCrystals, spillRemoteClientLoot, syncRemoteClientJetpack, tickRemoteClientCrystalZone,
+  wireRemoteClientArmor,
 } from '../../src/shared/net/hostGear';
 import {
   capturePMoveState, IN_DUCK, IN_JUMP, IN_SPEED, sanitizeUserCommand, SimulateMovement,
@@ -23,8 +33,8 @@ import {
   q1, q3, qQuat, qVec3, SnapshotScheduler,
 } from '../../src/shared/net/snapshot';
 import {
-  clampNum, cleanBuildPlace, EYE_SLACK, eyeNear, fireInterval, isDir, isItemId, isPieceVariant, isQuat, isVec3,
-  isWeaponId, MIN_FISH_INTERVAL, nearPond, RateLimiter,
+  clampNum, cleanBuildPlace, EYE_SLACK, eyeNear, fireInterval, isDir, isItemId, isPieceVariant, isQuat, isValidBuildQuat,
+  isVec3, isWeaponId, MIN_FISH_INTERVAL, nearPond, parseClientLobbyMessage, RateLimiter,
 } from '../../src/shared/net/validate';
 import { buildPhysicsWorld } from '../../src/shared/physics';
 import { JETPACK, PlayerSim } from '../../src/shared/sim';
@@ -426,5 +436,285 @@ export function runNetTests(h: SimHarness) {
       first.reliable === true && second.reliable === false && third.reliable === true
       && first.players[0].maxHp === 200 && first.players[1].maxHp === 180,
       `rel=${first.reliable},${second.reliable},${third.reliable} maxHp=${first.players[0].maxHp}/${first.players[1].maxHp}`);
+  }
+
+  // Priority-1 regressions: debug key gating, purple lobby seating, scaled healing, and host↔client P2P parity
+  {
+    check('debug controls: disabled in P2P matches, allowed only locally in sandbox or dev mode',
+      !canUseDebugControls('standard', true, true)
+      && !canUseDebugControls('sandbox', true, true)
+      && !canUseDebugControls('standard', false, false)
+      && !canUseDebugControls('duel', false, false)
+      && !canUseDebugControls('skirmish', false, false)
+      && canUseDebugControls('sandbox', false, false)
+      && canUseDebugControls('standard', false, true));
+
+    check('START_BLOCKS wood matches live match starting wood (16)', START_BLOCKS.wood === 16);
+
+    check('healAmountForItem scales medkit to full maxHp while preserving apple/fish amounts',
+      healAmountForItem('apple', 240) === 20 && healAmountForItem('fish', 240) === 15 && healAmountForItem('medkit', 240) === 240);
+
+    // Purple team is eligible in default firstFreeSeat order once blue/green/yellow are full
+    const lcPurple = defaultLobby('normal');
+    for (const tm of ['blue', 'green', 'yellow'] as const) {
+      for (let i = 0; i < 5; i++) seatPlayer(lcPurple, tm, i, `h-${tm}-${i}`, `H${i}`);
+    }
+    const purpleSlot = firstFreeSeat(lcPurple);
+    check('firstFreeSeat assigns purple team when blue/green/yellow are full',
+      purpleSlot !== null && purpleSlot.team === 'purple' && purpleSlot.seatIndex === 0,
+      JSON.stringify(purpleSlot));
+
+    // Host↔remote client parity: reward scaling, infiniteMoney, void spill, crystal ammo cadence, and scaled medkit
+    const w = buildPhysicsWorld(R, map);
+    const sim = new PlayerSim(R, w, map, 'blue');
+    const combat = new Combat(R, w, map, [sim.mover.collider]);
+    const bs = new BlockSystem(R, w);
+    const m = new Match(R, w, map, bs, 'red');
+    const pk = new Pickups(R, w, map);
+    const weapons = createWeaponState();
+    giveWeapon(weapons, 'rifle', 0);
+    weapons.reserve.rifle = 0;
+    const wallet = { cash: 10, crystal: 0 };
+    const blocksInv = { ...START_BLOCKS };
+    const eco = new Economy(wallet, { inventory: blocksInv }, weapons);
+    eco.items.apple = 2;
+    eco.items.medkit = 1;
+    const target: Target = {
+      id: 2002, team: 'blue', center: sim.state.pos, up: new Vector3(0, 1, 0),
+      vel: sim.state.vel, hp: 120, maxHp: 200, alive: true, respawnIn: -1, isHuman: true,
+    };
+    const rc = {
+      peerId: 'peer-parity', name: 'Guest', team: 'blue' as const,
+      sim, target, weapons, wallet, blocksInv, eco,
+      crystalAmmoT: 0, dirtySync: false,
+      limiter: new RateLimiter(),
+      out: false, disconnected: false,
+      pendingNotice: undefined as { text: string; color: string } | undefined,
+      pendingSound: undefined as 'pickup' | 'coins' | 'reject' | 'eat' | 'patch' | undefined,
+    };
+
+    try {
+      applyMatchRules({ reward: 2, playerHp: 2 });
+
+      // 1. Kill & crystal rewards scale with MATCH_RULES.reward
+      const stdKill = awardRemoteClientKill(rc, 'standard');
+      const skirKill = awardRemoteClientKill(rc, 'skirmish');
+      const fakeMatch = { collect: () => 2 };
+      const crys = collectRemoteClientCrystals(rc, fakeMatch);
+      check('p2p host: remote client kill & crystal rewards scale with MATCH_RULES.reward',
+        stdKill === 6 && skirKill === 50 && crys === 4 && wallet.cash === 10 + 6 + 50 && wallet.crystal === 4
+        && scaleReward(3) === 6,
+        `std=${stdKill} skir=${skirKill} crys=${crys}`);
+
+      // 2. Scaled medkit restores remote client above 100 HP up to full maxHp (200)
+      handleClientAction(
+        { combat, blocks: bs, match: m, pickups: pk, throws: {} as never, transport: {} as never, map } as never,
+        rc as never,
+        { type: 'interact', target: 'consume_medkit' },
+      );
+      check('p2p host: remote client medkit restores full scaled maxHp (>100)',
+        target.hp === 200 && eco.items.medkit === 0, `hp=${target.hp}`);
+
+      // 3. Void death spills pockets & halves cash without dropping pickups on base spawn; normal death drops pickups
+      const countBeforeVoid = pk.items.length;
+      const droppedVoid = spillRemoteClientLoot(rc, pk, true);
+      const afterVoidCash = wallet.cash;
+      const afterVoidApples = eco.items.apple;
+      const countAfterVoid = pk.items.length;
+      eco.items.apple = 2;
+      wallet.cash = 20;
+      const droppedNormal = spillRemoteClientLoot(rc, pk, false);
+      check('p2p host: void death does not drop remote client loot onto base spawn while normal death drops it',
+        droppedVoid === 0 && countAfterVoid === countBeforeVoid && afterVoidApples === 0 && afterVoidCash < 66
+        && droppedNormal >= 2 && pk.items.length > countAfterVoid,
+        `voidDrop=${droppedVoid} normalDrop=${droppedNormal}`);
+
+      // 4. Crystal zone ammo refill matches host radius (8.5 m) and 1.4 s cooldown cadence
+      const bed = m.bed('blue');
+      sim.state.pos.copy(bed.pos).add(new Vector3(CRYSTAL_ZONE_RADIUS + 4, 0, 0));
+      const farRefill = tickRemoteClientCrystalZone(rc, bed, TICK_DT);
+      sim.state.pos.copy(bed.pos).add(new Vector3(2, 0, 0));
+      rc.crystalAmmoT = 0;
+      const firstRefill = tickRemoteClientCrystalZone(rc, bed, TICK_DT);
+      const reserveAfter1 = weapons.reserve.rifle;
+      const spamRefill = tickRemoteClientCrystalZone(rc, bed, TICK_DT);
+      const reserveAfterSpam = weapons.reserve.rifle;
+      const afterCdRefill = tickRemoteClientCrystalZone(rc, bed, CRYSTAL_AMMO_INTERVAL + 0.01);
+      check('p2p host: remote client crystal ammo refill respects 8.5 m radius and 1.4 s cooldown',
+        !farRefill && firstRefill && !spamRefill && reserveAfterSpam === reserveAfter1
+        && afterCdRefill && weapons.reserve.rifle > reserveAfter1,
+        `res=${reserveAfter1}->${reserveAfterSpam}->${weapons.reserve.rifle}`);
+
+      // 5. infiniteMoney keeps remote client wallet topped up and only marks dirtySync on change
+      wallet.cash = 0;
+      wallet.crystal = 0;
+      rc.dirtySync = false;
+      const applied1 = applyRemoteClientInfiniteMoney(rc, false);
+      const applied2 = applyRemoteClientInfiniteMoney(rc, true);
+      const dirtyAfterTopUp = rc.dirtySync;
+      rc.dirtySync = false;
+      const applied3 = applyRemoteClientInfiniteMoney(rc, true);
+      check('p2p host: infiniteMoney tops up remote client wallet and marks dirtySync only on change',
+        !applied1 && applied2 && dirtyAfterTopUp && !applied3 && !rc.dirtySync
+        && wallet.cash === INFINITE_MONEY_BALANCE && wallet.crystal === INFINITE_MONEY_BALANCE);
+    } finally {
+      applyMatchRules();
+    }
+  }
+
+  // Priority-2 regressions: live map seeds, axis-aligned build quat & active-weapon anti-cheat, lobby validation, GPU disposal
+  {
+    // 1. Seed normalization, randomization, and lobby persistence
+    const rolled = randomMapSeed();
+    const lcSeed = defaultLobby('normal');
+    lcSeed.seed = 424242;
+    const saved = sanitizeLocalLobby(lcSeed);
+    const parsed = parseLobby(JSON.stringify(saved));
+    const cleared = parseLobby(JSON.stringify({ ...saved, seed: 'not-a-seed' }));
+    check('map seed: normalizeSeed, randomMapSeed, and lobby storage preserve valid seeds and reject junk',
+      normalizeSeed(424242) === 424242 && normalizeSeed(' 98765 ') === 98765
+      && normalizeSeed(0) === undefined && normalizeSeed(-5) === undefined && normalizeSeed(MAX_MAP_SEED + 1) === undefined
+      && normalizeSeed('abc') === undefined && normalizeSeed('') === undefined
+      && rolled >= 100_000 && rolled <= MAX_MAP_SEED
+      && saved.seed === 424242 && parsed.seed === 424242 && cleared.seed === undefined);
+
+    // 2. Axis-aligned build orientation check across all 6 cube faces + rejection of arbitrary tilts
+    const faces = [
+      new Vector3(0, 1, 0), new Vector3(0, -1, 0),
+      new Vector3(1, 0, 0), new Vector3(-1, 0, 0),
+      new Vector3(0, 0, 1), new Vector3(0, 0, -1),
+    ];
+    let allFacePiecesOk = true;
+    for (const fUp of faces) {
+      for (const along of ['x', 'z'] as const) {
+        for (const sg of [1, -1]) {
+          for (const k of ['wall', 'floor', 'ramp'] as const) {
+            const plan = piecePlan(k, fUp, along, sg, 9, 2.25, -WORLD.cubeHalf);
+            if (!isValidBuildQuat(k, plan.quat)) allFacePiecesOk = false;
+          }
+        }
+      }
+    }
+    const tiltedWallQ = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), 0.4);
+    const badRampQ = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), 0.3);
+    const sampleBlock = { kind: 'block', center: [3.5, -125.5, 3.5], half: [0.5, 0.5, 0.5], material: 'wood', key: 'b:2', level: 0 };
+    const sampleRamp = { kind: 'ramp', center: [9, -123.75, 2.25], half: [Math.hypot(4.5, 4.5) / 2, 0.125, 2.25], material: 'wood', key: 'r:2', level: 0 };
+    check('validate: build orientation accepts all 6-face grid pieces and rejects arbitrary tilted quaternions',
+      allFacePiecesOk
+      && isValidBuildQuat('block', new Quaternion())
+      && !isValidBuildQuat('wall', tiltedWallQ)
+      && !isValidBuildQuat('block', tiltedWallQ)
+      && !isValidBuildQuat('ramp', badRampQ)
+      && cleanBuildPlace({ ...sampleBlock, quat: [tiltedWallQ.x, tiltedWallQ.y, tiltedWallQ.z, tiltedWallQ.w] }) === null
+      && cleanBuildPlace({ ...sampleRamp, quat: [badRampQ.x, badRampQ.y, badRampQ.z, badRampQ.w] }) === null);
+
+    // 3. Untrusted client-to-host lobby packet validation
+    const okJoin = parseClientLobbyMessage({ type: 'lobby:join', name: 'Alice' });
+    const okSeat = parseClientLobbyMessage({ type: 'lobby:seat', team: 'purple', seatIndex: 4 });
+    const okChat = parseClientLobbyMessage({ type: 'lobby:chat', text: 'gl hf' });
+    const badChat = parseClientLobbyMessage({ type: 'lobby:chat', text: 12345 });
+    const badTeam = parseClientLobbyMessage({ type: 'lobby:seat', team: '__proto__', seatIndex: 0 });
+    const badSeatIdx = parseClientLobbyMessage({ type: 'lobby:seat', team: 'red', seatIndex: 99 });
+    const badFloatSeat = parseClientLobbyMessage({ type: 'lobby:seat', team: 'red', seatIndex: 1.5 });
+    const badName = parseClientLobbyMessage({ type: 'lobby:name', name: null });
+    const badType = parseClientLobbyMessage({ type: 'lobby:start', seed: 1 });
+    check('validate: parseClientLobbyMessage accepts valid lobby packets and rejects malformed or host-only payloads',
+      okJoin?.type === 'lobby:join' && okSeat?.type === 'lobby:seat' && okSeat.team === 'purple'
+      && okChat?.type === 'lobby:chat'
+      && badChat === null && badTeam === null && badSeatIdx === null && badFloatSeat === null
+      && badName === null && badType === null && parseClientLobbyMessage(null) === null);
+
+    // 4. Active-weapon enforcement on fire + unordered fast input never clobbers current weapon / reload
+    const w = buildPhysicsWorld(R, map);
+    const sim = new PlayerSim(R, w, map, 'blue');
+    const combat = new Combat(R, w, map, [sim.mover.collider]);
+    const weapons = createWeaponState();
+    giveWeapon(weapons, 'pistol', 15);
+    giveWeapon(weapons, 'rifle', 30);
+    weapons.current = 'pistol';
+    const target: Target = {
+      id: 2003, team: 'blue', center: sim.state.pos, up: new Vector3(0, 1, 0),
+      vel: sim.state.vel, hp: MAX_HP, maxHp: MAX_HP, alive: true, respawnIn: -1, isHuman: true,
+    };
+    const rcAct = {
+      peerId: 'peer-wep', name: 'WepTest', team: 'blue' as const,
+      sim, target, weapons, wallet: { cash: 0, crystal: 0 }, blocksInv: { ...START_BLOCKS },
+      eco: new Economy({ cash: 0, crystal: 0 }, { inventory: { ...START_BLOCKS } }, weapons),
+      input: { forward: 0, right: 0, up: 0, jump: false, sprint: false, crouch: false, yaw: 0, pitch: 0 },
+      cmd: { tick: 0, forwardmove: 0, sidemove: 0, upmove: 0, viewangles: [0, 0] as [number, number], buttons: 0 },
+      yaw: 0, pitch: 0, lastSeq: 0, lastTick: 0, firing: false,
+      reloadT: 1.0, reloadW: 'pistol' as const, reloadCap: 15, reloadTotal: 1.5, reloadEmpty: false,
+      respawnT: 0, woodRegenT: 0, crystalAmmoT: 0, out: false, disconnected: false, dirtySync: false,
+      limiter: new RateLimiter(), kickCdUntil: 0, crossbowReadyAt: 0, lastFishAt: -Infinity,
+    };
+    applyClientInput(rcAct as never, {
+      seq: 1, tick: 1, forward: 0, right: 0, up: 0, jump: false, sprint: false, crouch: false, yaw: 0, pitch: 0, slot: 0, weapon: 'fists',
+    });
+    const reloadKept = rcAct.weapons.current === 'pistol' && rcAct.reloadT === 1.0;
+    const eyePos: [number, number, number] = [sim.state.pos.x, sim.state.pos.y + 0.71, sim.state.pos.z];
+    let broadcastCount = 0;
+    const fakeDeps = {
+      combat, blocks: new BlockSystem(R, w), match: new Match(R, w, map, new BlockSystem(R, w), 'red'),
+      pickups: new Pickups(R, w, map), throws: {} as never,
+      remotePlayers: { triggerFire: () => {} },
+      transport: { broadcast: () => { broadcastCount++; } },
+    };
+    // Try firing owned rifle while holding pistol → rejected
+    handleClientAction(fakeDeps as never, rcAct as never, { type: 'fire', weapon: 'rifle', origin: eyePos, dir: [0, 0, -1] });
+    const mismatchedBlocked = weapons.ammo.rifle === 30 && broadcastCount === 0 && rcAct.dirtySync;
+    // Switch reliably to rifle and fire → accepted
+    handleClientAction(fakeDeps as never, rcAct as never, { type: 'select_slot', slot: 0, weapon: 'rifle' });
+    handleClientAction(fakeDeps as never, rcAct as never, { type: 'fire', weapon: 'rifle', origin: eyePos, dir: [0, 0, -1] });
+    const switchedToRifle = (weapons.current as string) === 'rifle';
+    check('p2p host: fast input preserves reload/weapon and fire requires matching equipped weapon',
+      reloadKept && mismatchedBlocked && switchedToRifle && weapons.ammo.rifle === 29 && broadcastCount === 1);
+
+    // 5. freeSceneObject disposes Mesh/Points/Line geometries, per-match materials & textures, untracks shader masks, preserves shared assets
+    const trackedBefore = trackedTextureCount();
+    const root = new Group();
+    let disposedCount = 0;
+    let sharedDisposed = 0;
+    const spyDispose = (obj: { addEventListener: (ev: 'dispose', cb: () => void) => void }, shared = false) => {
+      obj.addEventListener('dispose', () => {
+        if (shared) sharedDisposed++;
+        else disposedCount++;
+      });
+    };
+
+    const gMesh = new BoxGeometry(1, 1, 1);
+    const tMap = new Texture();
+    const tExtra = trackTexture(new Texture());
+    const mMesh = new MeshStandardMaterial({ map: tMap });
+    mMesh.userData.extraTextures = [tExtra];
+    const gPts = new BufferGeometry();
+    const mPts = new PointsMaterial();
+    const gLine = new BufferGeometry();
+    const mLine = new LineBasicMaterial();
+    for (const r of [gMesh, tMap, tExtra, mMesh, gPts, mPts, gLine, mLine]) spyDispose(r);
+
+    const gShared = new BoxGeometry(1, 1, 1);
+    gShared.userData.shared = true;
+    const tShared = new Texture();
+    tShared.userData.shared = true;
+    const mShared = new MeshBasicMaterial({ map: tShared });
+    mShared.userData.shared = true;
+    const mClonedWithSharedTex = new MeshBasicMaterial({ map: tShared });
+    for (const r of [gShared, tShared, mShared]) spyDispose(r, true);
+    spyDispose(mClonedWithSharedTex, false);
+
+    root.add(
+      new Mesh(gMesh, mMesh),
+      new Points(gPts, mPts),
+      new Line(gLine, mLine),
+      new Mesh(gShared, mShared),
+      new Mesh(gShared, mClonedWithSharedTex),
+    );
+    const trackedPeak = trackedTextureCount();
+    freeSceneObject(root);
+    const trackedAfter = trackedTextureCount();
+    check('freeSceneObject disposes Mesh/Points/Line + materials/textures, untracks shader masks, and preserves shared assets',
+      trackedPeak === trackedBefore + 1 && trackedAfter === trackedBefore
+      && disposedCount === 9 && sharedDisposed === 0,
+      `disposed=${disposedCount}/9 shared=${sharedDisposed} tracked=${trackedBefore}->${trackedPeak}->${trackedAfter}`);
   }
 }

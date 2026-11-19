@@ -10,8 +10,10 @@ import {
 import { EYE_OFFSET } from '../constants';
 import { ITEMS, type ItemId } from '../economy';
 import { FISHING } from '../fishing';
+import { MAX_TEAM_SEATS } from '../lobby';
+import { TEAMS, type TeamId } from '../teams';
 import { CROSSBOW_LEVELS, KICK, WEAPONS, type WeaponId } from '../weapons';
-import type { QuatTuple, Vec3Tuple } from './protocol';
+import type { LobbyMessage, QuatTuple, Vec3Tuple } from './protocol';
 
 /** Any coordinate in the world is well inside this (the cube half size is ~126 m). */
 export const WORLD_LIMIT = 1000;
@@ -73,6 +75,36 @@ export const isWeaponId = (w: unknown): w is WeaponId => typeof w === 'string' &
 
 export const isItemId = (k: unknown): k is ItemId => typeof k === 'string' && Object.prototype.hasOwnProperty.call(ITEMS, k);
 
+export const isTeamId = (t: unknown): t is TeamId => typeof t === 'string' && TEAMS.some((x) => x.id === t);
+
+const _vx = new Vector3();
+const _vy = new Vector3();
+const _vz = new Vector3();
+const RAMP_HYP = Math.hypot(PIECE_CELL, PIECE_LEVEL);
+const RAMP_LO = Math.min(PIECE_CELL, PIECE_LEVEL) / RAMP_HYP;
+const RAMP_HI = Math.max(PIECE_CELL, PIECE_LEVEL) / RAMP_HYP;
+
+function isCardinalAxis(v: Vector3, eps = 0.015): boolean {
+  const ax = Math.abs(v.x), ay = Math.abs(v.y), az = Math.abs(v.z);
+  const hi = Math.max(ax, ay, az);
+  return hi >= 1 - eps && (ax + ay + az - hi) <= eps * 2;
+}
+
+/**
+ * Verify that a build quaternion aligns with the world's axis-aligned grid:
+ * - `block`, `wall`, `floor`: all three local basis axes must be cardinal world axes (±X, ±Y, ±Z).
+ * - `ramp`: local Z (sideways) must be a cardinal axis and local X must lie at the exact ramp slope angle.
+ */
+export function isValidBuildQuat(kind: BlockKind, q: Quaternion): boolean {
+  _vx.set(1, 0, 0).applyQuaternion(q);
+  _vy.set(0, 1, 0).applyQuaternion(q);
+  _vz.set(0, 0, 1).applyQuaternion(q);
+  if (kind !== 'ramp') return isCardinalAxis(_vx) && isCardinalAxis(_vy) && isCardinalAxis(_vz);
+  if (!isCardinalAxis(_vz)) return false;
+  const comps = [Math.abs(_vx.x), Math.abs(_vx.y), Math.abs(_vx.z)].sort((a, b) => a - b);
+  return comps[0] <= 0.02 && Math.abs(comps[1] - RAMP_LO) <= 0.02 && Math.abs(comps[2] - RAMP_HI) <= 0.02;
+}
+
 /** Exact half extents every build kind has (see `piecePlan` / the 1×1×1 block). */
 export function expectedHalf(kind: BlockKind): [number, number, number] {
   if (kind === 'block') return [0.5, 0.5, 0.5];
@@ -88,11 +120,13 @@ export interface BuildPlaceClean {
   kind: BlockKind; variant: PieceVariant; center: Vector3; half: Vector3; quat: Quaternion; material: BlockMaterial; key: string | undefined; level: number;
 }
 
-/** Shape-check a `build_place` action. Null = reject (unknown kind / variant / material, odd size, NaN, absurd key / level). */
+/** Shape-check a `build_place` action. Null = reject (unknown kind / variant / material, odd size, NaN, non-grid quat, absurd key / level). */
 export function cleanBuildPlace(act: BuildPlaceRaw): BuildPlaceClean | null {
   if (!isBlockKind(act.kind) || !isBlockMaterial(act.material)) return null;
   if (act.variant !== undefined && !isPieceVariant(act.variant)) return null;
   if (!isVec3(act.center) || !isVec3(act.half) || !isQuat(act.quat)) return null;
+  const quat = new Quaternion(...act.quat).normalize();
+  if (!isValidBuildQuat(act.kind, quat)) return null;
   const want = expectedHalf(act.kind);
   for (let i = 0; i < 3; i++) if (Math.abs(act.half[i] - want[i]) > 0.05) return null;
   if (act.key !== undefined && act.key !== null && (typeof act.key !== 'string' || act.key.length > 96)) return null;
@@ -105,10 +139,38 @@ export function cleanBuildPlace(act: BuildPlaceRaw): BuildPlaceClean | null {
     material: act.material,
     center: new Vector3(...act.center),
     half: new Vector3(...want),
-    quat: new Quaternion(...act.quat).normalize(),
+    quat,
     key: typeof act.key === 'string' ? act.key : undefined,
     level,
   };
+}
+
+export type ClientLobbyMessage = Extract<LobbyMessage, { type: 'lobby:join' | 'lobby:name' | 'lobby:seat' | 'lobby:chat' }>;
+
+/** Validate an untrusted client-to-host lobby packet so malformed payloads cannot crash or corrupt the lobby. */
+export function parseClientLobbyMessage(raw: unknown): ClientLobbyMessage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  if (m.type === 'lobby:join') {
+    const name = typeof m.name === 'string' ? m.name.slice(0, 64) : '';
+    return { type: 'lobby:join', name };
+  }
+  if (m.type === 'lobby:name') {
+    if (typeof m.name !== 'string') return null;
+    return { type: 'lobby:name', name: m.name.slice(0, 64) };
+  }
+  if (m.type === 'lobby:seat') {
+    if (!isTeamId(m.team)) return null;
+    if (typeof m.seatIndex !== 'number' || !Number.isInteger(m.seatIndex) || m.seatIndex < 0 || m.seatIndex >= MAX_TEAM_SEATS) return null;
+    return { type: 'lobby:seat', team: m.team, seatIndex: m.seatIndex };
+  }
+  if (m.type === 'lobby:chat') {
+    if (typeof m.text !== 'string') return null;
+    const sender = typeof m.sender === 'string' ? m.sender.slice(0, 64) : '';
+    const senderId = typeof m.senderId === 'string' ? m.senderId.slice(0, 64) : '';
+    return { type: 'lobby:chat', senderId, sender, text: m.text.slice(0, 280) };
+  }
+  return null;
 }
 
 /**

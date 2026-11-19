@@ -1,14 +1,19 @@
 import {
   activeTeams,
   canSeatPlayer,
+  DEFAULT_MULTIPLIERS,
+  DEFAULT_SEED,
   firstFreeSeat,
   humanTeams,
   LobbyConfig,
+  normalizeSeed,
   playerTeam,
+  randomMapSeed,
   removePlayerSeat,
   seatPlayer,
 } from '../../shared/lobby';
 import type { LobbyMessage, NetworkPlayerInfo } from '../../shared/net/protocol';
+import { parseClientLobbyMessage, RateLimiter } from '../../shared/net/validate';
 import { TEAMS, type TeamId } from '../../shared/teams';
 import type { Lobby } from '../lobby';
 import type { P2PTransport } from './p2p';
@@ -44,6 +49,26 @@ export class NetLobbyController {
   myName: string;
   isHost = false;
   matchStarted = false;
+  private readonly limiters = new Map<string, RateLimiter>();
+
+  private limiterFor(peerId: string): RateLimiter {
+    let lim = this.limiters.get(peerId);
+    if (!lim) {
+      lim = new RateLimiter();
+      this.limiters.set(peerId, lim);
+    }
+    return lim;
+  }
+
+  private applyHostConfig(cfg: LobbyConfig | undefined) {
+    if (!cfg || typeof cfg !== 'object' || !cfg.seats) return;
+    this.lobby.config.seats = cfg.seats;
+    this.lobby.config.mode = cfg.mode === 'sandbox' || cfg.mode === 'duel' || cfg.mode === 'skirmish' ? cfg.mode : 'standard';
+    this.lobby.config.seatCount = cfg.seatCount;
+    this.lobby.config.seed = normalizeSeed(cfg.seed);
+    this.lobby.config.infiniteMoney = cfg.infiniteMoney === true;
+    this.lobby.config.multipliers = { ...DEFAULT_MULTIPLIERS, ...(cfg.multipliers ?? {}) };
+  }
 
   constructor(
     readonly net: P2PTransport,
@@ -101,6 +126,7 @@ export class NetLobbyController {
 
       this.net.events.onPeerLeave = (peerId) => {
         const leaving = this.players.find((p) => p.id === peerId);
+        this.limiters.delete(peerId);
         this.players = this.players.filter((p) => p.id !== peerId);
         removePlayerSeat(this.lobby.config, peerId);
         this.lobby.render();
@@ -125,11 +151,15 @@ export class NetLobbyController {
   }
 
   private findJoinSeat() {
-    return firstFreeSeat(this.lobby.config, ['blue', 'green', 'yellow', 'red']);
+    return firstFreeSeat(this.lobby.config);
   }
 
-  private handleLobbyMessage(peerId: string, msg: LobbyMessage) {
+  private handleLobbyMessage(peerId: string, rawMsg: LobbyMessage) {
     if (this.isHost) {
+      const msg = parseClientLobbyMessage(rawMsg);
+      if (!msg) return;
+      const now = performance.now() / 1000;
+      const lim = this.limiterFor(peerId);
       if (msg.type === 'lobby:join') {
         if (this.matchStarted) {
           this.net.sendTo(peerId, {
@@ -175,7 +205,7 @@ export class NetLobbyController {
         this.callbacks.onPlayersChange?.(this.players);
         this.callbacks.onStatusMessage?.(`Игрок ${safeName} вошёл в комнату (${this.players.length})`);
       } else if (msg.type === 'lobby:name') {
-        if (this.matchStarted) return;
+        if (this.matchStarted || !lim.allow('name', 0.25, now)) return;
         const p = this.players.find((pl) => pl.id === peerId);
         if (!p) return;
         p.name = cleanPlayerName(msg.name, `Игрок ${peerId.slice(-4)}`);
@@ -185,7 +215,7 @@ export class NetLobbyController {
         this.broadcastLobbyUpdate();
         this.callbacks.onPlayersChange?.(this.players);
       } else if (msg.type === 'lobby:seat') {
-        if (this.matchStarted) return;
+        if (this.matchStarted || !lim.allow('seat', 0.15, now)) return;
         if (!canSeatPlayer(this.lobby.config, msg.team, msg.seatIndex, peerId)) {
           this.net.sendTo(peerId, {
             kind: 'lobby',
@@ -203,6 +233,7 @@ export class NetLobbyController {
         this.broadcastLobbyUpdate();
         this.callbacks.onPlayersChange?.(this.players);
       } else if (msg.type === 'lobby:chat') {
+        if (!lim.allow('chat', 0.4, now)) return;
         const cleanText = msg.text.replace(/\s+/g, ' ').trim().slice(0, 140);
         if (!cleanText) return;
         const sender = this.players.find((pl) => pl.id === peerId);
@@ -215,27 +246,33 @@ export class NetLobbyController {
     }
 
     // Client handling
+    const msg = rawMsg;
+    if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'lobby:rejected') {
-      this.callbacks.onRejected?.(msg.reason);
+      this.callbacks.onRejected?.(typeof msg.reason === 'string' ? msg.reason : 'Вход отклонён');
     } else if (msg.type === 'lobby:welcome') {
       this.myPlayerId = msg.yourId;
-      this.players = msg.players;
-      Object.assign(this.lobby.config, msg.config);
+      this.players = Array.isArray(msg.players) ? msg.players : [];
+      this.applyHostConfig(msg.config);
       this.lobby.render();
       this.callbacks.onPlayersChange?.(this.players);
       this.callbacks.onStatusMessage?.(`Подключено к комнате (игроков: ${this.players.length})`);
     } else if (msg.type === 'lobby:update') {
-      this.players = msg.players;
-      Object.assign(this.lobby.config, msg.config);
+      this.players = Array.isArray(msg.players) ? msg.players : this.players;
+      this.applyHostConfig(msg.config);
       this.lobby.render();
       this.callbacks.onPlayersChange?.(this.players);
     } else if (msg.type === 'lobby:chat') {
-      this.callbacks.onChat?.(msg.sender, msg.text, msg.team);
+      if (typeof msg.text === 'string' && typeof msg.sender === 'string') {
+        this.callbacks.onChat?.(msg.sender, msg.text, msg.team);
+      }
     } else if (msg.type === 'lobby:start') {
       this.matchStarted = true;
+      this.applyHostConfig(msg.config);
+      const seed = normalizeSeed(msg.seed) ?? DEFAULT_SEED;
       const mapTeam = msg.mapTeam ?? msg.activeTeams[0] ?? 'red';
       const skipFortTeams = msg.skipFortTeams ?? humanTeams(msg.config);
-      this.callbacks.onStartMatch(msg.seed, msg.config, msg.activeTeams, this.myPlayerId, false, mapTeam, skipFortTeams);
+      this.callbacks.onStartMatch(seed, msg.config, msg.activeTeams, this.myPlayerId, false, mapTeam, skipFortTeams);
     }
   }
 
@@ -321,10 +358,10 @@ export class NetLobbyController {
   }
 
   /** Host initiates match start for everyone. */
-  startMatch() {
+  startMatch(fallbackSeed?: number) {
     if (!this.isHost || this.matchStarted) return;
     this.matchStarted = true;
-    const seed = 1337;
+    const seed = normalizeSeed(this.lobby.config.seed) ?? normalizeSeed(fallbackSeed) ?? randomMapSeed();
     const active = activeTeams(this.lobby.config);
     const mapTeam = playerTeam(this.lobby.config, this.myPlayerId) ?? active[0] ?? 'red';
     const skipFortTeams = humanTeams(this.lobby.config);

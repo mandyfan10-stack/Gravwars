@@ -1,6 +1,6 @@
 import {
-  AdditiveBlending, BufferAttribute, BufferGeometry, Group, InstancedMesh, Matrix4, Mesh, Object3D, Points, PointsMaterial,
-  Quaternion, Vector3,
+  AdditiveBlending, BufferAttribute, BufferGeometry, Group, InstancedMesh, Material, Matrix4, Object3D, Points,
+  PointsMaterial, Quaternion, ShaderMaterial, Texture, Vector3,
 } from 'three';
 import { generateMap } from '../shared/map';
 import type { GameMode } from '../shared/lobby';
@@ -10,6 +10,7 @@ import { GameAssets } from './render/assets';
 import { Graphics } from './render/graphics';
 import { buildMapView, MapView } from './render/mapView';
 import { buildPropView } from './render/propView';
+import { untrackTexture } from './render/texFilter';
 
 /** A built world the match can take over instead of building it again. */
 export interface BuiltWorld { map: MapData; mapView: MapView; propView: Group }
@@ -57,6 +58,16 @@ export class MenuBackdrop {
       depthWrite: false, blending: AdditiveBlending, fog: false,
     }));
     this.dust.frustumCulled = false;
+  }
+
+  /** Current seed of the scenic world (0 if none is built). */
+  get seed(): number {
+    return this.world?.map.seed ?? 0;
+  }
+
+  /** True when the scenic world holds a fresh unused map key eligible for zero-rebuild handoff. */
+  get hasFreshKey(): boolean {
+    return this.world !== null && this.key !== '';
   }
 
   /** Build the world for (spawn team, playing teams, seed, mode) and start the camera. */
@@ -180,10 +191,60 @@ export function backdropKey(seed: number, spawnTeam: string, teams: readonly str
   return `${seed}|${mode}|${spawnTeam}|${[...teams].sort().join(',')}`;
 }
 
-/** Free the GPU buffers of a removed group (shared materials and textures are left alone). */
+const MATERIAL_TEX_SLOTS = ['map', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'normalMap', 'aoMap', 'alphaMap'] as const;
+
+function collectMaterialTextures(mat: Material, out: Set<Texture>) {
+  const rec = mat as unknown as Record<string, unknown>;
+  for (const k of MATERIAL_TEX_SLOTS) {
+    const v = rec[k];
+    if (v instanceof Texture) out.add(v);
+  }
+  const triMap = (mat.userData?.tri as { triMap?: { value?: unknown } } | undefined)?.triMap?.value;
+  if (triMap instanceof Texture) out.add(triMap);
+  const extra = mat.userData?.extraTextures as unknown;
+  if (Array.isArray(extra)) {
+    for (const v of extra) if (v instanceof Texture) out.add(v);
+  }
+  const uniforms = (mat as ShaderMaterial).uniforms as Record<string, { value?: unknown }> | undefined;
+  if (uniforms) {
+    for (const u of Object.values(uniforms)) {
+      if (u?.value instanceof Texture) out.add(u.value);
+    }
+  }
+}
+
+/**
+ * Free GPU buffers, per-match materials, and textures under `root` (`Mesh`, `InstancedMesh`, `Points`, `Line`,
+ * `Sprite`), while leaving cached module/asset resources marked `userData.shared = true` intact.
+ */
 export function freeSceneObject(root: Object3D) {
+  const geos = new Set<BufferGeometry>();
+  const mats = new Set<Material>();
+  const texs = new Set<Texture>();
+
   root.traverse((o) => {
     if ((o as InstancedMesh).isInstancedMesh) (o as InstancedMesh).dispose();
-    if ((o as Mesh).isMesh) ((o as Mesh).geometry as BufferGeometry).dispose();
+    const g = (o as { geometry?: unknown }).geometry;
+    if (g instanceof BufferGeometry) geos.add(g);
+    const m = (o as { material?: unknown }).material;
+    if (Array.isArray(m)) {
+      for (const item of m) if (item instanceof Material) mats.add(item);
+    } else if (m instanceof Material) {
+      mats.add(m);
+    }
   });
+
+  for (const g of geos) {
+    if (!g.userData?.shared) g.dispose();
+  }
+  for (const m of mats) {
+    if (m.userData?.shared) continue;
+    collectMaterialTextures(m, texs);
+    m.dispose();
+  }
+  for (const t of texs) {
+    if (t.userData?.shared) continue;
+    untrackTexture(t);
+    t.dispose();
+  }
 }

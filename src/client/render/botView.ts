@@ -44,6 +44,7 @@ const bobberWhite = new MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.4 }
 const bobberTop = new SphereGeometry(0.09, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
 const bobberBottom = new SphereGeometry(0.09, 10, 6, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
 const lineMat = new LineBasicMaterial({ color: 0xf4f1ea, transparent: true, opacity: 0.7 });
+for (const r of [shellGeo, bobberRed, bobberWhite, bobberTop, bobberBottom, lineMat]) r.userData.shared = true;
 
 /** Draws bots with the animated character, interpolated between simulation ticks. */
 export class BotView {

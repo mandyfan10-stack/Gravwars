@@ -3,6 +3,7 @@ import type { BotManager } from '../shared/bots';
 import { Combat, MAX_HP } from '../shared/combat';
 import { EYE_OFFSET } from '../shared/constants';
 import { escapeHtml } from '../shared/escape';
+import { MATCH_RULES } from '../shared/lobby';
 import { BED_HP, Match } from '../shared/match';
 import { frameForUp } from '../shared/math';
 import { viewQuat } from '../shared/movement';
@@ -23,6 +24,7 @@ export interface SpectatorHumanTarget {
   yaw: number;
   pitch: number;
   hp: number;
+  maxHp?: number;
   name: string;
   weapon: string;
 }
@@ -37,6 +39,7 @@ interface ActorView {
   yaw: number;
   pitch: number;
   hp: number;
+  maxHp: number;
   weapon: WeaponId;
   ammoText: string;
   status: string;
@@ -157,6 +160,7 @@ export class SpectatorController {
   private livingActors(): ActorView[] {
     const out: ActorView[] = [];
     const humans = this.getHumanTargets?.() ?? [];
+    const defaultMaxHp = Math.max(10, Math.round(MAX_HP * MATCH_RULES.playerHp));
     for (const h of humans) {
       if (!h.alive) continue;
       const t = getTeam(h.team);
@@ -172,6 +176,7 @@ export class SpectatorController {
         yaw: h.yaw,
         pitch: h.pitch,
         hp: h.hp,
+        maxHp: h.maxHp ?? defaultMaxHp,
         weapon: w,
         ammoText: '',
         status: 'в бою',
@@ -194,6 +199,7 @@ export class SpectatorController {
         yaw: b.sim.state.yaw,
         pitch: b.sim.state.pitch,
         hp: b.target.hp,
+        maxHp: b.target.maxHp ?? defaultMaxHp,
         weapon: b.weapons.current,
         ammoText: ` (${b.weapons.ammo[b.weapons.current]}/${b.weapons.reserve[b.weapons.current]})`,
         status: b.status || 'продвижение',
@@ -373,7 +379,7 @@ export class SpectatorController {
     }
 
     const team = getTeam(actor.team);
-    const hpPct = Math.max(0, Math.round((actor.hp / MAX_HP) * 100));
+    const hpPct = Math.max(0, Math.min(100, Math.round((actor.hp / Math.max(1, actor.maxHp)) * 100)));
     const wName = WEAPONS[actor.weapon].name;
     const viewLabel = this.firstPerson ? '1-Е ЛИЦО' : '3-Е ЛИЦО';
     this.updateTeamsBar(actor.team);
