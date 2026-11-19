@@ -130,22 +130,28 @@ export class MenuBackdrop {
     camera.quaternion.setFromRotationMatrix(_m.lookAt(camera.position, _at, _up));
   }
 
-  private frame = () => {
-    if (!this.running || !this.world) return;
-    const now = performance.now();
-    const dt = Math.min(0.1, (now - this.last) / 1000);
-    this.last = now;
-    this.time += dt;
+  private renderStep(dt: number) {
+    if (!this.world) return;
     this.pose(this.time);
     this.motes(dt);
     const { gfx } = this;
     gfx.updateLighting(FLOOR, this.time);
     this.world.mapView.update(this.time, dt);
     gfx.overlay.enabled = false;
-    gfx.render(dt);
-    this.rafId = requestAnimationFrame(this.frame);
-    // the first frame is up: fade the world in from black
+    if (!document.hidden) gfx.render(dt);
     document.body.classList.remove('boot');
+  }
+
+  private frame = () => {
+    if (!this.running || !this.world) return;
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - this.last) / 1000);
+    this.last = now;
+    this.time += dt;
+    this.renderStep(dt);
+    if (!navigator.webdriver) {
+      this.rafId = requestAnimationFrame(this.frame);
+    }
   };
 
   /** Motes rise and sway; the ones that leave the box round the camera come back in on the other side. */
@@ -166,6 +172,7 @@ export class MenuBackdrop {
   /** Debug / screenshots: jump the camera to time `t`. */
   seek(t: number) {
     this.time = t;
+    if (navigator.webdriver && this.running && this.world) this.renderStep(0);
   }
 }
 

@@ -98,7 +98,6 @@ async function main() {
   chat.onTypingChange = (typing) => { input.typing = typing; };
   chat.onSendLobby = (text) => { netLobby?.sendChat(text); };
   const backdrop = new MenuBackdrop(gfx);
-  (window as unknown as { __menu: MenuBackdrop }).__menu = backdrop;
 
   function syncStart(problem = lobby.problem) {
     if (input.armed) return;
@@ -334,6 +333,7 @@ async function main() {
   loadedAssets = assets;
   backdrop.start(assets, playerTeam(lobby.config) ?? 'red', activeTeams(lobby.config), 1337, lobby.config.mode ?? 'standard');
   applyToggles();
+  (window as unknown as { __menu: MenuBackdrop }).__menu = backdrop;
   loaded = true;
   resolveBootReady();
   syncStart();

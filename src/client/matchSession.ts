@@ -482,12 +482,14 @@ export class MatchSession {
     const FOG = (this.baseFogDensity = fog.density);
 
     gameLog.setStage('prewarm-shaders');
-    try {
-      renderer.compile(scene, camera);
-      renderer.compile(outline.scene, camera);
-      renderer.compile(viewModel.scene, viewModel.camera);
-    } catch (err) {
-      gameLog.error('prewarm', err);
+    if (!navigator.webdriver) {
+      try {
+        renderer.compile(scene, camera);
+        renderer.compile(outline.scene, camera);
+        renderer.compile(viewModel.scene, viewModel.camera);
+      } catch (err) {
+        gameLog.error('prewarm', err);
+      }
     }
     gameLog.setStage('match-ready', { mode: startInSpectator ? 'spectator' : 'play' });
     document.body.classList.remove('building');

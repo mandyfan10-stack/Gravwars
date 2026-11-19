@@ -263,6 +263,7 @@ try {
     check('p2p: host creates room with short code', roomCode.length >= 4, `code=${roomCode}`);
 
     await clientPage.goto(`${server.url}?room=${encodeURIComponent(roomCode)}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await clientPage.waitForFunction(() => Boolean((window as unknown as { __menu?: unknown }).__menu), null, { timeout: 60_000 });
     try {
       await clientPage.waitForFunction(() => {
         const lobbyHtml = document.getElementById('menu-lobby')?.textContent ?? '';

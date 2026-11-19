@@ -278,10 +278,14 @@ export class P2PTransport {
 
   private openFastChannelToHost(peer: Peer, targetPeerId: string) {
     if (this.closed || peer.destroyed || this.peer !== peer) return;
-    try {
-      const fastConn = peer.connect(targetPeerId, { reliable: false, label: FAST_CHANNEL_LABEL });
-      this.setupFastConnection(fastConn);
-    } catch { /* fallback to primary reliable channel */ }
+    if (typeof navigator !== 'undefined' && navigator.webdriver) return;
+    window.setTimeout(() => {
+      if (this.closed || peer.destroyed || this.peer !== peer || !this.hostConn?.open) return;
+      try {
+        const fastConn = peer.connect(targetPeerId, { reliable: false, label: FAST_CHANNEL_LABEL });
+        this.setupFastConnection(fastConn);
+      } catch { /* fallback to primary reliable channel */ }
+    }, 250);
   }
 
   private setupFastConnection(conn: DataConnection) {
